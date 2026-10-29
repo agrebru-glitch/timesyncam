@@ -1,0 +1,19 @@
+name: Предложение
+description: Идея, которая упростит синхронизацию или монтаж
+labels: ["предложение"]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Какую задачу это решит
+      description: Расскажите о съёмке или монтаже, где сейчас неудобно.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы работать
+  - type: textarea
+    id: now
+    attributes:
+      label: Как вы справляетесь сейчас

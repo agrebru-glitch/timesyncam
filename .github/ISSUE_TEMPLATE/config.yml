@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Как настроить камеры
+    url: https://github.com/agrebru-glitch/timesyncam/blob/main/docs/camera-setup.md
+    about: Пункты меню Sony и советы для других камер
+  - name: Как программа понимает время
+    url: https://github.com/agrebru-glitch/timesyncam/blob/main/docs/how-it-works.md
+    about: Почему клип встал именно туда

@@ -1,0 +1,82 @@
+{
+  "name": "timesyncam",
+  "productName": "TimesynCam",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Синхронизация клипов с камер без внешнего тайм-кода и экспорт таймлинии в DaVinci Resolve и Premiere Pro",
+  "author": "Andrey Grebenikov",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/agrebru-glitch/timesyncam",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agrebru-glitch/timesyncam.git"
+  },
+  "bugs": "https://github.com/agrebru-glitch/timesyncam/issues",
+  "type": "module",
+  "main": "dist/main/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs && electron .",
+    "dist": "node scripts/build.mjs && electron-builder --win --publish never",
+    "demo": "node scripts/make-demo.mjs",
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "allowScripts": {
+    "electron@45.1.0": true,
+    "esbuild@0.28.2": true,
+    "electron-winstaller": false
+  },
+  "build": {
+    "appId": "io.github.agrebru-glitch.timesyncam",
+    "productName": "TimesynCam",
+    "copyright": "© 2026 Andrey Grebenikov",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.map",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "bin", "to": "bin", "filter": ["*.exe", "*.dll"] },
+      { "from": "build/licenses", "to": "licenses" },
+      { "from": "LICENSE", "to": "licenses/TimesynCam-GPL-3.0.txt" },
+      { "from": "THIRD_PARTY_NOTICES.md", "to": "licenses/THIRD_PARTY_NOTICES.md" }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "TimesynCam-${version}-win-x64.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": ["ru_RU"],
+      "language": "1049",
+      "shortcutName": "TimesynCam",
+      "artifactName": "TimesynCam-Setup-${version}.${ext}"
+    },
+    "publish": null
+  }
+}

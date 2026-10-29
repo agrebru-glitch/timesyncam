@@ -1,0 +1,40 @@
+name: Ошибка
+description: Программа работает не так, как ожидалось
+labels: ["ошибка"]
+body:
+  - type: markdown
+    attributes:
+      value: Спасибо, что сообщаете! Чем подробнее, тем быстрее получится разобраться.
+  - type: input
+    id: version
+    attributes:
+      label: Версия TimesynCam
+      description: Видна во вкладке «Настройка камер», в самом низу.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что вы делали, что ожидали и что получилось.
+    validations:
+      required: true
+  - type: textarea
+    id: cameras
+    attributes:
+      label: Камеры
+      description: Модели камер и как на них был настроен тайм-код (Free Run, Rec Run, без тайм-кода).
+      placeholder: |
+        Камера 1 — Sony A7 IV, Free Run
+        Камера 2 — GoPro HERO13, без тайм-кода
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Скриншоты
+      description: Особенно полезны вкладка «Ошибки» и карточка камеры. Если в кадре чужие лица или съёмка заказчика — закройте их.
+  - type: input
+    id: os
+    attributes:
+      label: Windows
+      placeholder: "Windows 11 24H2"

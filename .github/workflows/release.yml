@@ -1,0 +1,57 @@
+name: Релиз
+
+# Запускается при отправке метки вида v0.2.0: собирает установщик и архив с FFmpeg (LGPL)
+# и прикладывает их к релизу на GitHub.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Сборка для Windows
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FFMPEG_ASSET: ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: FFmpeg (LGPL, BtbN)
+        shell: pwsh
+        run: |
+          gh release download latest -R BtbN/FFmpeg-Builds -p $env:FFMPEG_ASSET -D ffmpeg-dl
+          Expand-Archive ffmpeg-dl/$env:FFMPEG_ASSET -DestinationPath ffmpeg-dl/x
+          $src = Get-ChildItem ffmpeg-dl/x -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force bin, build/licenses | Out-Null
+          Get-ChildItem "$($src.FullName)/bin" | Where-Object Name -ne 'ffplay.exe' | Copy-Item -Destination bin
+          Copy-Item "$($src.FullName)/LICENSE.txt" build/licenses/FFmpeg-LGPL-3.0.txt
+          $v = & bin/ffprobe.exe -version
+          if ($v -match '--enable-gpl|--enable-nonfree') { throw 'Сборка FFmpeg не LGPL' }
+          $v | Select-Object -First 1
+
+      - run: npm run dist
+
+      - name: Контрольные суммы
+        shell: pwsh
+        run: |
+          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe', '.zip' } |
+            ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content release/SHA256SUMS.txt -Encoding ascii
+
+      - name: Приложить к релизу
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title "TimesynCam $($tag.TrimStart('v'))" --notes "Сборка для Windows. Что нового — в CHANGELOG.md." }
+          gh release upload $tag release/TimesynCam-Setup-*.exe release/TimesynCam-*-win-x64.zip release/SHA256SUMS.txt --clobber
