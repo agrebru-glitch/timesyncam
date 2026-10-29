@@ -20,7 +20,7 @@
     "start": "node scripts/build.mjs && electron .",
     "dist": "node scripts/build.mjs && electron-builder --win --publish never",
     "demo": "node scripts/make-demo.mjs",
-    "test": "node --test test/",
+    "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
