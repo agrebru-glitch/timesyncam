@@ -6,10 +6,17 @@ name: Релиз
 # - Метка вида v0.4.0 — сборка и релиз. Метка с дефисом (v0.4.0-rc.1) — черновик релиза.
 # - Запуск вручную (Actions → Релиз → Run workflow) пересобирает сборки из выбранной ветки
 #   и кладёт их в уже существующий релиз — например, чтобы добавить новую платформу.
+# - В pull request, который меняет сборку, — только сборка и проверка, без релиза.
 # - Текст релиза берётся из .github/release-notes/<метка>.md, если такой файл есть.
 on:
   push:
     tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-ffmpeg-mac.sh
+      - package.json
+      - package-lock.json
   workflow_dispatch:
     inputs:
       tag:
@@ -159,6 +166,7 @@ jobs:
   release:
     name: Релиз на GitHub
     needs: [windows, macos]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
