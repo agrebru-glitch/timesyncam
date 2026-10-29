@@ -23,6 +23,20 @@ FFmpeg — торговая марка Fabrice Bellard, автора проек�
 - Лицензия: MIT.
 - Исходный код: [facebook/react](https://github.com/facebook/react).
 
+## jsQR
+
+Чтение QR-кода экрана синхронизации в кадре.
+
+- Лицензия: Apache-2.0.
+- Исходный код: [cozmo/jsQR](https://github.com/cozmo/jsQR).
+
+## qrcode-generator
+
+Рисование QR-кода на экране синхронизации.
+
+- Лицензия: MIT.
+- Исходный код: [kazuhikoarase/qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator).
+
 ## Шрифты и иконки
 
 Интерфейс использует системные шрифты Windows. Иконки нарисованы для TimesynCam и распространяются вместе с программой по её лицензии.

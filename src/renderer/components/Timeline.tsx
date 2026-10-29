@@ -43,7 +43,7 @@ export function Timeline() {
     }
   });
   const waveVersion = useWaveformVersion();
-  const [menu, setMenu] = useState<{ x: number; y: number; clipId: string; cameraId: string } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; clipId: string; cameraId: string; localSec: number } | null>(null);
   const tz = state.sync?.displayTzOffsetMin ?? -new Date().getTimezoneOffset();
 
   const lanesByCam = useMemo(() => {
@@ -245,6 +245,30 @@ export function Timeline() {
       }
     }
 
+    // Контрольные кадры — жёлтый флажок там, где камера сняла экран синхронизации.
+    for (const f of Object.values(state.controlFrames)) {
+      const p = placements.find((q) => q.clipId === f.clipId);
+      const row = p && rows.find((r) => r.cam.id === p.cameraId);
+      if (!p || !row) continue;
+      const fx = Math.round(x(p.start + f.localSec)) + 0.5;
+      if (fx < -8 || fx > size.w + 8) continue;
+      const y0 = row.y + 6 + p.lane * ROW_H;
+      const ok = !synced || !state.controlIssues.some((i) => i.clipId === f.clipId && i.severity !== 'info');
+      g.strokeStyle = ok ? '#ffd60a' : '#ff9f0a';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(fx, y0);
+      g.lineTo(fx, y0 + ROW_H - 12);
+      g.stroke();
+      g.fillStyle = ok ? '#ffd60a' : '#ff9f0a';
+      g.beginPath();
+      g.moveTo(fx, y0);
+      g.lineTo(fx + 9, y0 + 4);
+      g.lineTo(fx, y0 + 8);
+      g.closePath();
+      g.fill();
+    }
+
     // Курсор.
     if (state.playhead !== null) {
       const px = Math.round(x(state.playhead)) + 0.5;
@@ -259,7 +283,7 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, vp, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, errorClips, speedClips, tz, showWaves, waveVersion]);
+  }, [size, vp, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, speedClips, tz, showWaves, waveVersion]);
 
   // Мышь: щелчок ставит курсор и выделяет клип, по линейке можно водить.
   const timeAt = (clientX: number) => {
@@ -283,6 +307,18 @@ export function Timeline() {
     dispatch({ type: 'toast', text: `${name} удалён с таймлинии. Файл на диске не тронут — вернуть можно в карточке камеры.` });
   };
 
+  const markControl = (cameraId: string, clipId: string, localSec: number) => {
+    const cam = state.cameras.find((c) => c.id === cameraId);
+    const others = Object.values(state.controlFrames).filter((f) => f.cameraId !== cameraId).length;
+    dispatch({ type: 'set-control', frame: { cameraId, clipId, localSec } });
+    dispatch({
+      type: 'toast',
+      text: others
+        ? `Контрольный кадр «${cam?.name ?? 'Камера'}» отмечен. Теперь «Синхронизировать» → «Контрольный кадр + тайм-код + звук».`
+        : `Контрольный кадр «${cam?.name ?? 'Камера'}» отмечен. Отметьте его и на других камерах, снимавших экран.`,
+    });
+  };
+
   // Правая кнопка по клипу — меню клипа.
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -293,7 +329,10 @@ export function Timeline() {
     }
     const rect = wrapRef.current!.getBoundingClientRect();
     dispatch({ type: 'select-clip', clipId: hit.clipId });
-    setMenu({ x: Math.min(e.clientX - rect.left, rect.width - 230), y: Math.min(e.clientY - rect.top, rect.height - 96), clipId: hit.clipId, cameraId: hit.cameraId });
+    const at = Math.min(Math.max(timeAt(e.clientX), hit.start), hit.end);
+    dispatch({ type: 'play', playing: false });
+    dispatch({ type: 'playhead', at });
+    setMenu({ x: Math.min(e.clientX - rect.left, rect.width - 260), y: Math.max(0, Math.min(e.clientY - rect.top, rect.height - 200)), clipId: hit.clipId, cameraId: hit.cameraId, localSec: at - hit.start });
   };
 
   useEffect(() => {
@@ -453,6 +492,15 @@ export function Timeline() {
           return (
             <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
               <div className="ctx-title">{clip.name}</div>
+              <button role="menuitem" className="ctx-item" onClick={() => { markControl(menu.cameraId, menu.clipId, menu.localSec); setMenu(null); }}>
+                {state.controlFrames[clip.id] ? 'Перенести контрольный кадр сюда' : 'Выбрать контрольным кадром'}
+                <span className="ctx-hint">здесь в кадре экран синхронизации</span>
+              </button>
+              {state.controlFrames[clip.id] && (
+                <button role="menuitem" className="ctx-item" onClick={() => { dispatch({ type: 'clear-control', clipId: clip.id }); setMenu(null); }}>
+                  Убрать контрольный кадр
+                </button>
+              )}
               <button role="menuitem" className="ctx-item danger" onClick={() => { removeClip(menu.cameraId, menu.clipId); setMenu(null); }}>
                 Удалить с таймлинии
                 <span className="ctx-hint">Del · файл на диске останется</span>

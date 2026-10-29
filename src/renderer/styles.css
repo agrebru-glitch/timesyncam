@@ -87,6 +87,13 @@ button, input, select { font: inherit; color: inherit; }
 .sync-option:hover { background: var(--hover); }
 .sync-option.on { border-color: var(--accent); background: var(--accent-soft); }
 .sync-option.locked { opacity: 0.45; cursor: not-allowed; }
+/* Самый точный режим — выделен тёмно-зелёным. */
+.sync-option.precise { border-color: #1f5c38; background: rgba(31, 92, 56, 0.32); }
+.sync-option.precise:hover { background: rgba(31, 92, 56, 0.45); }
+.sync-option.precise.on { border-color: #2f9a5c; background: rgba(31, 92, 56, 0.5); }
+.sync-option.precise.on .radio { border-color: #3ccf7e; background: #3ccf7e; }
+.sync-option.precise .sync-option-title { display: block; }
+.sync-recommended { font-weight: 500; color: #6fdc9d; margin-left: 6px; white-space: nowrap; }
 .sync-option .radio { width: 16px; height: 16px; border-radius: 8px; border: 2px solid var(--border-strong); flex: none; margin-top: 2px; }
 .sync-option.on .radio { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--surface-2); background: var(--accent); }
 .sync-option-body { display: flex; flex-direction: column; gap: 3px; }
@@ -223,3 +230,14 @@ button, input, select { font: inherit; color: inherit; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
 .toast { background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: 10px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; max-width: 460px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
+
+.qr-screen { position: fixed; inset: 0; z-index: 40; background: #fff; color: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.qr-screen canvas { width: min(70vh, 80vw); height: min(70vh, 80vw); image-rendering: pixelated; }
+.qr-clock { font: 600 48px/1 ui-monospace, Consolas, monospace; }
+.qr-hint { max-width: 640px; text-align: center; color: #444; margin: 0 16px; }
+.qr-bar { display: flex; gap: 8px; }
+.qr-screen .btn { background: #f2f2f4; color: #111; border: 1px solid #c9c9cf; }
+.qr-screen .btn:hover { background: #e6e6ea; }
+.tiles.preview-off { display: flex; align-items: center; justify-content: center; }
+.preview-off-box { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 360px; text-align: center; color: var(--text-2); }
+.preview-off-box b { color: var(--text); font-size: 14px; }

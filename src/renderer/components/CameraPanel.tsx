@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Camera, CameraSync, TimecodeTrust } from '../../core/types.ts';
+import type { State } from '../state.ts';
 import type { AudioCameraResult } from '../../core/audioSync.ts';
 import { formatSigned } from '../../core/audioSync.ts';
 import { formatClockTime, formatDate, formatDurationHuman, formatFps, formatShift, formatSize, parseShift, pluralRu, resolutionLabel } from '../../core/format.ts';
@@ -45,6 +46,24 @@ function timeSourceText(cs: CameraSync | undefined, cam: Camera): { title: strin
   return {
     title: 'Только часы камеры',
     sub: cs.recRun ? 'Тайм-код шёл только во время записи. Точность около секунды.' : 'Точность около секунды. Точно подгоните по хлопку.',
+  };
+}
+
+// Контрольный кадр: отмечен ли, прочитан ли экран синхронизации и насколько точно.
+function controlText(state: State, cam: Camera, synced: boolean): { title: string; sub?: string; tone?: 'warn' | 'ok' } | null {
+  const marked = Object.values(state.controlFrames).filter((f) => f.cameraId === cam.id).length;
+  if (!marked) return null;
+  if (state.qrRun) return { title: 'Читаю экран синхронизации…' };
+  if (!synced || state.syncMode !== 'control' || !state.control) {
+    return { title: 'Контрольный кадр отмечен', sub: 'Синхронизировать → «Контрольный кадр + тайм-код + звук»' };
+  }
+  const c = state.control[cam.id];
+  if (!c) return { title: 'Экран синхронизации не прочитан', sub: 'Камера осталась по тайм-коду и звуку', tone: 'warn' };
+  const ms = Math.max(1, Math.round(c.precisionSec * 1000));
+  return {
+    title: `По экрану синхронизации, ${formatSigned(c.correction)}`,
+    sub: c.transitions ? `Точность ±${ms} мс · смен кода: ${c.transitions}` : `Точность около ±${ms} мс — экран снят меньше секунды`,
+    tone: c.transitions ? 'ok' : 'warn',
   };
 }
 
@@ -127,6 +146,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const ts = timeSourceText(synced ? cs : undefined, cam);
   const au = synced ? state.audio?.cameras.find((c) => c.cameraId === cam.id) : undefined;
   const at = synced ? audioText(au, cam, !!state.audioRun) : null;
+  const qt = controlText(state, cam, synced);
   const isActive = state.activeCameraId === cam.id;
 
   const onDrop = (e: React.DragEvent) => {
@@ -232,6 +252,15 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             )}
             <dt>Время</dt>
             <dd>{ts.title}<span className="sub">{ts.sub}</span></dd>
+            {qt && (
+              <>
+                <dt>Экран</dt>
+                <dd style={{ color: qt.tone === 'warn' ? 'var(--warning)' : qt.tone === 'ok' ? 'var(--success)' : undefined }}>
+                  {qt.title}
+                  {qt.sub && <span className="sub">{qt.sub}</span>}
+                </dd>
+              </>
+            )}
             {at && (
               <>
                 <dt>Звук</dt>

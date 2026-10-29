@@ -38,6 +38,10 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: nu
   });
 }
 
+export function toolPath(name: 'ffmpeg' | 'ffprobe'): string {
+  return name === 'ffmpeg' ? FFMPEG : FFPROBE;
+}
+
 export function runTool(name: 'ffmpeg' | 'ffprobe', args: string[], timeoutMs: number) {
   return run(name === 'ffmpeg' ? FFMPEG : FFPROBE, args, timeoutMs);
 }

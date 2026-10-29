@@ -1,12 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AUDIO_SAMPLE_RATE, combine, correlate, envelope, ENV_RATE, findInside, peakDb, refineByAudio, waveformPeaks } from '../src/core/audioSync.ts';
-import type { AudioAnchor, AudioPiece } from '../src/core/audioSync.ts';
+import { combine, correlate, ENV_RATE, findInside, peakDb, refineByAudio, SILENCE_DB, waveformPeaks } from '../src/core/audioSync.ts';
+import type { AudioAnchor, AudioFetch } from '../src/core/audioSync.ts';
+import { bandFeatures, FEAT_SR, FINE_SR, gccPhat, pickChannel } from '../src/core/audioFeatures.ts';
 import type { ClipMeta, Placement } from '../src/core/types.ts';
 import { runSync } from '../src/core/sync.ts';
 import { camera, clip, T16 } from './fixtures.ts';
-
-const SR = AUDIO_SAMPLE_RATE;
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -16,66 +15,105 @@ function rng(seed: number) {
   };
 }
 
-// Звук площадки: хлопки в случайные моменты. Одинаков для всех камер, у каждой свой шум и громкость.
-const EVENTS: number[] = [];
+// Звук площадки задан как функция непрерывного времени: хлопки из нескольких синусоид с затуханием.
+// Так можно проверять сдвиги, не кратные сэмплу.
+interface Burst { t: number; amp: number; freqs: number[]; phases: number[] }
+const BURSTS: Burst[] = [];
 {
   const r = rng(7);
-  for (let t = T16 - 60; t < T16 + 3600; t += 0.4 + r() * 2) EVENTS.push(t);
+  for (let t = T16 - 60; t < T16 + 3600; t += 0.4 + r() * 2) {
+    BURSTS.push({ t, amp: 0.3 + r() * 0.6, freqs: Array.from({ length: 6 }, () => 300 + r() * 5500), phases: Array.from({ length: 6 }, () => r() * Math.PI * 2) });
+  }
 }
 
-function record(fromEpoch: number, dur: number, gain: number, noiseSeed: number, silent = false): Float32Array {
-  const n = Math.round(dur * SR);
+function record(fromEpoch: number, dur: number, sr: number, gain: number, noiseSeed: number, opts: { silent?: boolean; noise?: number } = {}): Float32Array {
+  const n = Math.round(dur * sr);
   const out = new Float32Array(n);
-  if (silent) return out;
+  if (opts.silent) return out;
   const r = rng(noiseSeed);
-  for (let i = 0; i < n; i++) out[i] = (r() * 2 - 1) * 0.02;
-  for (const e of EVENTS) {
-    if (e < fromEpoch - 0.1 || e > fromEpoch + dur) continue;
-    const i0 = Math.round((e - fromEpoch) * SR);
-    for (let k = 0; k < 400; k++) {
-      const i = i0 + k;
-      if (i >= 0 && i < n) out[i] += (r() * 2 - 1) * gain * Math.exp(-k / 70);
+  const noise = opts.noise ?? 0.02;
+  for (let i = 0; i < n; i++) out[i] = (r() * 2 - 1) * noise;
+  for (const b of BURSTS) {
+    if (b.t < fromEpoch - 0.2 || b.t > fromEpoch + dur) continue;
+    const i0 = Math.max(0, Math.floor((b.t - fromEpoch) * sr));
+    const i1 = Math.min(n, Math.ceil((b.t + 0.12 - fromEpoch) * sr));
+    for (let i = i0; i < i1; i++) {
+      const tt = fromEpoch + i / sr - b.t;
+      if (tt < 0) continue;
+      let v = 0;
+      for (let k = 0; k < 6; k++) v += Math.sin(2 * Math.PI * b.freqs[k] * tt + b.phases[k]);
+      out[i] += (v / 6) * b.amp * gain * Math.exp(-tt / 0.015);
     }
   }
   return out;
 }
 
-test('Огибающая и корреляция находят сдвиг с точностью до 10 мс при разной громкости и шуме', () => {
-  const ref = envelope(record(T16, 60, 0.9, 1), SR);
-  const target = envelope(record(T16 + 20.37, 20, 0.3, 2), SR);
-  // Ставим target так, будто он начинается на 1,5 с раньше настоящего.
+const feat = (fromEpoch: number, dur: number, gain: number, seed: number) => bandFeatures(record(fromEpoch, dur, FEAT_SR, gain, seed), FEAT_SR).feat;
+
+test('Многополосный отпечаток находит сдвиг с точностью до 10 мс при разной громкости и шуме', () => {
+  const ref = feat(T16, 60, 0.9, 1);
+  const target = feat(T16 + 20.37, 20, 0.3, 2);
   const refOffset = Math.round((20.37 - 1.5) * ENV_RATE);
   const m = correlate(target, ref, refOffset, 500)!;
   const correction = (refOffset + m.lag) / ENV_RATE - (20.37 - 1.5);
   assert.ok(Math.abs(correction - 1.5) < 0.012, `поправка ${correction}`);
-  assert.ok(m.score > 0.5 && m.ratio > 2);
+  assert.ok(m.score > 0.3 && m.ratio > 5, `совпадение ${m.score}, отрыв ${m.ratio}`);
+});
+
+test('Отпечаток выдерживает громкий ровный шум трибун', () => {
+  const ref = bandFeatures(record(T16, 60, FEAT_SR, 0.9, 1, { noise: 0.1 }), FEAT_SR).feat;
+  const target = bandFeatures(record(T16 + 20.37, 20, FEAT_SR, 0.5, 2, { noise: 0.1 }), FEAT_SR).feat;
+  const refOffset = Math.round(20.37 * ENV_RATE);
+  const m = correlate(target, ref, refOffset, 500)!;
+  assert.ok(Math.abs(m.lag) / ENV_RATE < 0.012, `сдвиг ${m.lag / ENV_RATE}`);
+  assert.ok(m.ratio > 2, `отрыв ${m.ratio}`);
+});
+
+test('Точная сверка GCC-PHAT находит задержку в доли миллисекунды', () => {
+  for (const delay of [0.0012345, -0.0087, 0.0193]) {
+    const start = T16 + 100;
+    const x = record(start, 4, FINE_SR, 0.4, 3);
+    // Опорный кусок начинается на 30 мс раньше, а звук в нём пришёл позже на delay.
+    const y = record(start - 0.03 - delay, 4.06, FINE_SR, 0.9, 4);
+    const off = Math.round(0.03 * FINE_SR);
+    const g = gccPhat(x, y, FINE_SR, off, off)!;
+    assert.ok(Math.abs(g.lag / FINE_SR - delay) < 0.00005, `задержка ${delay}: найдено ${g.lag / FINE_SR}`);
+    assert.ok(g.confidence > 6);
+  }
+});
+
+test('Канал с внешним микрофоном выбирается сам, мёртвый канал не мешает', () => {
+  const clean = record(T16, 20, FEAT_SR, 0.8, 5, { noise: 0.005 });
+  const noisy = record(T16, 20, FEAT_SR, 0.15, 6, { noise: 0.2 });
+  assert.equal(pickChannel([noisy, clean], FEAT_SR, peakDb, SILENCE_DB).channel, 1);
+  assert.equal(pickChannel([new Float32Array(clean.length), clean], FEAT_SR, peakDb, SILENCE_DB).channel, 1);
 });
 
 test('Поиск по всей записи находит кусок через много минут', () => {
-  const ref = envelope(record(T16, 600, 0.8, 3), SR);
-  const probe = envelope(record(T16 + 431.25, 20, 0.5, 4), SR);
+  const ref = feat(T16, 600, 0.8, 3);
+  const probe = feat(T16 + 431.25, 20, 0.5, 4);
   const m = findInside(probe, ref)!;
   assert.ok(Math.abs(m.offset / ENV_RATE - 431.25) < 0.015, `смещение ${m.offset / ENV_RATE}`);
-  assert.ok(m.score > 0.5 && m.ratio > 2);
+  assert.ok(m.score > 0.3 && m.ratio > 4);
 });
 
 test('Волна для таймлинии: 100 точек в секунду, тихий и громкий звук видны оба', () => {
-  const quiet = waveformPeaks(record(T16, 2, 0.06, 5), SR);
-  const loud = waveformPeaks(record(T16, 2, 0.9, 6), SR);
+  const quiet = waveformPeaks(record(T16, 2, 8000, 0.06, 5), 8000);
+  const loud = waveformPeaks(record(T16, 2, 8000, 0.9, 6), 8000);
   assert.equal(quiet.length, 200);
   const max = (a: Uint8Array) => a.reduce((m, v) => Math.max(m, v), 0);
-  assert.ok(max(quiet) > 120, `тихий пик ${max(quiet)}`);
+  assert.ok(max(quiet) > 100, `тихий пик ${max(quiet)}`);
   assert.ok(max(loud) > max(quiet));
-  assert.equal(max(waveformPeaks(new Float32Array(SR), SR)), 0);
+  assert.equal(max(waveformPeaks(new Float32Array(8000), 8000)), 0);
 });
 
 test('Тишина в звуке распознаётся по пику', () => {
-  assert.ok(peakDb(record(T16, 5, 0, 1, true)) < -70);
-  assert.ok(peakDb(record(T16, 5, 0.8, 1)) > -20);
+  assert.ok(peakDb(record(T16, 5, 8000, 0, 1, { silent: true })) < -70);
+  assert.ok(peakDb(record(T16, 5, 8000, 0.8, 1)) > -20);
 });
 
 const anchor = (clipId: string, at: number, correction: number, score = 0.8): AudioAnchor => ({
-  cameraId: 'B', clipId, refCameraId: 'A', refClipId: 'r', at, correction, score, ratio: 4, accepted: true, role: 'weak',
+  cameraId: 'B', clipId, refCameraId: 'A', refClipId: 'r', at, correction, score, ratio: 4, accepted: true, role: 'weak', fine: false, fineConfidence: 0,
 });
 const pl = (id: string, start: number): Placement => ({ clipId: id, cameraId: 'B', start, end: start + 10, method: 'timecode-and-clock', lane: 0 });
 
@@ -109,16 +147,24 @@ test('Камера только с часами: у клипа со своей �
   assert.equal(r.corrections.c3, 3.1);
 });
 
-// Сквозная проверка: опорная камера с точным тайм-кодом и две камеры с ошибками часов.
-function fakeFetch(truth: Map<string, number>, silentIds = new Set<string>()) {
-  return async (c: ClipMeta, start: number, dur: number): Promise<AudioPiece | null> => {
-    const real = truth.get(c.id)!;
-    const samples = record(real + start, Math.min(dur, c.durationSec - start), 0.4 + (c.id.length % 3) * 0.2, c.id.length, silentIds.has(c.id));
-    return { env: envelope(samples, SR), peakDb: peakDb(samples) };
+// Сквозная проверка: звук каждого клипа берётся из общего звука площадки с его настоящим временем.
+function fakeAudio(truth: Map<string, number>, silentIds = new Set<string>()): AudioFetch {
+  // У каждой камеры свой шум и своя громкость, как у настоящих микрофонов.
+  const hash = (s: string) => [...s].reduce((h, ch) => (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0, 7);
+  const gain = (c: ClipMeta) => 0.4 + (hash(c.id) % 3) * 0.2;
+  const seed = (c: ClipMeta, start: number, salt: number) => (hash(c.id) * 7919 + Math.round(start * 1000) + salt) >>> 0;
+  return {
+    features: async (c, start, dur) => {
+      const len = Math.min(dur, c.durationSec - start);
+      const s = record(truth.get(c.id)! + start, len, FEAT_SR, gain(c), seed(c, start, 1), { silent: silentIds.has(c.id) });
+      const picked = pickChannel([s, s], FEAT_SR, peakDb, SILENCE_DB);
+      return { feat: picked.feat, peakDb: picked.peakDb, channel: picked.channel };
+    },
+    samples: async (c, start, dur) => record(truth.get(c.id)! + start, Math.min(dur, c.durationSec - start), FINE_SR, gain(c), seed(c, start, 2)),
   };
 }
 
-test('Сверка по звуку чинит часы камер и находит камеру со сбитым часовым поясом', async () => {
+test('Сверка по звуку: камеры встают с точностью до долей миллисекунды, камера со сбитым поясом находится', async () => {
   const truth = new Map<string, number>();
   const mk = (realStart: number, dur: number, clockError: number, withTc: boolean, offsetTc = 0) => {
     const c = clip({ start: Math.floor(realStart + clockError), tcSeconds: withTc ? (((realStart + 3 * 3600 + offsetTc) % 86400) + 86400) % 86400 : undefined, durationSec: dur, recordedSec: dur });
@@ -126,17 +172,19 @@ test('Сверка по звуку чинит часы камер и наход�
     return c;
   };
   const ref = camera('Опорная', [mk(T16, 300, 0.2, true), mk(T16 + 400, 300, 0.4, true)]);
-  const gopro = camera('GoPro', [mk(T16 + 30, 60, -2.6, false), mk(T16 + 450, 60, -2.6, false)]);
-  const zone = camera('Пояс', [mk(T16 + 100, 60, -7960, true, 5000), mk(T16 + 500, 60, -7960, true, 5000)]);
-  const cams = [ref, gopro, zone];
+  const tc = camera('Тайм-код', [mk(T16 + 20.0137, 200, 0.6, true, 1234.5), mk(T16 + 420.0137, 200, 0.6, true, 1234.5)]);
+  const gopro = camera('GoPro', [mk(T16 + 30.0071, 60, -2.6, false), mk(T16 + 450.0213, 60, -2.6, false)]);
+  const zone = camera('Пояс', [mk(T16 + 100.0049, 60, -7960, true, 5000), mk(T16 + 500.0049, 60, -7960, true, 5000)]);
+  const cams = [ref, tc, gopro, zone];
   const coarse = runSync(cams);
-  const audio = await refineByAudio(cams, coarse, fakeFetch(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
+  const audio = await refineByAudio(cams, coarse, fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
   const final = runSync(cams, audio.corrections);
+  const refErr = final.placements.find((p) => p.cameraId === 'Опорная')!.start - truth.get(final.placements.find((p) => p.cameraId === 'Опорная')!.clipId)!;
   for (const p of final.placements) {
-    const err = p.start - truth.get(p.clipId)!;
-    assert.ok(Math.abs(err) < 0.05, `${p.cameraId}: ошибка ${err.toFixed(3)} с`);
+    const err = p.start - truth.get(p.clipId)! - refErr;
+    assert.ok(Math.abs(err) < 0.001, `${p.cameraId}: ошибка относительно опорной ${(err * 1000).toFixed(3)} мс`);
   }
-  assert.equal(audio.cameras.find((c) => c.cameraId === 'Пояс')!.status, 'applied');
+  assert.ok(audio.cameras.filter((c) => c.status === 'applied' || c.status === 'confirmed').every((c) => c.anchors.some((a) => a.fine)));
   assert.ok(audio.issues.some((i) => /часовой пояс/.test(i.details ?? '')));
 });
 
@@ -148,7 +196,7 @@ test('Камера с тишиной в звуке: прямое предупр�
   truth.set(b.id, T16 + 10.5);
   const cams = [camera('A', [a]), camera('B', [b])];
   const coarse = runSync(cams);
-  const audio = await refineByAudio(cams, coarse, fakeFetch(truth, new Set([b.id])), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
+  const audio = await refineByAudio(cams, coarse, fakeAudio(truth, new Set([b.id])), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
   assert.equal(audio.cameras[1].status, 'silent');
   assert.equal(audio.corrections[b.id], undefined);
   assert.ok(audio.issues.some((i) => /тишина/.test(i.title)));

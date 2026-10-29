@@ -9,7 +9,9 @@
 //
 // Все камеры пишут один и тот же звук площадки (хлопки, стуки, сигналы) со своим шумом и громкостью —
 // по нему программа сверяет камеры. В кадр впечатано настоящее время съёмки.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import * as qrModule from 'qrcode-generator';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -110,6 +112,72 @@ function video(path, { label, wall, dur, fps, hue, width = 1280, height = 720, t
   if (wav) rmSync(wav);
 }
 
+// «Экран синхронизации», снятый камерой: QR-код с временем часов компьютера меняется каждую секунду.
+// Если смена пришлась на выдержку кадра, кадр получается смешанным из двух кодов — как у настоящей камеры.
+const qrcode = qrModule.default ?? qrModule;
+const QW = 1280;
+const QH = 720;
+const qrCache = new Map();
+function qrFrame(sec) {
+  if (qrCache.has(sec)) return qrCache.get(sec);
+  const q = qrcode(0, 'M');
+  q.addData(`TSC1 ${sec * 1000}`);
+  q.make();
+  const n = q.getModuleCount();
+  const img = Buffer.alloc(QW * QH, 70);
+  const S = Math.round(QH * 0.8);
+  const x0 = Math.round((QW - S) / 2) + 90;
+  const y0 = Math.round((QH - S) / 2) - 20;
+  for (let y = y0; y < y0 + S; y++) img.fill(232, y * QW + x0, y * QW + x0 + S);
+  const px = Math.floor(S / (n + 8));
+  const ox = x0 + Math.round((S - px * n) / 2);
+  const oy = y0 + Math.round((S - px * n) / 2);
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    if (!q.isDark(r, c)) continue;
+    for (let y = 0; y < px; y++) img.fill(18, (oy + r * px + y) * QW + ox + c * px, (oy + r * px + y) * QW + ox + (c + 1) * px);
+  }
+  if (qrCache.size > 8) qrCache.delete(qrCache.keys().next().value);
+  qrCache.set(sec, img);
+  return img;
+}
+
+async function qrClip(path, { wall, dur, fps, timecode, creation, handler, sound }) {
+  let wav = null;
+  const args = ['-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', `${QW}x${QH}`, '-r', String(fps), '-i', 'pipe:0'];
+  if (sound) {
+    wav = `${path}.wav`;
+    writeWav(wav, soundAt(wall, dur, sound));
+    args.push('-i', wav);
+  }
+  args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '24', '-pix_fmt', 'yuv420p');
+  if (sound) args.push('-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-shortest');
+  args.push('-metadata', `creation_time=${creation}`);
+  if (timecode) args.push('-timecode', timecode);
+  if (handler) args.push('-metadata:s:v', `handler_name=${handler}`);
+  const child = spawn('ffmpeg', [...args, path], { stdio: ['pipe', 'inherit', 'inherit'] });
+  const epoch0 = wallToEpoch(wall);
+  const exposure = 0.5 / fps;
+  const frames = Math.round(dur * fps);
+  for (let k = 0; k < frames; k++) {
+    const t0 = epoch0 + k / fps;
+    const a = Math.floor(t0);
+    const b = Math.floor(t0 + exposure);
+    let img = qrFrame(a);
+    if (b !== a) {
+      const f = (t0 + exposure - b) / exposure;
+      const ib = qrFrame(b);
+      const mix = Buffer.alloc(QW * QH);
+      for (let i = 0; i < mix.length; i++) mix[i] = Math.round(img[i] * (1 - f) + ib[i] * f);
+      img = mix;
+    }
+    if (!child.stdin.write(img)) await once(child.stdin, 'drain');
+  }
+  child.stdin.end();
+  const [code] = await once(child, 'close');
+  if (code !== 0) throw new Error(`ffmpeg завершился с кодом ${code}`);
+  if (wav) rmSync(wav);
+}
+
 function sonyXml({ frames, tcStart, countFps, halfStep, creation, captureFps, formatFps, model, lens, width, height }) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <NonRealTimeMeta xmlns="urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20">
@@ -130,32 +198,37 @@ function sonyXml({ frames, tcStart, countFps, halfStep, creation, captureFps, fo
 }
 
 // clockShift — насколько часы камеры уходят от реального времени, tzMin — какой пояс выставлен на камере.
-function sonyCamera(dir, clips, { model, lens, tcOffset, hue, label, sound, clockShift = 0, tzMin = TZ }) {
+async function sonyCamera(dir, clips, { model, lens, tcOffset, hue, label, sound, clockShift = 0, tzMin = TZ }) {
   mkdirSync(dir, { recursive: true });
-  clips.forEach((c, i) => {
+  for (const [i, c] of clips.entries()) {
     const name = `C${pad(i + 1, 4)}`;
     const fps = c.fps ?? 25;
     const fileDur = c.sq ? c.dur * (c.sq / fps) : c.dur;
-    const camWall = c.wall + clockShift;
-    const tcWall = (camWall + tcOffset + 86400) % 86400;
+    // Настоящая камера начинает запись ровно на границе кадра своего тайм-кода — двигаем начало клипа на неё.
+    const tcExact = c.wall + clockShift + tcOffset;
+    const wall = c.wall + (Math.ceil(tcExact * fps - 1e-9) / fps - tcExact);
+    const camWall = wall + clockShift;
+    const tcWall = ((camWall + tcOffset) % 86400 + 86400) % 86400;
     const countFps = fps > 30 ? fps / 2 : fps;
     const camEpoch = Math.floor(Date.parse(`${DAY}T00:00:00Z`) / 1000 + camWall - tzMin * 60);
-    video(join(dir, `${name}.MP4`), {
-      label: `${label} · ${name}${c.sq ? ' · S&Q' : ''}`, wall: c.wall, dur: fileDur, fps, hue,
-      width: c.width, height: c.height, timecode: tc(tcWall, fps), creation: isoUtc(camEpoch),
-      sound: c.sq ? null : { ...sound, seed: sound.seed + i },
-    });
+    truth.push({ file: `${dir.split(/[\\/]/).pop()}/${name}.MP4`, epoch: wallToEpoch(wall) });
+    const meta = { wall, dur: fileDur, fps, timecode: tc(tcWall, fps), creation: isoUtc(camEpoch), sound: c.sq ? null : { ...sound, seed: sound.seed + i } };
+    if (c.qr) await qrClip(join(dir, `${name}.MP4`), meta);
+    else video(join(dir, `${name}.MP4`), { ...meta, label: `${label} · ${name}${c.sq ? ' · S&Q' : ''}`, hue, width: c.width, height: c.height });
     writeFileSync(join(dir, `${name}M01.XML`), sonyXml({
       frames: Math.round(fileDur * fps), tcStart: ltc(tcWall, countFps), countFps, halfStep: fps > 30,
       creation: `${isoAt(camEpoch, tzMin)}${tzText(tzMin)}`, captureFps: c.sq ?? fps, formatFps: fps, model, lens,
       width: c.width ?? 1280, height: c.height ?? 720,
     }));
-  });
+  }
 }
 
 mkdirSync(OUT, { recursive: true });
+// Настоящее время начала каждого клипа — для проверки точности (scripts/truth-check.mts).
+const truth = [];
 
-sonyCamera(join(OUT, 'Камера 1 — A7 IV'), [
+// Камеры 1, 3 и 4 после съёмки, в 15:23, сняли «Экран синхронизации» — по нему работает контрольный кадр.
+await sonyCamera(join(OUT, 'Камера 1 — A7 IV'), [
   { wall: w(15, 0, 5.4), dur: 12 },
   { wall: w(15, 1, 10.2), dur: 20 },
   { wall: w(15, 3, 40.76), dur: 25, fps: 50 },
@@ -164,9 +237,10 @@ sonyCamera(join(OUT, 'Камера 1 — A7 IV'), [
   { wall: w(15, 12, 0.88), dur: 30 },
   { wall: w(15, 16, 45.1), dur: 18 },
   { wall: w(15, 20, 10.64), dur: 40 },
+  { wall: w(15, 23, 0.37), dur: 8, qr: true },
 ], { model: 'ILCE-7M4', lens: 'FE 24-70mm F2.8 GM II', tcOffset: w(2, 10, 5.44), hue: 0, label: 'Камера 1', sound: { gain: 0.6, noise: 0.012, seed: 100 } });
 
-sonyCamera(join(OUT, 'Камера 2 — FX3'), [
+await sonyCamera(join(OUT, 'Камера 2 — FX3'), [
   { wall: w(15, 0, 0.2), dur: 60 },
   { wall: w(15, 2, 30.6), dur: 90 },
   { wall: w(15, 6, 30.12), dur: 45 },
@@ -178,25 +252,29 @@ sonyCamera(join(OUT, 'Камера 2 — FX3'), [
 // GoPro: часы отстают на 2,6 с, время записано как местное с пометкой UTC.
 const goDir = join(OUT, 'Камера 3 — GoPro');
 mkdirSync(goDir, { recursive: true });
-[{ wall: w(15, 0, 20.3), dur: 50 }, { wall: w(15, 5, 0.7), dur: 80 }, { wall: w(15, 11, 50.15), dur: 100 }].forEach((c, i) => {
+for (const [i, c] of [{ wall: w(15, 0, 20.3), dur: 50 }, { wall: w(15, 5, 0.7), dur: 80 }, { wall: w(15, 11, 50.15), dur: 100 }, { wall: w(15, 23, 4.06), dur: 8, qr: true }].entries()) {
   const shown = c.wall - 2.6;
-  video(join(goDir, `GX01${pad(i + 1, 4)}.MP4`), {
-    label: `Камера 3 · GX01${pad(i + 1, 4)}`, wall: c.wall, dur: c.dur, fps: 50, hue: 240,
-    creation: `${DAY}T${hms(Math.floor(shown))}.000000Z`, handler: 'GoPro AVC',
+  truth.push({ file: `Камера 3 — GoPro/GX01${pad(i + 1, 4)}.MP4`, epoch: wallToEpoch(c.wall) });
+  const meta = {
+    wall: c.wall, dur: c.dur, fps: 50, creation: `${DAY}T${hms(Math.floor(shown))}.000000Z`, handler: 'GoPro AVC',
     sound: { gain: 0.5, noise: 0.03, seed: 300 + i },
-  });
-});
+  };
+  if (c.qr) await qrClip(join(goDir, `GX01${pad(i + 1, 4)}.MP4`), meta);
+  else video(join(goDir, `GX01${pad(i + 1, 4)}.MP4`), { ...meta, label: `Камера 3 · GX01${pad(i + 1, 4)}`, hue: 240 });
+}
 
 // A7 III с неверным поясом (UTC+5 вместо +3) и часами на 12 мин 40 с позади — как бывает на реальных съёмках.
-sonyCamera(join(OUT, 'Камера 4 — A7 III'), [
+await sonyCamera(join(OUT, 'Камера 4 — A7 III'), [
   { wall: w(15, 4, 12.3), dur: 50 },
   { wall: w(15, 13, 5.7), dur: 65 },
+  { wall: w(15, 23, 2.61), dur: 8, qr: true },
 ], { model: 'ILCE-7M3', lens: 'FE 35mm F1.8', tcOffset: w(4, 41, 7.2), hue: 300, label: 'Камера 4', sound: { gain: 0.7, noise: 0.015, seed: 400 }, clockShift: -(12 * 60 + 40), tzMin: 5 * 60 });
 
 // Рекордер: BWF с меткой времени и датой.
 const zoomDir = join(OUT, 'Рекордер — Zoom H6');
 mkdirSync(zoomDir, { recursive: true });
 [{ wall: w(15, 0, 0), dur: 120 }, { wall: w(15, 10, 0), dur: 180 }].forEach((c, i) => {
+  truth.push({ file: `Рекордер — Zoom H6/ZOOM${pad(i + 1, 4)}.WAV`, epoch: wallToEpoch(c.wall) });
   writeWav(join(zoomDir, `ZOOM${pad(i + 1, 4)}.WAV`), soundAt(c.wall, c.dur, { gain: 1, noise: 0.004, seed: 500 + i }), [
     '-write_bext', '1',
     '-metadata', `time_reference=${c.wall * SR}`, '-metadata', `origination_date=${DAY}`,
@@ -204,4 +282,5 @@ mkdirSync(zoomDir, { recursive: true });
   ]);
 });
 
+writeFileSync(join(OUT, 'truth.json'), JSON.stringify(truth, null, 1));
 console.log(`Демо-съёмка готова: ${OUT}`);

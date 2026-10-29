@@ -3,12 +3,15 @@ import type { Dispatch } from 'react';
 import type { Issue, Placement } from '../core/types.ts';
 import { previewPlacements, runSync } from '../core/sync.ts';
 import { heardCameras, refineByAudio } from '../core/audioSync.ts';
+import { controlCorrections } from '../core/qrSync.ts';
+import type { ControlFrame, QrResult } from '../core/qrSync.ts';
 import { defaultTimelineRate } from '../core/fcp7.ts';
 import { rateValue } from '../core/timecode.ts';
 import { pluralRu } from '../core/format.ts';
 import { api } from './api.ts';
 import { canExport, initialState, isScanning, needsSync, newCamera, reducer } from './state.ts';
-import type { Action, State, SyncMode } from './state.ts';
+import type { Action, ControlInfo, State, SyncMode } from './state.ts';
+import { QrScreen } from './components/QrScreen.tsx';
 import { SyncMenu } from './components/SyncMenu.tsx';
 import { requestWaveforms } from './waveforms.ts';
 import { IconExport, IconLock, IconSync, IconX } from './icons.tsx';
@@ -33,9 +36,19 @@ interface Ctx {
 const MODE_KEY = 'timesyncam.syncMode';
 function savedMode(): SyncMode {
   try {
-    return localStorage.getItem(MODE_KEY) === 'timecode' ? 'timecode' : 'audio';
+    const v = localStorage.getItem(MODE_KEY);
+    return v === 'timecode' || v === 'control' ? v : 'audio';
   } catch {
     return 'audio';
+  }
+}
+
+export const PREVIEW_KEY = 'timesyncam.preview';
+function savedPreview(): boolean {
+  try {
+    return localStorage.getItem(PREVIEW_KEY) !== '0';
+  } catch {
+    return true;
   }
 }
 
@@ -47,9 +60,10 @@ export function useApp(): Ctx {
 }
 
 let scanIssueSeq = 0;
+let controlIssueSeq = 0;
 
 export function App() {
-  const [state, dispatch] = useReducer(reducer, initialState, (s) => ({ ...s, syncMode: savedMode() }));
+  const [state, dispatch] = useReducer(reducer, initialState, (s) => ({ ...s, syncMode: savedMode(), previewOn: savedPreview() }));
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -59,7 +73,7 @@ export function App() {
     [synced, state.sync, state.cameras],
   );
   const issues = useMemo(() => {
-    const list = [...state.scanIssues, ...(synced && state.sync ? state.sync.issues : []), ...(synced && state.audio ? state.audio.issues : [])];
+    const list = [...state.scanIssues, ...(synced && state.sync ? state.sync.issues : []), ...(synced && state.audio ? state.audio.issues : []), ...(synced ? state.controlIssues : [])];
     if (state.tools && !state.tools.ffprobe) {
       list.unshift({
         id: 'tools', severity: 'error', cameraId: null,
@@ -70,7 +84,7 @@ export function App() {
     }
     const order = { error: 0, warning: 1, info: 2 };
     return list.sort((a, b) => order[a.severity] - order[b.severity]);
-  }, [state.scanIssues, state.sync, state.audio, synced, state.tools]);
+  }, [state.scanIssues, state.sync, state.audio, state.controlIssues, synced, state.tools]);
   const fps = useMemo(() => rateValue(defaultTimelineRate(state.cameras)), [state.cameras]);
 
   const addFolders = useCallback(async (cameraId: string | null, folders: string[]) => {
@@ -117,10 +131,11 @@ export function App() {
     }
   }, []);
 
-  // Синхронизация: сначала тайм-код и часы, затем — если выбрано — сверка по звуку.
+  // Синхронизация: тайм-код и часы; в режиме с контрольным кадром — сначала экран синхронизации;
+  // затем — если выбрано — сверка по звуку.
   const doSync = useCallback(async (mode?: SyncMode) => {
     const s = stateRef.current;
-    if (isScanning(s) || s.audioRun) return;
+    if (isScanning(s) || s.audioRun || s.qrRun) return;
     const chosen = mode ?? s.syncMode;
     dispatch({ type: 'sync-menu', open: false });
     if (mode) {
@@ -135,27 +150,85 @@ export function App() {
     const version = s.version;
     const coarse = runSync(cameras);
     dispatch({ type: 'synced', result: coarse, fit: true });
-    if (chosen !== 'audio' || stateRef.current.tools?.ffmpeg === false) {
+    const noFfmpeg = stateRef.current.tools?.ffmpeg === false;
+
+    // Контрольные кадры: читаем экран синхронизации.
+    let pre: Record<string, number> = {};
+    let fixed = new Set<string>();
+    const frames = Object.values(s.controlFrames).filter((f) => cameras.some((c) => c.id === f.cameraId && c.clips.some((x) => x.id === f.clipId)));
+    if (chosen === 'control' && frames.length && !noFfmpeg) {
+      dispatch({ type: 'qr-start', total: frames.length });
+      const found: { frame: ControlFrame; result: QrResult }[] = [];
+      const qrIssues: Issue[] = [];
+      for (const [i, f] of frames.entries()) {
+        const cam = cameras.find((c) => c.id === f.cameraId)!;
+        const clip = cam.clips.find((c) => c.id === f.clipId)!;
+        const key = `${clip.id}@${f.localSec.toFixed(2)}`;
+        let result = stateRef.current.qrResults[key];
+        if (result === undefined && clip.rate && clip.width && clip.height) {
+          result = (await api.scanQr(clip.path, f.localSec, rateValue(clip.rate), clip.width, clip.height, clip.durationSec))?.result ?? null;
+          dispatch({ type: 'qr-result', key, result });
+        }
+        dispatch({ type: 'qr-progress', done: i + 1 });
+        controlIssueSeq += 1;
+        if (!result) {
+          qrIssues.push({
+            id: `q${controlIssueSeq}`, severity: 'warning', cameraId: cam.id, clipId: clip.id,
+            title: `«${cam.name}»: в контрольном кадре ${clip.name} экран синхронизации не найден`,
+            details: 'Проверьте, что QR-код целиком в кадре, не смазан и без бликов, и что отмечен кадр, где экран виден. Камера осталась по тайм-коду и звуку.',
+            actions: [{ kind: 'show-clip', clipId: clip.id }, { kind: 'open-faq', anchor: 'qr-screen' }],
+          });
+          continue;
+        }
+        found.push({ frame: f, result });
+        if (result.transitions === 0) {
+          qrIssues.push({
+            id: `q${controlIssueSeq}`, severity: 'info', cameraId: cam.id, clipId: clip.id,
+            title: `«${cam.name}»: экран синхронизации снят меньше секунды`,
+            details: 'Код прочитан, но его смены не видно, поэтому точность — около полсекунды. Снимайте экран 5–10 секунд — тогда точность будет до четверти кадра.',
+            actions: [{ kind: 'open-faq', anchor: 'qr-screen' }],
+          });
+        }
+      }
+      const clockOnly = new Set(coarse.cameras.filter((c) => c.timeSource === 'clock').map((c) => c.cameraId));
+      const outcome = controlCorrections(found, coarse.placements, clockOnly);
+      pre = outcome.pre;
+      fixed = outcome.fixed;
+      const info: Record<string, ControlInfo> = {};
+      for (const [camId, c] of outcome.cameras) info[camId] = c;
+      dispatch({ type: 'qr-done', control: info, issues: qrIssues, pre, fixed: [...fixed] });
+    } else {
+      dispatch({ type: 'qr-done', control: null, issues: [], pre: {}, fixed: [] });
+    }
+
+    if (chosen === 'timecode' || noFfmpeg) {
       dispatch({ type: 'audio-done', result: null });
+      if (Object.keys(pre).length) dispatch({ type: 'synced', result: runSync(cameras, pre, fixed), fit: true });
       return;
     }
     dispatch({ type: 'audio-start' });
     try {
-      const audio = await refineByAudio(cameras, coarse, (clip, start, dur) => api.audioEnvelope(clip.path, start, dur), {
+      const audio = await refineByAudio(cameras, coarse, {
+        features: (clip, start, dur) => api.audioFeatures(clip.path, start, dur),
+        samples: (clip, start, dur, ch) => api.audioSamples(clip.path, start, dur, ch),
+      }, {
         searchSec: 10,
         maxAnchors: 8,
         isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
         onProgress: (done, total) => dispatch({ type: 'audio-progress', done, total }),
+        pre,
+        fixed,
       });
       if (stateRef.current.version !== version) {
         dispatch({ type: 'audio-done', result: null });
         return;
       }
       dispatch({ type: 'audio-done', result: audio });
-      // Звук мог передвинуть камеры на часы — заново показываем всю съёмку.
-      dispatch({ type: 'synced', result: runSync(stateRef.current.cameras, audio.corrections, heardCameras(audio)), fit: true });
+      // Звук и контрольные кадры могли передвинуть камеры на часы — заново показываем всю съёмку.
+      dispatch({ type: 'synced', result: runSync(stateRef.current.cameras, audio.corrections, new Set([...heardCameras(audio), ...fixed])), fit: true });
     } catch {
       dispatch({ type: 'audio-done', result: null });
+      if (Object.keys(pre).length) dispatch({ type: 'synced', result: runSync(cameras, pre, fixed), fit: true });
       dispatch({ type: 'toast', text: 'Сверить по звуку не получилось — камеры остались по тайм-коду и часам.' });
     }
   }, []);
@@ -164,8 +237,9 @@ export function App() {
   const shiftKey = state.cameras.map((c) => `${c.id}:${c.manualShiftSec}:${c.excludedClipIds.length}`).join('|');
   useEffect(() => {
     const s = stateRef.current;
-    if (s.sync && s.syncedVersion === s.version && !s.audioRun) {
-      dispatch({ type: 'synced', result: runSync(s.cameras, s.audio?.corrections ?? {}, heardCameras(s.audio)), fit: false });
+    if (s.sync && s.syncedVersion === s.version && !s.audioRun && !s.qrRun) {
+      const heard = new Set([...heardCameras(s.audio), ...s.controlFixed]);
+      dispatch({ type: 'synced', result: runSync(s.cameras, s.audio?.corrections ?? s.controlPre, heard), fit: false });
     }
   }, [shiftKey]);
 
@@ -173,12 +247,22 @@ export function App() {
     const off = api.onScanProgress((p) => dispatch({ type: 'scan-progress', cameraId: p.scanId, done: p.done, total: p.total }));
     void api.tools().then((tools) => dispatch({ type: 'tools', tools }));
     // Автозагрузка папок из переменных окружения — для проверки сборки без ручных действий.
-    api.onAutoload(async ({ folders, sync, tab, at, menu, view }) => {
+    api.onAutoload(async ({ folders, sync, tab, at, menu, view, control, mode, qr, preview }) => {
+      if (preview === '0') dispatch({ type: 'preview', on: false });
       const first = stateRef.current.cameras[0];
       for (let i = 0; i < folders.length; i++) {
         await addFolders(i === 0 && first.clips.length === 0 ? first.id : null, [folders[i]]);
       }
-      if (sync) setTimeout(() => void doSync(), 50);
+      // Контрольные кадры для проверки: «номер камеры:имя клипа@секунда;…».
+      for (const spec of (control ?? '').split(';')) {
+        const m = /^(\d+):([^@]+)@([\d.]+)$/.exec(spec.trim());
+        const cam = m ? stateRef.current.cameras[Number(m[1]) - 1] : undefined;
+        const clip = cam?.clips.find((c) => c.name === m![2]);
+        if (cam && clip) dispatch({ type: 'set-control', frame: { cameraId: cam.id, clipId: clip.id, localSec: Number(m![3]) } });
+      }
+      if (qr) dispatch({ type: 'qr-screen', open: true });
+      const syncMode = mode === 'audio' || mode === 'timecode' || mode === 'control' ? mode : undefined;
+      if (sync) setTimeout(() => void doSync(syncMode), 50);
       if (tab === 'errors' || tab === 'faq') setTimeout(() => dispatch({ type: 'tab', tab }), 100);
       if (menu) setTimeout(() => dispatch({ type: 'sync-menu', open: true }), 200);
       const m = at ? /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(at) : null;
@@ -267,6 +351,8 @@ export function App() {
 
   const exportTitle = scanning
     ? 'Дождитесь, пока программа дочитает клипы'
+    : state.qrRun
+      ? 'Дождитесь, пока программа прочитает экран синхронизации'
     : state.audioRun
       ? 'Дождитесь окончания сверки по звуку'
     : !state.sync
@@ -290,13 +376,15 @@ export function App() {
           <span className="spacer" />
           <div className="sync-wrap">
             <button
-              className={`btn ${wantSync && !state.audioRun ? 'primary pulse' : ''} ${scanning || state.audioRun ? 'locked' : ''}`}
-              onClick={() => !scanning && !state.audioRun && dispatch({ type: 'sync-menu', open: !state.syncMenuOpen })}
+              className={`btn ${wantSync && !state.audioRun && !state.qrRun ? 'primary pulse' : ''} ${scanning || state.audioRun || state.qrRun ? 'locked' : ''}`}
+              onClick={() => !scanning && !state.audioRun && !state.qrRun && dispatch({ type: 'sync-menu', open: !state.syncMenuOpen })}
               title={scanning ? 'Дождитесь, пока программа дочитает клипы' : wantSync ? 'Есть новые клипы — разложите их по времени' : 'Пересчитать синхронизацию'}
             >
-              <IconSync className={`icon ${state.audioRun ? 'spin' : ''}`} />
+              <IconSync className={`icon ${state.audioRun || state.qrRun ? 'spin' : ''}`} />
               {scanning
                 ? 'Читаю клипы…'
+                : state.qrRun
+                  ? `Читаю экран синхронизации ${state.qrRun.done} из ${state.qrRun.total}`
                 : state.audioRun
                   ? `Сверяю звук${state.audioRun.total ? ` ${state.audioRun.done} из ${state.audioRun.total}` : '…'}`
                   : 'Синхронизировать'}
@@ -316,6 +404,7 @@ export function App() {
         {state.tab === 'errors' && <ErrorsPage />}
         {state.tab === 'faq' && <FaqPage />}
         {state.exportOpen && <ExportDialog />}
+        {state.qrScreenOpen && <QrScreen />}
 
         <div className="toasts">
           {state.toasts.map((t) => (

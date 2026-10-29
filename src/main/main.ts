@@ -5,7 +5,8 @@ import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { scanFolder } from './scan.ts';
 import { grabFrame, toolsAvailable } from './ffmpeg.ts';
-import { audioEnvelope, audioWaveform } from './audio.ts';
+import { audioFeatures, audioSamples, audioWaveform } from './audio.ts';
+import { scanQr } from './qr.ts';
 
 // Встроенный плеер получает доступ только к файлам, которые программа сама нашла при сканировании.
 const allowedMedia = new Set<string>();
@@ -80,6 +81,10 @@ function createWindow(): void {
         at: process.env.SYNC_PLAYHEAD,
         menu: process.env.SYNC_MENU === '1',
         view: process.env.SYNC_VIEW,
+        control: process.env.SYNC_CONTROL,
+        mode: process.env.SYNC_MODE,
+        qr: process.env.SYNC_QR === '1',
+        preview: process.env.SYNC_PREVIEW,
       });
     }
     const shot = process.env.SYNC_SHOT;
@@ -122,9 +127,19 @@ ipcMain.handle('media:grab', async (_e, path: string, seconds: number) => {
   return grabFrame(path, seconds);
 });
 
-ipcMain.handle('audio:envelope', async (_e, path: string, startSec: number, durSec: number) => {
+ipcMain.handle('audio:features', async (_e, path: string, startSec: number, durSec: number) => {
   if (!allowedMedia.has(path)) return null;
-  return audioEnvelope(path, startSec, durSec);
+  return audioFeatures(path, startSec, durSec);
+});
+
+ipcMain.handle('audio:samples', async (_e, path: string, startSec: number, durSec: number, channel: number) => {
+  if (!allowedMedia.has(path)) return null;
+  return audioSamples(path, startSec, durSec, channel);
+});
+
+ipcMain.handle('qr:scan', async (_e, path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) => {
+  if (!allowedMedia.has(path)) return null;
+  return scanQr(path, localSec, fps, width, height, durationSec);
 });
 
 ipcMain.handle('audio:waveform', async (_e, path: string) => {
@@ -136,7 +151,9 @@ ipcMain.handle('export:save', async (_e, defaultName: string, content: string) =
   const r = await dialog.showSaveDialog(win!, {
     title: 'Сохранить таймлинию',
     defaultPath: defaultName,
-    filters: [{ name: 'Final Cut Pro 7 XML (Premiere Pro, DaVinci Resolve)', extensions: ['xml'] }],
+    filters: defaultName.endsWith('.fcpxml')
+      ? [{ name: 'FCPXML (DaVinci Resolve)', extensions: ['fcpxml'] }]
+      : [{ name: 'Final Cut Pro 7 XML (Premiere Pro, DaVinci Resolve)', extensions: ['xml'] }],
   });
   if (r.canceled || !r.filePath) return null;
   await writeFile(r.filePath, content, 'utf8');

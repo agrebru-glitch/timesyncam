@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Camera, ClipMeta, Placement } from '../../core/types.ts';
 import { formatDate, formatDurationHuman, formatTimecodeAt } from '../../core/format.ts';
-import { useApp } from '../App.tsx';
+import { PREVIEW_KEY, useApp } from '../App.tsx';
 import { api, cameraColor, mediaUrl } from '../api.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
@@ -182,6 +182,14 @@ export function Viewer() {
     const target = dir > 0 ? starts.find((s) => s > t + 0.01) : [...starts].reverse().find((s) => s < t - 0.01);
     if (target !== undefined) dispatch({ type: 'playhead', at: target });
   };
+  const setPreview = (on: boolean) => {
+    dispatch({ type: 'preview', on });
+    try {
+      localStorage.setItem(PREVIEW_KEY, on ? '1' : '0');
+    } catch {
+      // запоминать необязательно
+    }
+  };
   const step = (dir: 1 | -1) => {
     if (state.playhead === null) return;
     dispatch({ type: 'play', playing: false });
@@ -197,6 +205,14 @@ export function Viewer() {
             <button className={single ? 'on' : ''} onClick={() => dispatch({ type: 'view-mode', mode: 'single' })}>Одна камера</button>
           </div>
         )}
+        <button
+          className={`btn small ${state.previewOn ? '' : 'ghost'}`}
+          aria-pressed={state.previewOn}
+          onClick={() => setPreview(!state.previewOn)}
+          title={state.previewOn ? 'Выключить показ видео — программа станет легче на слабом компьютере' : 'Включить показ видео'}
+        >
+          {state.previewOn ? 'Предпросмотр вкл.' : 'Предпросмотр выкл.'}
+        </button>
         <span className="spacer" />
         {state.playhead !== null && (
           <>
@@ -205,9 +221,19 @@ export function Viewer() {
           </>
         )}
       </div>
-      <div className="tiles" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
-        {shown.map((cam) => <Tile key={cam.id} cam={cam} index={cams.indexOf(cam)} big={single && cams.length > 1} />)}
-      </div>
+      {state.previewOn ? (
+        <div className="tiles" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))` }}>
+          {shown.map((cam) => <Tile key={cam.id} cam={cam} index={cams.indexOf(cam)} big={single && cams.length > 1} />)}
+        </div>
+      ) : (
+        <div className="tiles preview-off">
+          <div className="preview-off-box">
+            <b>Предпросмотр выключен</b>
+            <span>Видео не читается и не проигрывается — синхронизация и экспорт работают как обычно, курсор по таймлинии ходит.</span>
+            <button className="btn small" onClick={() => setPreview(true)}>Включить</button>
+          </div>
+        </div>
+      )}
       <div className="transport">
         <button className="round" aria-label="Предыдущий клип" title="Предыдущий клип" onClick={() => jump(-1)}><IconPrev /></button>
         <button className="round" aria-label="Кадр назад" title="Кадр назад (←)" onClick={() => step(-1)}><IconFrameBack /></button>

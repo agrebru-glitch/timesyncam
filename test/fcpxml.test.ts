@@ -1,0 +1,80 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { runSync } from '../src/core/sync.ts';
+import { buildFcpxml } from '../src/core/fcpxml.ts';
+import { camera, clip, T16 } from './fixtures.ts';
+
+// «N/Ds» → секунды.
+const sec = (v: string) => {
+  const m = /^(-?\d+)(?:\/(\d+))?s$/.exec(v)!;
+  return Number(m[1]) / Number(m[2] ?? 1);
+};
+const attr = (xml: string, tag: string, name: string) => [...xml.matchAll(new RegExp(`<${tag} [^>]*name="${name.replace('.', '\\.')}"[^>]*>`, 'g'))].map((m) => m[0]);
+const get = (el: string, a: string) => new RegExp(` ${a}="([^"]+)"`).exec(el)![1];
+
+function scene() {
+  const video = clip({ start: T16 + 181, tcSeconds: 0 });
+  video.path = 'D:\\Съёмка 27_10\\C0001.MP4';
+  video.name = 'C0001.MP4';
+  const wav = clip({ start: T16 + 170 });
+  Object.assign(wav, {
+    name: 'ZOOM0001.WAV', path: 'D:\\Звук\\ZOOM0001.WAV', hasVideo: false, rate: null, frames: null, width: null, height: null,
+    durationSec: 60, recordedSec: 60, audioChannels: 2, audioSampleRate: 48000,
+    tc: { text: '15:16:40:12', seconds: 55000.5, countRate: 25, drop: false, source: 'bwf' },
+  });
+  const cams = [camera('Камера 1', [video]), camera('Рекордер', [wav])];
+  const r = runSync(cams);
+  // Точные места после сверки по звуку — с долями кадра.
+  const exact: Record<string, number> = { [video.id]: T16 + 181.0731, [wav.id]: T16 + 172.41177 };
+  const placements = r.placements.map((p) => ({ ...p, start: exact[p.clipId], end: exact[p.clipId] + (p.end - p.start) }));
+  return { cams, r: { ...r, placements, start: Math.min(...placements.map((p) => p.start)) }, video, wav };
+}
+
+test('FCPXML: звук рекордера встаёт на таймлинию сэмпл в сэмпл', () => {
+  const { cams, r, wav } = scene();
+  const xml = buildFcpxml(cams, r, { name: 'Тест & проверка', rate: { num: 25, den: 1 }, width: 3840, height: 2160 });
+  const tz = r.displayTzOffsetMin * 60;
+  const wallOf = (epoch: number) => (((epoch + tz) % 86400) + 86400) % 86400;
+
+  const [clipEl] = attr(xml, 'asset-clip', 'ZOOM0001.WAV');
+  const [assetEl] = attr(xml, 'asset', 'ZOOM0001.WAV');
+  assert.equal(get(clipEl, 'lane'), '-1');
+  const offset = sec(get(clipEl, 'offset'));
+  assert.ok(Number.isInteger(Math.round(offset * 25 * 1e6) / 1e6), 'клип стоит на кадре таймлинии');
+  const trim = sec(get(clipEl, 'start')) - sec(get(assetEl, 'start'));
+  assert.ok(trim >= 0 && trim < 1 / 25, `срез ${trim}`);
+  // Нулевой сэмпл файла на таймлинии — там, где его нашла синхронизация.
+  const zero = offset - trim;
+  const expected = wallOf(r.placements.find((p) => p.clipId === wav.id)!.start);
+  assert.ok(Math.abs(zero - expected) <= 0.5 / 48000 + 1e-9, `ошибка ${((zero - expected) * 1e6).toFixed(1)} мкс`);
+  // Начало файла — по BWF, в сэмплах.
+  assert.equal(sec(get(assetEl, 'start')), 55000.5);
+});
+
+test('FCPXML: видео на кадре, тайм-код таймлинии = время суток, путь с кириллицей', () => {
+  const { cams, r, video } = scene();
+  const xml = buildFcpxml(cams, r, { name: 'Тест & проверка', rate: { num: 25, den: 1 }, width: 3840, height: 2160 });
+  const tz = r.displayTzOffsetMin * 60;
+  const wallOf = (epoch: number) => (((epoch + tz) % 86400) + 86400) % 86400;
+  assert.match(xml, /<fcpxml version="1\.10">/);
+  assert.match(xml, /Тест &amp; проверка/);
+  assert.match(xml, /src="file:\/\/\/D:\/%D0%A1%D1%8A%D1%91%D0%BC%D0%BA%D0%B0%2027_10\/C0001\.MP4"/);
+  const tcStart = sec(/tcStart="([^"]+)"/.exec(xml)![1]);
+  assert.equal(tcStart % 60, 0, 'таймлиния начинается с ровной минуты');
+  const [clipEl] = attr(xml, 'asset-clip', 'C0001.MP4');
+  assert.equal(get(clipEl, 'lane'), '1');
+  const offset = sec(get(clipEl, 'offset'));
+  const expected = wallOf(r.placements.find((p) => p.clipId === video.id)!.start);
+  assert.ok(Math.abs(offset - expected) <= 0.5 / 25 + 1e-9);
+  assert.equal(get(clipEl, 'duration'), '10s');
+});
+
+test('FCPXML: 29,97 — время в долях 1001/30000', () => {
+  const { cams, r } = scene();
+  const xml = buildFcpxml(cams, r, { name: 'NTSC', rate: { num: 30000, den: 1001 }, width: 1920, height: 1080 });
+  assert.match(xml, /<format id="r0" frameDuration="1001\/30000s"/);
+  for (const m of xml.matchAll(/<asset-clip [^>]*offset="([^"]+)"/g)) {
+    const frames = (sec(m[1]) * 30000) / 1001;
+    assert.ok(Math.abs(frames - Math.round(frames)) < 1e-6, m[1]);
+  }
+});

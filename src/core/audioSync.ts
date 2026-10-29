@@ -1,176 +1,45 @@
 // Сверка камер по звуку — вспомогательный шаг после раскладки по тайм-коду и часам.
-// Сравниваются не сами волны, а «атаки» звука (хлопки, удары, начала слов): так совпадают
-// и встроенный микрофон камеры, и петличка, и рекордер, даже при разной громкости.
+// Два этапа: грубый — по многополосному отпечатку атак звука (хлопки, удары, начала слов),
+// точный — по самой волне на 48 кГц (GCC-PHAT). Канал и полосы частот программа выбирает сама.
 import type { Camera, ClipMeta, Issue, Placement, SyncResult, TimeSource } from './types.ts';
 import { formatClockTime, formatDurationHuman } from './format.ts';
+import { FEAT_RATE, FINE_SR, gccPhat, xcorrFeatures } from './audioFeatures.ts';
+import type { Features } from './audioFeatures.ts';
 
-export const ENV_RATE = 100; // кадров огибающей в секунду: шаг 10 мс
-export const AUDIO_SAMPLE_RATE = 8000;
+export const ENV_RATE = FEAT_RATE; // кадров отпечатка в секунду: шаг 10 мс
+export const AUDIO_SAMPLE_RATE = 8000; // для волны на таймлинии
 
 const MIN_OVERLAP = 6; // секунд общего звука, меньше — не сравниваем
 const MAX_WINDOW = 40; // секунд звука в одной точке
-const PROBE_LEN = 20; // секунд звука в одной пробе широкого поиска
-const ACCEPT_SCORE = 0.25;
-const ACCEPT_RATIO = 1.3;
-const STRONG_SCORE = 0.45; // настолько уверенное совпадение может сменить поправку без подтверждения
-const STRONG_RATIO = 1.8;
+const PROBE_LEN = 12; // секунд звука в одной пробе широкого поиска: общий звук бывает совсем коротким
+const ACCEPT_SCORE = 0.45;
+const ACCEPT_RATIO = 1.5;
+const STRONG_SCORE = 0.6; // настолько уверенное совпадение может сменить поправку без подтверждения
+const STRONG_RATIO = 2;
+const CLEAR_RATIO = 2; // такой отрыв от ложных пиков у случайного совпадения почти не бывает
+const VERY_CLEAR_RATIO = 3;
+
+// Совпадение настоящее, когда оно заметно выше всех остальных сдвигов. Высокий балл без отрыва
+// бывает и случайно — у коротких клипов с несколькими хлопками.
+const isAccepted = (m: { score: number; ratio: number }) => m.ratio >= CLEAR_RATIO || (m.score >= ACCEPT_SCORE && m.ratio >= ACCEPT_RATIO);
+const isStrong = (m: { score: number; ratio: number }) => m.ratio >= VERY_CLEAR_RATIO || (m.score >= STRONG_SCORE && m.ratio >= STRONG_RATIO);
 const CONSISTENT = 0.12; // ±3 кадра при 25 к/с: точка согласна с текущей поправкой
 const NEIGHBOUR = 0.15; // пик в пределах 150 мс от лучшего не считается конкурентом
-
-// Огибающая атак: энергия по 10 мс в логарифме, берём только рост, затем приводим к нулевому среднему.
-export function envelope(samples: Float32Array, sampleRate: number): Float32Array {
-  const hop = Math.round(sampleRate / ENV_RATE);
-  const n = Math.floor(samples.length / hop);
-  const energy = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    let s = 0;
-    for (let k = i * hop; k < (i + 1) * hop; k++) s += samples[k] * samples[k];
-    energy[i] = Math.log(1e-7 + s / hop);
-  }
-  const onset = new Float32Array(n);
-  for (let i = 1; i < n; i++) onset[i] = Math.max(0, energy[i] - energy[i - 1]);
-  let mean = 0;
-  for (let i = 0; i < n; i++) mean += onset[i];
-  mean /= n || 1;
-  let sd = 0;
-  for (let i = 0; i < n; i++) sd += (onset[i] - mean) ** 2;
-  sd = Math.sqrt(sd / (n || 1)) || 1;
-  for (let i = 0; i < n; i++) onset[i] = (onset[i] - mean) / sd;
-  return onset;
-}
+const FINE_LEN = 4; // секунд волны для точной сверки
+const FINE_RANGE = 0.03; // точная сверка ищет в пределах ±30 мс от грубой
+const FINE_CONFIDENCE = 10; // пик GCC-PHAT во столько раз выше фона — доверяем
 
 export interface Match {
-  lag: number; // в кадрах огибающей, с долями
+  lag: number; // в кадрах отпечатка, с долями
   score: number; // нормированная корреляция в лучшей точке
   ratio: number; // во сколько раз лучший пик выше ближайшего соперника
 }
 
-// target[i] при нулевом сдвиге соответствует ref[i + refOffset]. Ищем сдвиг в пределах ±maxLag.
-export function correlate(target: Float32Array, ref: Float32Array, refOffset: number, maxLag: number): Match | null {
-  const scores = new Float64Array(2 * maxLag + 1);
-  let best = -Infinity;
-  let bestIdx = -1;
-  for (let l = -maxLag; l <= maxLag; l++) {
-    let sab = 0;
-    let saa = 0;
-    let sbb = 0;
-    let count = 0;
-    for (let i = 0; i < target.length; i++) {
-      const j = i + refOffset + l;
-      if (j < 0 || j >= ref.length) continue;
-      const a = target[i];
-      const b = ref[j];
-      sab += a * b;
-      saa += a * a;
-      sbb += b * b;
-      count++;
-    }
-    const s = count > target.length * 0.6 && saa > 0 && sbb > 0 ? sab / Math.sqrt(saa * sbb) : -1;
-    scores[l + maxLag] = s;
-    if (s > best) {
-      best = s;
-      bestIdx = l + maxLag;
-    }
-  }
-  if (bestIdx < 0 || best <= 0) return null;
-  const guard = Math.round(NEIGHBOUR * ENV_RATE);
-  let rival = 1e-6;
-  for (let k = 0; k < scores.length; k++) {
-    if (Math.abs(k - bestIdx) > guard && scores[k] > rival) rival = scores[k];
-  }
-  // Уточнение между кадрами огибающей по параболе.
-  let frac = 0;
-  if (bestIdx > 0 && bestIdx < scores.length - 1) {
-    const y0 = scores[bestIdx - 1];
-    const y1 = scores[bestIdx];
-    const y2 = scores[bestIdx + 1];
-    const d = y0 - 2 * y1 + y2;
-    if (d < 0) frac = Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / d));
-  }
-  return { lag: bestIdx - maxLag + frac, score: best, ratio: best / rival };
-}
-
-// Быстрое преобразование Фурье (по месту, длина — степень двойки).
-function fft(re: Float64Array, im: Float64Array, inverse: boolean): void {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) {
-      [re[i], re[j]] = [re[j], re[i]];
-      [im[i], im[j]] = [im[j], im[i]];
-    }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const ang = ((inverse ? 2 : -2) * Math.PI) / len;
-    const wr = Math.cos(ang);
-    const wi = Math.sin(ang);
-    for (let i = 0; i < n; i += len) {
-      let cr = 1;
-      let ci = 0;
-      for (let k = 0; k < len / 2; k++) {
-        const ar = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
-        const ai = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
-        re[i + k + len / 2] = re[i + k] - ar;
-        im[i + k + len / 2] = im[i + k] - ai;
-        re[i + k] += ar;
-        im[i + k] += ai;
-        const t = cr * wr - ci * wi;
-        ci = cr * wi + ci * wr;
-        cr = t;
-      }
-    }
-  }
-  if (inverse) for (let i = 0; i < n; i++) {
-    re[i] /= n;
-    im[i] /= n;
-  }
-}
-
-// Поиск куска target во всей записи ref: target[0] совпадает с ref[offset]. Для случая, когда часы камеры
-// сбиты на минуты или часы и рядом по времени общего звука нет.
-export function findInside(target: Float32Array, ref: Float32Array): (Match & { offset: number }) | null {
-  const n = target.length;
-  const m = ref.length;
-  if (n < MIN_OVERLAP * ENV_RATE || m < MIN_OVERLAP * ENV_RATE) return null;
-  let size = 1;
-  while (size < n + m) size <<= 1;
-  const ar = new Float64Array(size);
-  const ai = new Float64Array(size);
-  const br = new Float64Array(size);
-  const bi = new Float64Array(size);
-  for (let i = 0; i < m; i++) ar[i] = ref[i];
-  for (let i = 0; i < n; i++) br[i] = target[i];
-  fft(ar, ai, false);
-  fft(br, bi, false);
-  for (let i = 0; i < size; i++) {
-    const r = ar[i] * br[i] + ai[i] * bi[i];
-    const im = ai[i] * br[i] - ar[i] * bi[i];
-    ar[i] = r;
-    ai[i] = im;
-  }
-  fft(ar, ai, true);
-  // ar[k] = Σ ref[i + k]·target[i]; отрицательные сдвиги лежат в конце массива.
-  const p2r = new Float64Array(m + 1);
-  for (let i = 0; i < m; i++) p2r[i + 1] = p2r[i] + ref[i] * ref[i];
-  const p2t = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) p2t[i + 1] = p2t[i] + target[i] * target[i];
-  const minOverlap = Math.max(MIN_OVERLAP * ENV_RATE, Math.ceil(Math.min(n, m) * 0.6));
-  if (n + m - 2 * minOverlap < 0) return null;
-  const lo = -(n - minOverlap);
-  const hi = m - minOverlap;
-  const scores = new Float64Array(hi - lo + 1);
+function bestOf(table: { lo: number; scores: Float64Array }, from: number, to: number): Match | null {
   let best = -Infinity;
   let bestK = 0;
-  for (let k = lo; k <= hi; k++) {
-    const raw = ar[k >= 0 ? k : size + k];
-    const i0 = Math.max(0, -k);
-    const i1 = Math.min(n, m - k);
-    const st = p2t[i1] - p2t[i0];
-    const sr = p2r[i1 + k] - p2r[i0 + k];
-    const s = st > 0 && sr > 0 ? raw / Math.sqrt(st * sr) : -1;
-    scores[k - lo] = s;
+  for (let k = Math.max(from, table.lo); k <= Math.min(to, table.lo + table.scores.length - 1); k++) {
+    const s = table.scores[k - table.lo];
     if (s > best) {
       best = s;
       bestK = k;
@@ -179,15 +48,45 @@ export function findInside(target: Float32Array, ref: Float32Array): (Match & { 
   if (best <= 0) return null;
   const guard = Math.round(NEIGHBOUR * ENV_RATE);
   let rival = 1e-6;
-  for (let k = lo; k <= hi; k++) if (Math.abs(k - bestK) > guard && scores[k - lo] > rival) rival = scores[k - lo];
-  return { offset: bestK, lag: bestK, score: best, ratio: best / rival };
+  for (let k = Math.max(from, table.lo); k <= Math.min(to, table.lo + table.scores.length - 1); k++) {
+    if (Math.abs(k - bestK) > guard && table.scores[k - table.lo] > rival) rival = table.scores[k - table.lo];
+  }
+  let frac = 0;
+  const i = bestK - table.lo;
+  if (i > 0 && i < table.scores.length - 1) {
+    const y0 = table.scores[i - 1];
+    const y1 = table.scores[i];
+    const y2 = table.scores[i + 1];
+    const d = y0 - 2 * y1 + y2;
+    if (d < 0) frac = Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / d));
+  }
+  return { lag: bestK + frac, score: best, ratio: best / rival };
+}
+
+// target[i] при нулевом сдвиге соответствует ref[i + refOffset]. Ищем сдвиг в пределах ±maxLag.
+export function correlate(target: Features, ref: Features, refOffset: number, maxLag: number): Match | null {
+  const table = xcorrFeatures(target, ref, Math.ceil(target.frames * 0.6));
+  if (!table) return null;
+  const m = bestOf(table, refOffset - maxLag, refOffset + maxLag);
+  return m ? { ...m, lag: m.lag - refOffset } : null;
+}
+
+// Поиск куска target во всей записи ref: target[0] совпадает с ref[offset]. Для случая, когда часы камеры
+// сбиты на минуты или часы и рядом по времени общего звука нет.
+export function findInside(target: Features, ref: Features): (Match & { offset: number }) | null {
+  if (target.frames < MIN_OVERLAP * ENV_RATE || ref.frames < MIN_OVERLAP * ENV_RATE) return null;
+  const minOverlap = Math.max(MIN_OVERLAP * ENV_RATE, Math.ceil(Math.min(target.frames, ref.frames) * 0.6));
+  const table = xcorrFeatures(target, ref, minOverlap);
+  if (!table) return null;
+  const m = bestOf(table, -Infinity, Infinity);
+  return m ? { ...m, offset: m.lag } : null;
 }
 
 export interface AudioPiece {
-  env: Float32Array;
+  feat: Features;
   peakDb: number; // пик в dBFS: по нему видно, что микрофон был выключен
+  channel: number; // канал, где звук чётче — его берёт и точная сверка
 }
-
 export const SILENCE_DB = -70;
 
 // Волна для таймлинии: пик каждых 10 мс в логарифмической шкале, 0…255.
@@ -221,7 +120,10 @@ export function peakDb(samples: Float32Array): number {
   return peak > 0 ? 20 * Math.log10(peak) : -200;
 }
 
-export type EnvelopeFetch = (clip: ClipMeta, startSec: number, durSec: number) => Promise<AudioPiece | null>;
+export interface AudioFetch {
+  features: (clip: ClipMeta, startSec: number, durSec: number) => Promise<AudioPiece | null>;
+  samples: (clip: ClipMeta, startSec: number, durSec: number, channel: number) => Promise<Float32Array | null>; // 48 кГц
+}
 
 export interface AudioAnchor {
   cameraId: string;
@@ -235,6 +137,29 @@ export interface AudioAnchor {
   accepted: boolean; // совпадение уверенное
   // Что точка сделала: задала поправку, подтвердила текущую, сменила её с этого клипа, была отброшена.
   role: 'start' | 'confirm' | 'shift' | 'ignored' | 'weak';
+  fine: boolean; // уточнена по волне до долей миллисекунды
+  fineConfidence: number;
+}
+
+// Начало самого насыщенного атаками куска длиной lenSec — на нём точная сверка надёжнее всего.
+function busiestStart(f: Features, lenSec: number): number {
+  const len = Math.min(f.frames, Math.round(lenSec * ENV_RATE));
+  const act = new Float64Array(f.frames + 1);
+  for (let t = 0; t < f.frames; t++) {
+    let s = 0;
+    for (let b = 0; b < f.bands; b++) s += Math.max(0, f.data[t * f.bands + b]);
+    act[t + 1] = act[t] + s;
+  }
+  let best = 0;
+  let bestT = 0;
+  for (let t = 0; t + len <= f.frames; t++) {
+    const s = act[t + len] - act[t];
+    if (s > best) {
+      best = s;
+      bestT = t;
+    }
+  }
+  return bestT;
 }
 
 export type AudioCameraStatus =
@@ -270,6 +195,8 @@ export interface AudioOptions {
   isEnabled: (cameraId: string) => boolean;
   onProgress?: (done: number, total: number) => void;
   concurrency?: number;
+  pre?: Record<string, number>; // поправки по контрольным кадрам
+  fixed?: Set<string>; // камеры с контрольным кадром — опорные
 }
 
 const hasAudio = (c: ClipMeta) => c.audioChannels > 0 && c.captureFps === null;
@@ -332,6 +259,21 @@ function median(v: number[]): number {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
+const anchorWeight = (a: AudioAnchor) => (a.fine ? 10 + a.fineConfidence : a.ratio);
+
+function weightedMedian(list: AudioAnchor[]): number {
+  const s = [...list].sort((a, b) => a.correction - b.correction);
+  const total = s.reduce((n, a) => n + anchorWeight(a), 0);
+  let acc = 0;
+  for (let i = 0; i < s.length; i++) {
+    acc += anchorWeight(s[i]);
+    // Ровно половина веса — середина между двумя точками, как у обычной медианы.
+    if (Math.abs(acc - total / 2) < 1e-9 && i + 1 < s.length) return (s[i].correction + s[i + 1].correction) / 2;
+    if (acc > total / 2) return s[i].correction;
+  }
+  return s[s.length - 1].correction;
+}
+
 async function pool<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
@@ -344,12 +286,19 @@ async function pool<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): 
   return out;
 }
 
-export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch: EnvelopeFetch, opts: AudioOptions): Promise<AudioSyncResult> {
+export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio: AudioFetch, opts: AudioOptions): Promise<AudioSyncResult> {
   const clipById = new Map<string, ClipMeta>();
   for (const cam of cameras) for (const c of cam.clips) clipById.set(c.id, c);
   const sourceOf = new Map<string, TimeSource | null>(coarse.cameras.map((c) => [c.cameraId, c.timeSource]));
   const placementsOf = (camId: string) => coarse.placements.filter((p) => p.cameraId === camId && hasAudio(clipById.get(p.clipId)!));
-  const corrections: Record<string, number> = {};
+  // Все клипы камеры, в том числе без звука: поправка камеры с тайм-кодом действует и на них.
+  const allOf = (camId: string) => coarse.placements.filter((p) => p.cameraId === camId);
+  // Поправки по контрольным кадрам применяются до сверки по звуку: такие камеры уже стоят точно.
+  const pre = opts.pre ?? {};
+  const corrections: Record<string, number> = { ...pre };
+  const restorePre = (camId: string) => {
+    for (const p of coarse.placements) if (p.cameraId === camId && pre[p.clipId] !== undefined && corrections[p.clipId] === undefined) corrections[p.clipId] = pre[p.clipId];
+  };
   const startOf = (p: Placement) => p.start + (corrections[p.clipId] ?? 0);
   const results = new Map<string, AudioCameraResult>();
   const issues: Issue[] = [];
@@ -369,14 +318,18 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
   const overlapWith = (a: string, set: string[]) => {
     let total = 0;
     for (const p of placementsOf(a)) for (const id of set) for (const q of placementsOf(id)) {
-      total += Math.max(0, Math.min(p.end, q.end) - Math.max(p.start, q.start));
+      const ps = startOf(p);
+      const qs = startOf(q);
+      total += Math.max(0, Math.min(ps + p.end - p.start, qs + q.end - q.start) - Math.max(ps, qs));
     }
     return total;
   };
 
-  // Опора: камеры с точным тайм-кодом, иначе — камера, у которой больше всего общего звука с остальными.
-  const absolute = withAudio.filter((c) => sourceOf.get(c.id) === 'timecode').map((c) => c.id);
-  const fixed: string[] = absolute.length ? [...absolute] : [
+  // Опора: камеры с контрольным кадром; если их нет — камеры с точным тайм-кодом;
+  // иначе — камера, у которой больше всего общего звука с остальными.
+  const fromControl = opts.fixed ? withAudio.map((c) => c.id).filter((id) => opts.fixed!.has(id)) : [];
+  const absolute = fromControl.length ? [] : withAudio.filter((c) => sourceOf.get(c.id) === 'timecode').map((c) => c.id);
+  const fixed: string[] = fromControl.length ? [...fromControl] : absolute.length ? [...absolute] : [
     withAudio.map((c) => c.id).sort((a, b) => overlapWith(b, withAudio.map((x) => x.id).filter((x) => x !== b)) - overlapWith(a, withAudio.map((x) => x.id).filter((x) => x !== a)))[0],
   ];
   const queue = withAudio.map((c) => c.id).filter((id) => !fixed.includes(id));
@@ -397,14 +350,14 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
 
   // Тишина в звуке камеры: считаем, сколько кусков пришли пустыми, а сколько со звуком.
   const heard = new Map<string, { silent: number; loud: number }>();
-  const listen = (camId: string, piece: AudioPiece | null): Float32Array | null => {
+  const listen = (camId: string, piece: AudioPiece | null): Features | null => {
     if (!piece) return null;
     const h = heard.get(camId) ?? { silent: 0, loud: 0 };
     const silent = piece.peakDb < SILENCE_DB;
     if (silent) h.silent++;
     else h.loud++;
     heard.set(camId, h);
-    return silent ? null : piece.env;
+    return silent ? null : piece.feat;
   };
   const isSilent = (camId: string) => {
     const h = heard.get(camId);
@@ -419,19 +372,46 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
     const rs0 = Math.max(rStart, pair.ws - opts.searchSec);
     const re0 = Math.min(rStart + (pair.ref.end - pair.ref.start), pair.we + opts.searchSec);
     const [tPiece, rPiece] = await Promise.all([
-      fetch(tClip, pair.ws - tStart, pair.we - pair.ws),
-      fetch(rClip, rs0 - rStart, re0 - rs0),
+      audio.features(tClip, pair.ws - tStart, pair.we - pair.ws),
+      audio.features(rClip, rs0 - rStart, re0 - rs0),
     ]);
-    const tEnv = listen(pair.target.cameraId, tPiece);
-    const rEnv = listen(pair.ref.cameraId, rPiece);
+    const tFeat = listen(pair.target.cameraId, tPiece);
+    const rFeat = listen(pair.ref.cameraId, rPiece);
     done++;
     opts.onProgress?.(done, Math.max(done, totalEstimate()));
-    if (!tEnv || !rEnv || tEnv.length < MIN_OVERLAP * ENV_RATE * 0.8) return null;
+    if (!tFeat || !rFeat || tFeat.frames < MIN_OVERLAP * ENV_RATE * 0.8) return null;
     const refOffset = Math.round((pair.ws - rs0) * ENV_RATE);
-    const m = correlate(tEnv, rEnv, refOffset, searchFrames);
+    const m = correlate(tFeat, rFeat, refOffset, searchFrames);
     if (!m) return null;
     // Поправка считается от исходной раскладки по тайм-коду, с учётом уже найденного сдвига камеры.
-    const correction = (tStart - pair.target.start) + rs0 - pair.ws + (refOffset + m.lag) / ENV_RATE;
+    const coarseInc = rs0 - pair.ws + (refOffset + m.lag) / ENV_RATE;
+    let correction = (tStart - pair.target.start) + coarseInc;
+    const accepted = isAccepted(m);
+
+    // Точный этап: самый «звучный» кусок окна сравнивается по волне на 48 кГц.
+    let fine = false;
+    let fineConfidence = 0;
+    if (accepted && tPiece && rPiece) {
+      const segStart = pair.ws + busiestStart(tFeat, FINE_LEN) / ENV_RATE;
+      const len = Math.min(FINE_LEN, pair.we - segStart);
+      const tLocal = segStart - tStart;
+      const rLocal = segStart + coarseInc - FINE_RANGE - rStart;
+      if (len >= 1 && tLocal >= 0 && rLocal >= 0 && rLocal + len + 2 * FINE_RANGE <= pair.ref.end - pair.ref.start) {
+        const [x, y] = await Promise.all([
+          audio.samples(tClip, tLocal, len, tPiece.channel),
+          audio.samples(rClip, rLocal, len + 2 * FINE_RANGE, rPiece.channel),
+        ]);
+        if (x && y && x.length > FINE_SR * 0.5) {
+          const off = Math.round(FINE_RANGE * FINE_SR);
+          const g = gccPhat(x, y, FINE_SR, off, off);
+          if (g && g.confidence >= FINE_CONFIDENCE && Math.abs(g.lag) < off) {
+            correction += g.lag / FINE_SR;
+            fine = true;
+            fineConfidence = g.confidence;
+          }
+        }
+      }
+    }
     return {
       cameraId: pair.target.cameraId,
       clipId: pair.target.clipId,
@@ -441,8 +421,10 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
       correction,
       score: m.score,
       ratio: m.ratio,
-      accepted: m.score >= ACCEPT_SCORE && m.ratio >= ACCEPT_RATIO,
+      accepted,
       role: 'weak',
+      fine,
+      fineConfidence,
     };
   };
 
@@ -473,44 +455,46 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
   // Широкий поиск: часы камеры сбиты на минуты или часы, и рядом по времени общего звука нет.
   // Берём до трёх самых длинных клипов камеры и ищем их звук во всех клипах уже выровненных камер.
   const wideSearch = async (camId: string): Promise<{ shift: number; probes: number } | null> => {
-    const targets = [...placementsOf(camId)].sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, 3);
+    const targets = [...placementsOf(camId)].sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, 4);
     const refs = fixed.flatMap((id) => placementsOf(id));
     if (!targets.length || !refs.length) return null;
     // Сначала звук самой камеры: если он пустой, искать нечего. Короткие пробы в начале, середине и конце клипа:
     // общий звук с другой камерой может длиться всего десяток секунд.
-    const probes: { t: Placement; start: number; env: Float32Array }[] = [];
+    const probes: { t: Placement; start: number; env: Features }[] = [];
     for (const t of targets) {
       const dur = t.end - t.start;
       const probeLen = Math.min(PROBE_LEN, dur - 1);
       if (probeLen < MIN_OVERLAP * 1.5) continue;
       const starts = dur - probeLen < 4 ? [(dur - probeLen) / 2] : [0.5, (dur - probeLen) / 2, dur - probeLen - 0.5];
       for (const probeStart of starts) {
-        const env = listen(camId, await fetch(clipById.get(t.clipId)!, probeStart, probeLen));
+        const env = listen(camId, await audio.features(clipById.get(t.clipId)!, probeStart, probeLen));
         done++;
         opts.onProgress?.(done, Math.max(done, totalEstimate() + targets.length * 3));
         if (env) probes.push({ t, start: probeStart, env });
       }
     }
     if (!probes.length) return null;
-    const refEnvs = await pool(refs, conc, async (r) => listen(r.cameraId, await fetch(clipById.get(r.clipId)!, 0, r.end - r.start)));
-    const found: { shift: number; score: number; ratio: number }[] = [];
-    for (const { t, start: probeStart, env: probe } of probes) {
-      const hits = refs.map((r, i) => {
+    const refEnvs = await pool(refs, conc, async (r) => listen(r.cameraId, await audio.features(clipById.get(r.clipId)!, 0, r.end - r.start)));
+    // Все уверенные совпадения пробы с клипами других камер. Если один и тот же сдвиг дают разные пробы
+    // или разные камеры — это не случайность.
+    const hits: { shift: number; score: number; ratio: number; key: string }[] = [];
+    probes.forEach(({ t, start: probeStart, env: probe }, pi) => {
+      refs.forEach((r, i) => {
         const env = refEnvs[i];
         const m = env ? findInside(probe, env) : null;
-        return m ? { shift: startOf(r) + m.offset / ENV_RATE - (t.start + probeStart), score: m.score, ratio: m.ratio } : null;
-      }).filter((h): h is { shift: number; score: number; ratio: number } => !!h).sort((a, b) => b.score - a.score);
-      if (!hits.length) continue;
-      const best = hits[0];
-      const rivalOther = hits.find((h) => Math.abs(h.shift - best.shift) > NEIGHBOUR)?.score ?? 0;
-      found.push({ shift: best.shift, score: best.score, ratio: Math.min(best.ratio, best.score / Math.max(rivalOther, 1e-6)) });
+        if (m && isAccepted(m)) hits.push({ shift: startOf(r) + m.offset / ENV_RATE - (t.start + probeStart), score: m.score, ratio: m.ratio, key: `${pi}|${r.clipId}` });
+      });
+    });
+    if (!hits.length) return null;
+    let bestGroup: typeof hits = [];
+    for (const h of hits) {
+      const group = hits.filter((x) => Math.abs(x.shift - h.shift) <= 0.2);
+      if (group.length > bestGroup.length || (group.length === bestGroup.length && group.reduce((s, x) => s + x.score, 0) > bestGroup.reduce((s, x) => s + x.score, 0))) bestGroup = group;
     }
-    const good = found.filter((f) => f.score >= ACCEPT_SCORE && f.ratio >= ACCEPT_RATIO);
-    if (!good.length) return null;
-    const m = median(good.map((f) => f.shift));
-    const agree = good.filter((f) => Math.abs(f.shift - m) <= 0.2);
-    const confident = agree.length >= 2 || (agree.length === 1 && agree[0].score >= STRONG_SCORE && agree[0].ratio >= STRONG_RATIO);
-    return confident ? { shift: median(agree.map((f) => f.shift)), probes: agree.length } : null;
+    const others = hits.filter((x) => !bestGroup.includes(x));
+    const competing = others.length > 0 && others.length >= bestGroup.length;
+    const confident = !competing && (bestGroup.length >= 2 || isStrong(bestGroup[0]));
+    return confident ? { shift: median(bestGroup.map((x) => x.shift)), probes: bestGroup.length } : null;
   };
 
   // Остальные камеры — по очереди, начиная с той, у которой больше общего звука с уже выровненными.
@@ -522,10 +506,12 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
     plans.push(plan);
     let anchors = (await pool(plan.pairs, conc, measure)).filter((a): a is AudioAnchor => !!a);
     let wide: { shift: number; probes: number } | null = null;
-    if (enabled && !anchors.some((a) => a.accepted)) {
+    // Широкий поиск не нужен камере, которую уже поставил контрольный кадр.
+    const hasControl = placementsOf(camId).some((p) => pre[p.clipId] !== undefined);
+    if (enabled && !hasControl && !anchors.some((a) => a.accepted)) {
       wide = await wideSearch(camId);
       if (wide) {
-        for (const p of placementsOf(camId)) corrections[p.clipId] = wide.shift;
+        for (const p of allOf(camId)) corrections[p.clipId] = wide.shift;
         plan = planFor(camId, fixed, false);
         plans.push(plan);
         anchors = (await pool(plan.pairs, conc, measure)).filter((a): a is AudioAnchor => !!a);
@@ -543,19 +529,20 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
       fixed.push(camId);
       continue;
     }
-    const res = combine(camId, anchors, sourceOf.get(camId) ?? 'clock', placementsOf(camId), enabled, coarse.displayTzOffsetMin);
+    const res = combine(camId, anchors, sourceOf.get(camId) ?? 'clock', allOf(camId), enabled, coarse.displayTzOffsetMin);
     res.result.wideShift = wide?.shift ?? null;
     if (wide && res.result.status === 'no-match') {
       // Точки рядом не подтвердили, но широкий поиск был уверенным — оставляем общий сдвиг камеры.
-      for (const p of placementsOf(camId)) res.corrections[p.clipId] = wide.shift;
+      for (const p of allOf(camId)) res.corrections[p.clipId] = wide.shift;
       res.result.status = 'applied';
       res.result.model = 'single';
       res.result.correction = wide.shift;
       res.issues = [];
     }
     results.set(camId, res.result);
-    for (const p of placementsOf(camId)) delete corrections[p.clipId];
+    for (const p of allOf(camId)) delete corrections[p.clipId];
     if (enabled) Object.assign(corrections, res.corrections);
+    restorePre(camId);
     if (wide) {
       issues.push(issue({
         severity: 'warning',
@@ -575,7 +562,8 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, fetch
     if (!isSilent(cam.id)) continue;
     const prev = results.get(cam.id);
     results.set(cam.id, { cameraId: cam.id, status: 'silent', model: null, correction: null, steps: [], anchors: prev?.anchors ?? [], wideShift: null });
-    for (const p of placementsOf(cam.id)) delete corrections[p.clipId];
+    for (const p of allOf(cam.id)) delete corrections[p.clipId];
+    restorePre(cam.id);
     silentIssues = silentIssues.filter((i) => i.cameraId !== cam.id || i.severity === 'error');
     silentIssues.push(issue({
       severity: 'warning',
@@ -621,7 +609,7 @@ export function combine(camId: string, anchors: AudioAnchor[], source: TimeSourc
 
   const sortedPlacements = [...placements].sort((a, b) => a.start - b.start);
   const clipStart = new Map(sortedPlacements.map((p) => [p.clipId, p.start]));
-  const strong = (a: AudioAnchor) => a.score >= STRONG_SCORE && a.ratio >= STRONG_RATIO;
+  const strong = (a: AudioAnchor) => isStrong(a);
   const close = (x: number, y: number) => Math.abs(x - y) <= CONSISTENT;
 
   if (source === 'clock') {
@@ -675,15 +663,16 @@ export function combine(camId: string, anchors: AudioAnchor[], source: TimeSourc
         a.role = 'ignored';
       }
     }
-    // Поправка отрезка — среднее всех точек, которые с ней согласились: точнее, чем по одной точке.
+    // Поправка отрезка — взвешенная середина всех точек, которые с ней согласились. Точки, уточнённые
+    // по волне, весят больше грубых: одна слабая точка не утянет поправку к себе.
     let stepIdx = -1;
-    const members: number[][] = out.result.steps.map(() => []);
+    const members: AudioAnchor[][] = out.result.steps.map(() => []);
     for (const a of ok) {
       if (a.role === 'start' || a.role === 'shift') stepIdx++;
-      if ((a.role === 'start' || a.role === 'shift' || a.role === 'confirm') && stepIdx >= 0) members[stepIdx].push(a.correction);
+      if ((a.role === 'start' || a.role === 'shift' || a.role === 'confirm') && stepIdx >= 0) members[stepIdx].push(a);
     }
     out.result.steps.forEach((s, i) => {
-      if (members[i].length) s.correction = median(members[i]);
+      if (members[i].length) s.correction = weightedMedian(members[i]);
     });
     out.result.correction = out.result.steps[0]?.correction ?? null;
     for (const p of sortedPlacements) {

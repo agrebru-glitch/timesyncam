@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { buildFcp7Xml, defaultResolution, defaultTimelineRate, TIMELINE_PRESETS } from '../../core/fcp7.ts';
+import { buildFcpxml } from '../../core/fcpxml.ts';
 import { rateValue } from '../../core/timecode.ts';
 import { formatClockTime, formatDate } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
@@ -11,6 +12,16 @@ const RESOLUTIONS = [
   { w: 4096, h: 2160, label: 'DCI 4K 4096×2160' },
   { w: 1080, h: 1920, label: 'Вертикаль 1080×1920' },
 ];
+
+type Format = 'fcp7' | 'fcpxml';
+const FORMAT_KEY = 'timesyncam.exportFormat';
+function savedFormat(): Format {
+  try {
+    return localStorage.getItem(FORMAT_KEY) === 'fcpxml' ? 'fcpxml' : 'fcp7';
+  } catch {
+    return 'fcp7';
+  }
+}
 
 export function ExportDialog() {
   const { state, dispatch } = useApp();
@@ -32,6 +43,8 @@ export function ExportDialog() {
     : [{ w: defaults.res.width, h: defaults.res.height, label: `${defaults.res.width}×${defaults.res.height}` }, ...RESOLUTIONS];
   const [resKey, setResKey] = useState(`${defaults.res.width}x${defaults.res.height}`);
   const [busy, setBusy] = useState(false);
+  const [format, setFormat] = useState<Format>(savedFormat);
+  const hasRecorder = state.cameras.some((c) => c.clips.some((x) => !x.hasVideo && x.audioChannels > 0 && sync.placements.some((p) => p.clipId === x.id)));
 
   const cams = state.cameras.filter((c) => sync.placements.some((p) => p.cameraId === c.id));
   const clipsCount = sync.placements.length;
@@ -41,9 +54,15 @@ export function ExportDialog() {
     setBusy(true);
     const [num, den] = rateKey.split('/').map(Number);
     const [w, h] = resKey.split('x').map(Number);
-    const xml = buildFcp7Xml(state.cameras, sync, { name: name.trim() || 'TimesynCam', rate: { num, den }, width: w, height: h });
+    const opts = { name: name.trim() || 'TimesynCam', rate: { num, den }, width: w, height: h };
+    const xml = format === 'fcpxml' ? buildFcpxml(state.cameras, sync, opts) : buildFcp7Xml(state.cameras, sync, opts);
+    try {
+      localStorage.setItem(FORMAT_KEY, format);
+    } catch {
+      // запоминать формат необязательно
+    }
     const safe = (name.trim() || 'TimesynCam').replace(/[\\/:*?"<>|]/g, '_');
-    const path = await api.saveExport(`${safe}.xml`, xml);
+    const path = await api.saveExport(`${safe}.${format === 'fcpxml' ? 'fcpxml' : 'xml'}`, xml);
     setBusy(false);
     if (path) {
       dispatch({ type: 'export-open', open: false });
@@ -80,18 +99,23 @@ export function ExportDialog() {
           </select>
         </div>
         <div className="field">
-          <label>Формат</label>
-          <span>XML для Premiere Pro и DaVinci Resolve</span>
+          <label htmlFor="ex-format">Формат</label>
+          <select id="ex-format" value={format} onChange={(e) => setFormat(e.target.value as Format)}>
+            <option value="fcp7">XML — Premiere Pro и DaVinci Resolve</option>
+            <option value="fcpxml">FCPXML — DaVinci Resolve, звук рекордера до сэмпла</option>
+          </select>
         </div>
         <div className="note">
           Оригинальные файлы не меняются — в XML только ссылки на них и их места на таймлинии. Каждая камера — на своей дорожке,
           тайм-код таймлинии показывает время съёмки ({rateValue({ num: Number(rateKey.split('/')[0]), den: Number(rateKey.split('/')[1]) }).toFixed(3).replace(/\.?0+$/, '')} к/с).
           {errors > 0 && <><br /><b style={{ color: 'var(--danger)' }}>Есть ошибки ({errors}):</b> накладывающиеся клипы уйдут на дополнительную дорожку камеры.</>}
-          <br />Resolve: File → Import → Timeline. Premiere Pro: File → Import.
+          {format === 'fcpxml'
+            ? <><br />Видео встаёт на кадр, звук без видео — точно до сэмпла, как его нашла синхронизация.<br />Resolve: File → Import → Timeline.</>
+            : <>{hasRecorder && <><br />Звук рекордера в XML встаёт с точностью до кадра. Для Resolve точнее — FCPXML.</>}<br />Resolve: File → Import → Timeline. Premiere Pro: File → Import.</>}
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={() => dispatch({ type: 'export-open', open: false })}>Отмена</button>
-          <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Сохраняю…' : 'Сохранить XML'}</button>
+          <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Сохраняю…' : format === 'fcpxml' ? 'Сохранить FCPXML' : 'Сохранить XML'}</button>
         </div>
       </div>
     </div>

@@ -1,10 +1,20 @@
 import type { Camera, ClipMeta, Issue, SyncResult, TimecodeTrust } from '../core/types.ts';
 import type { AudioSyncResult } from '../core/audioSync.ts';
+import type { ControlFrame, QrResult } from '../core/qrSync.ts';
 
 export type Tab = 'sync' | 'errors' | 'faq';
 
-// Как синхронизировать: тайм-код и часы, затем сверка по звуку — или только тайм-код и часы.
-export type SyncMode = 'audio' | 'timecode';
+// Как синхронизировать: только тайм-код и часы; затем ещё сверка по звуку;
+// или сначала контрольные кадры с экрана синхронизации, затем тайм-код и звук.
+export type SyncMode = 'audio' | 'timecode' | 'control';
+
+// Что дал экран синхронизации на камере — для карточки камеры.
+export interface ControlInfo {
+  correction: number;
+  precisionSec: number;
+  transitions: number;
+  frames: number;
+}
 
 export interface Viewport {
   start: number; // эпоха, левый край таймлинии
@@ -38,6 +48,15 @@ export interface State {
   syncMenuOpen: boolean;
   audioRun: { done: number; total: number } | null; // идёт сверка по звуку
   audio: AudioSyncResult | null;
+  controlFrames: Record<string, ControlFrame>; // по клипу — где отмечен контрольный кадр
+  qrResults: Record<string, QrResult | null>; // прочитанные экраны: ключ «клип@секунда»
+  control: Record<string, ControlInfo> | null; // итог по камерам после синхронизации
+  controlPre: Record<string, number>; // поправки клипов по экрану — для пересчёта после ручной подгонки
+  controlFixed: string[]; // камеры, которые стоят по экрану точно и звуком не двигаются
+  controlIssues: Issue[];
+  qrRun: { done: number; total: number } | null;
+  previewOn: boolean;
+  qrScreenOpen: boolean;
 }
 
 let camSeq = 0;
@@ -77,6 +96,15 @@ export const initialState: State = {
   syncMenuOpen: false,
   audioRun: null,
   audio: null,
+  controlFrames: {},
+  qrResults: {},
+  control: null,
+  controlPre: {},
+  controlFixed: [],
+  controlIssues: [],
+  qrRun: null,
+  previewOn: true,
+  qrScreenOpen: false,
 };
 
 export type Action =
@@ -106,7 +134,15 @@ export type Action =
   | { type: 'audio-start' }
   | { type: 'audio-progress'; done: number; total: number }
   | { type: 'audio-done'; result: AudioSyncResult | null }
-  | { type: 'set-audio-assist'; cameraId: string; on: boolean };
+  | { type: 'set-audio-assist'; cameraId: string; on: boolean }
+  | { type: 'set-control'; frame: ControlFrame }
+  | { type: 'clear-control'; clipId: string }
+  | { type: 'qr-start'; total: number }
+  | { type: 'qr-progress'; done: number }
+  | { type: 'qr-result'; key: string; result: QrResult | null }
+  | { type: 'qr-done'; control: Record<string, ControlInfo> | null; issues: Issue[]; pre: Record<string, number>; fixed: string[] }
+  | { type: 'preview'; on: boolean }
+  | { type: 'qr-screen'; open: boolean };
 
 let toastSeq = 0;
 
@@ -179,7 +215,12 @@ export function reducer(state: State, a: Action): State {
         sync: a.result,
         syncedVersion: state.version,
         viewport,
-        playhead: state.playhead ?? (a.result.placements.length ? a.result.start : null),
+        // После синхронизации курсор должен стоять внутри съёмки, а не там, где были клипы до сдвига.
+        playhead: !a.result.placements.length
+          ? state.playhead
+          : state.playhead === null || (a.fit && (state.playhead < a.result.start || state.playhead > a.result.end))
+            ? a.result.start
+            : state.playhead,
       };
     }
     case 'tab':
@@ -213,6 +254,25 @@ export function reducer(state: State, a: Action): State {
       return { ...state, audioRun: { done: a.done, total: a.total } };
     case 'audio-done':
       return { ...state, audioRun: null, audio: a.result };
+    case 'set-control':
+      return { ...state, controlFrames: { ...state.controlFrames, [a.frame.clipId]: a.frame }, version: state.version + 1 };
+    case 'clear-control': {
+      const next = { ...state.controlFrames };
+      delete next[a.clipId];
+      return { ...state, controlFrames: next, version: state.version + 1 };
+    }
+    case 'qr-start':
+      return { ...state, qrRun: { done: 0, total: a.total } };
+    case 'qr-progress':
+      return { ...state, qrRun: state.qrRun ? { ...state.qrRun, done: a.done } : null };
+    case 'qr-result':
+      return { ...state, qrResults: { ...state.qrResults, [a.key]: a.result } };
+    case 'qr-done':
+      return { ...state, qrRun: null, control: a.control, controlIssues: a.issues, controlPre: a.pre, controlFixed: a.fixed };
+    case 'preview':
+      return { ...state, previewOn: a.on };
+    case 'qr-screen':
+      return { ...state, qrScreenOpen: a.open };
     case 'set-audio-assist':
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, audioAssist: a.on })), version: state.version + 1 };
   }
@@ -228,5 +288,5 @@ export function isScanning(s: State): boolean {
 }
 
 export function canExport(s: State): boolean {
-  return !!s.sync && !needsSync(s) && !isScanning(s) && !s.audioRun && s.sync.placements.length > 0;
+  return !!s.sync && !needsSync(s) && !isScanning(s) && !s.audioRun && !s.qrRun && s.sync.placements.length > 0;
 }
