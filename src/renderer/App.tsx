@@ -90,51 +90,75 @@ export function App() {
   }, [state.scanIssues, state.sync, state.audio, state.controlIssues, synced, state.tools]);
   const fps = useMemo(() => rateValue(defaultTimelineRate(state.cameras)), [state.cameras]);
 
-  const addFolders = useCallback(async (cameraId: string | null, folders: string[]) => {
-    let targetId = cameraId;
-    if (!targetId) {
-      const cam = newCamera(stateRef.current.cameras.length + 1);
-      dispatch({ type: 'add-camera', camera: cam });
-      targetId = cam.id;
-    }
-    for (const folder of folders) {
-      dispatch({ type: 'scan-start', cameraId: targetId, folder });
-      const res = await api.scanFolder(targetId, folder);
-      const camName = stateRef.current.cameras.find((c) => c.id === targetId)?.name ?? 'Камера';
-      const scanIssues: Issue[] = [];
+  // Папки и файлы для камеры. Вся перетащенная пачка читается одной задачей; новая пачка на ту же камеру
+  // ждёт, пока дочитается предыдущая.
+  const scanQueue = useRef(new Map<string, Promise<void>>());
+  const scanInto = useCallback(async (targetId: string, paths: string[]) => {
+    dispatch({ type: 'scan-start', cameraId: targetId });
+    const res = await api.scanPaths(targetId, paths).catch(() => null);
+    const camName = stateRef.current.cameras.find((c) => c.id === targetId)?.name ?? 'Камера';
+    const names = (list: string[]) => `${list.slice(0, 4).map((p) => p.split(/[\\/]/).pop()).join(', ')}${list.length > 4 ? '…' : ''}`;
+    const scanIssues: Issue[] = [];
+    const add = (issue: Omit<Issue, 'id'>) => {
+      scanIssueSeq += 1;
+      scanIssues.push({ id: `s${scanIssueSeq}`, ...issue });
+    };
+    if (!res) {
+      add({ severity: 'error', cameraId: targetId, title: `«${camName}»: не удалось прочитать файлы`, details: names(paths), actions: [] });
+    } else {
       if (res.needsSdk.length) {
-        scanIssueSeq += 1;
-        scanIssues.push({
-          id: `s${scanIssueSeq}`, severity: 'warning', cameraId: targetId,
+        add({
+          severity: 'warning', cameraId: targetId,
           title: `«${camName}»: ${pluralRu(res.needsSdk.length, 'файл', 'файла', 'файлов')} в формате, который пока не читается`,
-          details: `${res.needsSdk.slice(0, 4).map((p) => p.split(/[\\/]/).pop()).join(', ')}${res.needsSdk.length > 4 ? '…' : ''}. BRAW, R3D, Canon RAW и ARRIRAW нужно сначала перегнать в ProRes или MP4 с сохранением тайм-кода.`,
+          details: `${names(res.needsSdk)}. BRAW, R3D, Canon RAW и ARRIRAW нужно сначала перегнать в ProRes или MP4 с сохранением тайм-кода.`,
           actions: [{ kind: 'open-faq', anchor: 'raw' }],
         });
       }
       if (res.unreadable.length) {
-        scanIssueSeq += 1;
-        scanIssues.push({
-          id: `s${scanIssueSeq}`, severity: 'error', cameraId: targetId,
+        add({
+          severity: 'error', cameraId: targetId,
           title: `«${camName}»: не удалось прочитать ${pluralRu(res.unreadable.length, 'файл', 'файла', 'файлов')}`,
-          details: `${res.unreadable.slice(0, 4).map((p) => p.split(/[\\/]/).pop()).join(', ')}${res.unreadable.length > 4 ? '…' : ''}. Файлы могут быть повреждены или недокопированы.`,
+          details: `${names(res.unreadable)}. Файлы могут быть повреждены или недокопированы.`,
           actions: [],
         });
       }
-      if (res.clips.length === 0 && !res.needsSdk.length && !res.unreadable.length) {
-        scanIssueSeq += 1;
-        scanIssues.push({
-          id: `s${scanIssueSeq}`, severity: 'warning', cameraId: targetId,
-          title: res.isFile
-            ? `«${camName}»: ${folder.split(/[\\/]/).pop()} — не видео и не звук`
-            : `«${camName}»: в папке не нашлось видео и звука`,
-          details: res.isFile ? `${folder}. Программа читает видео MP4, MOV, MXF, MTS, AVI, MKV и звук WAV, M4A, MP3, AAC, FLAC, AIFF, OGG, Opus, WMA и другие.` : folder,
+      if (res.skipped.length) {
+        add({
+          severity: 'warning', cameraId: targetId,
+          title: `«${camName}»: ${pluralRu(res.skipped.length, 'файл пропущен', 'файла пропущено', 'файлов пропущено')} — не видео и не звук`,
+          details: `${names(res.skipped)}. Программа читает видео MP4, MOV, MXF, MTS, AVI, MKV и звук WAV, M4A, MP3, AAC, FLAC, AIFF, OGG, Opus, WMA и другие.`,
           actions: [],
         });
       }
-      dispatch({ type: 'scan-done', cameraId: targetId, clips: res.clips, issues: scanIssues });
-      requestWaveforms(res.clips);
+      if (res.clips.length === 0 && !res.needsSdk.length && !res.unreadable.length && !res.skipped.length) {
+        add({ severity: 'warning', cameraId: targetId, title: `«${camName}»: не нашлось видео и звука`, details: names(paths), actions: [] });
+      }
     }
+    dispatch({ type: 'scan-done', cameraId: targetId, clips: res?.clips ?? [], folders: res?.folders ?? [], issues: scanIssues });
+    if (res) requestWaveforms(res.clips);
   }, []);
+
+  const addFolders = useCallback((cameraId: string | null, paths: string[]) => {
+    let targetId = cameraId;
+    if (!targetId) {
+      // Пустая камера (обычно «Камера 1» на старте) — файлы в неё, а не в ещё одну новую.
+      const empty = stateRef.current.cameras.find((c) => c.clips.length === 0 && !c.scanning && !scanQueue.current.has(c.id));
+      if (empty) {
+        targetId = empty.id;
+      } else {
+        const cam = newCamera(stateRef.current.cameras.length + 1);
+        dispatch({ type: 'add-camera', camera: cam });
+        targetId = cam.id;
+      }
+    }
+    const id = targetId;
+    const job = (scanQueue.current.get(id) ?? Promise.resolve()).then(() => scanInto(id, paths));
+    scanQueue.current.set(id, job);
+    void job.finally(() => {
+      if (scanQueue.current.get(id) === job) scanQueue.current.delete(id);
+    });
+    return job;
+  }, [scanInto]);
 
   // Синхронизация: тайм-код и часы; в режиме с контрольным кадром — сначала экран синхронизации;
   // затем — если выбрано — сверка по звуку.
@@ -170,6 +194,18 @@ export function App() {
       for (const [i, f] of frames.entries()) {
         const cam = cameras.find((c) => c.id === f.cameraId)!;
         const clip = cam.clips.find((c) => c.id === f.clipId)!;
+        // В замедленной и ускоренной съёмке время файла идёт не как в жизни — по такому кадру камеру не выставить.
+        if (clip.captureFps) {
+          controlIssueSeq += 1;
+          qrIssues.push({
+            id: `q${controlIssueSeq}`, severity: 'warning', cameraId: cam.id, clipId: clip.id,
+            title: `«${cam.name}»: контрольный кадр отмечен в клипе S&Q ${clip.name}`,
+            details: 'В замедленной и ускоренной съёмке время в файле идёт не так, как в жизни, поэтому по такому кадру камеру не выставить. Отметьте контрольный кадр в обычном клипе этой камеры.',
+            actions: [{ kind: 'show-clip', clipId: clip.id }, { kind: 'open-faq', anchor: 'qr-screen' }],
+          });
+          dispatch({ type: 'qr-progress', done: i + 1 });
+          continue;
+        }
         const key = `${clip.id}@${f.localSec.toFixed(2)}`;
         let result = stateRef.current.qrResults[key];
         if (result === undefined && clip.rate && clip.width && clip.height) {

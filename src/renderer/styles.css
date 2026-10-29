@@ -139,6 +139,7 @@ button, input, select { font: inherit; color: inherit; }
 .side { background: var(--surface-1); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 .card { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; }
 .card.active { border-color: var(--accent); }
+.card.drop { border-color: var(--accent); background: var(--accent-soft); }
 .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .cam-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .cam-name { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -196,6 +197,10 @@ button, input, select { font: inherit; color: inherit; }
 .tl-head { height: 52px; border-bottom: 1px solid var(--border); padding: 7px 10px; display: flex; flex-direction: column; justify-content: center; gap: 2px; cursor: pointer; }
 .tl-head:hover { background: var(--hover); }
 .tl-head.drop { background: var(--accent-soft); }
+.tl-add.drop { background: var(--accent-soft); color: var(--text); }
+/* Куда упадут перетаскиваемые файлы: дорожка или место для новой. */
+.tl-drop { position: absolute; left: 0; right: 0; pointer-events: none; background: var(--accent-soft); border: 1px dashed var(--accent); border-radius: 4px; display: grid; place-items: center; color: var(--text); font-size: 12px; }
+.tl-drop.new { border-style: dashed; background: rgba(61, 139, 253, 0.08); }
 .tl-head .t { font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .tl-head .s { color: var(--text-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-add { height: 44px; display: flex; align-items: center; gap: 5px; padding: 0 8px; color: var(--text-2); cursor: pointer; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 12px; letter-spacing: -0.1px; }

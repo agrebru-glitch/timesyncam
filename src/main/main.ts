@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
-import { AUDIO_EXT, scanFolder, VIDEO_EXT } from './scan.ts';
+import { AUDIO_EXT, scanPaths, VIDEO_EXT } from './scan.ts';
 import { grabFrame, toolsAvailable } from './ffmpeg.ts';
 import { audioFeatures, audioSamples, audioWaveform } from './audio.ts';
 import { scanQr } from './qr.ts';
@@ -128,8 +128,8 @@ ipcMain.handle('dialog:pick-files', async () => {
   return r.canceled ? null : r.filePaths;
 });
 
-ipcMain.handle('scan:folder', async (event, scanId: string, folder: string) => {
-  const result = await scanFolder(folder, (done, total) => event.sender.send('scan:progress', { scanId, done, total }));
+ipcMain.handle('scan:paths', async (event, scanId: string, paths: string[]) => {
+  const result = await scanPaths(paths, (done, total) => event.sender.send('scan:progress', { scanId, done, total }));
   for (const c of result.clips) {
     allowedMedia.add(c.path);
     if (c.proxyPath) allowedMedia.add(c.proxyPath);

@@ -115,9 +115,9 @@ export type Action =
   | { type: 'add-camera'; camera?: Camera }
   | { type: 'remove-camera'; cameraId: string }
   | { type: 'rename-camera'; cameraId: string; name: string }
-  | { type: 'scan-start'; cameraId: string; folder: string }
+  | { type: 'scan-start'; cameraId: string }
   | { type: 'scan-progress'; cameraId: string; done: number; total: number }
-  | { type: 'scan-done'; cameraId: string; clips: ClipMeta[]; issues: Issue[] }
+  | { type: 'scan-done'; cameraId: string; clips: ClipMeta[]; folders: string[]; issues: Issue[] }
   | { type: 'set-trust'; cameraId: string; trust: TimecodeTrust }
   | { type: 'shift-camera'; cameraId: string; deltaSec?: number; absoluteSec?: number }
   | { type: 'exclude-clips'; cameraId: string; clipIds: string[] }
@@ -177,15 +177,18 @@ export function reducer(state: State, a: Action): State {
     case 'scan-start':
       return {
         ...state,
-        cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, folders: [...c.folders, a.folder], scanning: { done: 0, total: 0 } })),
+        cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, scanning: { done: 0, total: 0 } })),
       };
     case 'scan-progress':
       // Сообщение о ходе чтения может прийти уже после конца чтения — тогда его не учитываем.
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => (c.scanning ? { ...c, scanning: { done: a.done, total: a.total } } : c)) };
     case 'scan-done': {
+      let added = 0;
       const cameras = mapCamera(state, a.cameraId, (c) => {
         const known = new Set(c.clips.map((x) => x.path));
-        return { ...c, clips: [...c.clips, ...a.clips.filter((x) => !known.has(x.path))], scanning: null };
+        const fresh = a.clips.filter((x) => !known.has(x.path));
+        added = fresh.length;
+        return { ...c, clips: [...c.clips, ...fresh], folders: [...new Set([...c.folders, ...a.folders])], scanning: null };
       });
       // Появилась вторая (третья…) камера с клипами — напоминаем про контрольный кадр.
       const wasEmpty = !state.cameras.find((c) => c.id === a.cameraId)?.clips.length;
@@ -195,7 +198,7 @@ export function reducer(state: State, a: Action): State {
         ...state,
         cameras,
         scanIssues: [...state.scanIssues, ...a.issues],
-        version: state.version + 1,
+        version: added ? state.version + 1 : state.version,
         controlHint: secondCamera ? (state.controlHint ?? 0) + 1 : state.controlHint,
       };
     }

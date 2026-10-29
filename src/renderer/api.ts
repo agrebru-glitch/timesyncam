@@ -6,13 +6,14 @@ export interface ScanResult {
   clips: ClipMeta[];
   needsSdk: string[];
   unreadable: string[];
-  isFile: boolean;
+  skipped: string[];
+  folders: string[];
 }
 
 export interface Api {
   pickFolders(): Promise<string[] | null>;
   pickFiles(): Promise<string[] | null>;
-  scanFolder(scanId: string, folder: string): Promise<ScanResult>;
+  scanPaths(scanId: string, paths: string[]): Promise<ScanResult>;
   onScanProgress(cb: (p: { scanId: string; done: number; total: number }) => void): () => void;
   onAutoload(cb: (p: { folders: string[]; sync: boolean; tab?: string; at?: string; menu?: boolean; view?: string; control?: string; mode?: string; qr?: boolean; preview?: string }) => void): void;
   grabFrame(path: string, seconds: number): Promise<string | null>;

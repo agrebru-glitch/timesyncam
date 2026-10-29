@@ -54,12 +54,35 @@ test('Rec Run: тайм-код непрерывный, хотя между кл�
   assert.ok(r.issues.some((i) => /Rec Run/.test(i.title)));
 });
 
-test('Смена форматов внутри камеры (25p, 50p, 1080) — без замечаний', () => {
-  const clips = freeRunClips([T16 + 10, T16 + 100, T16 + 300]);
-  clips[1].rate = { num: 50, den: 1 };
-  clips[2].width = 1920;
-  clips[2].height = 1080;
+test('Смена форматов внутри камеры (25p 4K → 50p 1080 → S&Q → 25p): клипы на своих местах', () => {
+  const exact = [T16 + 10, T16 + 100.02, T16 + 300.4, T16 + 400.76];
+  const clips = freeRunClips(exact);
+  Object.assign(clips[1], { rate: { num: 50, den: 1 }, frames: 500, width: 1920, height: 1080 });
+  Object.assign(clips[2], { captureFps: 100, recordedSec: 4, durationSec: 16, frames: 400 });
   const r = runSync([camera('A', clips)]);
+  const at = (i: number) => r.placements.find((p) => p.clipId === clips[i].id)!.start;
+  for (const i of [1, 2, 3]) assert.ok(Math.abs((at(i) - at(0)) - (exact[i] - exact[0])) < 0.001, `клип ${i}`);
+  assert.equal(r.cameras[0].lanes, 1);
+  assert.equal(r.cameras[0].timecodeJumps, 0);
+  assert.deepEqual(r.issues.map((i) => i.severity), ['error']); // только S&Q
+});
+
+test('NTSC: 24p (23,976) вперемешку с 30p (29,97 DF) не уезжает на минуту', () => {
+  // Тайм-код выставлен по часам. Тайм-код 23,976 без drop frame считается кадрами с полуночи — это метка × 1,001.
+  const exact = [T16 + 10.2, T16 + 120.5, T16 + 200.3, T16 + 330.7, T16 + 600.1];
+  const ntsc24 = new Set([1, 3]);
+  const clips = exact.map((s, i) => {
+    const c = clip({ start: Math.floor(s), tcSeconds: wall(s) * (ntsc24.has(i) ? 1.001 : 1) });
+    c.rate = ntsc24.has(i) ? { num: 24000, den: 1001 } : { num: 30000, den: 1001 };
+    c.tc!.drop = !ntsc24.has(i);
+    return c;
+  });
+  const r = runSync([camera('A', clips)]);
+  assert.equal(r.cameras[0].timeSource, 'timecode');
+  for (const [i, c] of clips.entries()) {
+    const err = r.placements.find((p) => p.clipId === c.id)!.start - exact[i];
+    assert.ok(Math.abs(err) < 0.001, `клип ${i}: ${err.toFixed(3)} с`);
+  }
   assert.equal(r.issues.length, 0);
 });
 

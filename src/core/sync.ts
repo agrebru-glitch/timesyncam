@@ -1,6 +1,6 @@
 // Синхронизация: раскладывает клипы всех камер по реальному времени съёмки.
 import type { Camera, CameraSync, ClipMeta, Issue, Placement, SyncResult, TimeSource } from './types.ts';
-import { DAY, wrapDay, wrapSigned } from './timecode.ts';
+import { DAY, isNtscRate, rateValue, wrapDay, wrapSigned } from './timecode.ts';
 import { formatDurationHuman, formatShift } from './format.ts';
 
 const CLUSTER_TOLERANCE = 1.6; // секунды: часы камер пишут время с точностью до секунды
@@ -46,6 +46,13 @@ function estimateOffset(values: number[]): number {
   const lo = q(0.9);
   const hi = q(0.1) + 1;
   return lo <= hi ? (lo + hi) / 2 : v[Math.floor(v.length / 2)] + 0.5;
+}
+
+// Тайм-код 23,976 и 59,94 без drop frame хранится как кадры с полуночи — это метка × 1,001.
+// Когда тайм-код идёт по часам, клипу нужна сама метка, как у 25p и 29,97 DF той же камеры.
+function labelSeconds(c: ClipMeta): number {
+  const ndf = c.tc!.source !== 'bwf' && !c.tc!.drop && c.rate !== null && isNtscRate(rateValue(c.rate));
+  return ndf ? c.tc!.seconds / 1.001 : c.tc!.seconds;
 }
 
 function isRecRun(clips: ClipMeta[]): boolean {
@@ -146,10 +153,11 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
   // Решаем, откуда брать время.
   let source: TimeSource = 'clock';
   const groupOf = new Map<string, Group>();
+  let main: Group | null = null;
   if (cam.timecodeTrust !== 'ignore' && tcClips.length > 0) {
     const offsets = tcClips.map((c) => ({ id: c.id, offset: wrapSigned(wallClock(c, tzMin) - c.tc!.seconds) }));
     const groups = clusterOffsets(offsets);
-    const main = groups[0];
+    main = groups[0];
     sync.timecodeVsClockSec = main.center;
     sync.recRun = isRecRun(clips);
     const tooScattered = groups.length > Math.max(3, tcClips.length * 0.3);
@@ -208,7 +216,12 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
     let method: Placement['method'] = 'clock';
     const tcUsable = !c.captureFps || groupOf.has(c.id);
     if (c.tc && tcUsable && source === 'timecode') {
-      start = c.clock.epochSec + wrapSigned(c.tc.seconds - wallClock(c, tzMin));
+      // Камера снимала и 24p, и 30p/25p: клип 24p выпал из главной группы только из-за счёта тайм-кода.
+      // Если по самой метке он сходится с часами, как вся камера, — ставим по метке, иначе уедет на минуту.
+      let tcSec = c.tc.seconds;
+      const label = labelSeconds(c);
+      if (main && groupOf.get(c.id) !== main && Math.abs(wrapSigned(wallClock(c, tzMin) - label) - main.center) <= CLUSTER_TOLERANCE) tcSec = label;
+      start = c.clock.epochSec + wrapSigned(tcSec - wallClock(c, tzMin));
       method = 'timecode';
     } else if (c.tc && source === 'timecode-and-clock') {
       const g = groupOf.get(c.id);

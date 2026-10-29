@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSonyXml, decodeSonyLtc } from '../src/core/sonyXml.ts';
+import { parseSonyXml, decodeSonyLtc, parseFps } from '../src/core/sonyXml.ts';
 import { buildClipMeta, timeFromFilename } from '../src/core/clipMeta.ts';
 import type { FfprobeResult } from '../src/core/clipMeta.ts';
 import { SONY_XML_25P, SONY_XML_50P, SONY_XML_SQ } from './fixtures.ts';
@@ -17,8 +17,9 @@ const sonyProbe = (rate: string, tc: string): FfprobeResult => ({
 const base = { id: 'x', path: 'D:/card/C9151.MP4', name: 'C9151.MP4', sizeBytes: 1, mtimeMs: 0, proxyPath: null };
 
 test('LTC Sony: байты кадры-секунды-минуты-часы, флаги отбрасываются', () => {
-  assert.deepEqual(decodeSonyLtc('02293023'), { f: 2, s: 29, m: 30, h: 23, dropFlag: false });
+  assert.deepEqual(decodeSonyLtc('02293023'), { f: 2, s: 29, m: 30, h: 23, dropFlag: false, halfFlag: false });
   assert.equal(decodeSonyLtc('03140881')!.h, 1);
+  assert.equal(decodeSonyLtc('03140881')!.halfFlag, true);
 });
 
 test('Sony XML 25p: тайм-код, время съёмки, модель, гамма', () => {
@@ -44,6 +45,40 @@ test('Sony XML 50p: монтажка показывает :38, а время т�
   assert.equal(m.tc!.text, '01:07:59:38');
   assert.equal(m.tc!.seconds, 3600 + 7 * 60 + 59 + 19 / 25);
   assert.equal(m.durationSec, 720 / 50);
+});
+
+test('Sony XML 50p с нечётного кадра: второй кадр пары не теряется', () => {
+  const x = parseSonyXml(SONY_XML_50P.replace('value="19590701"', 'value="19590781"'))!;
+  assert.equal(x.tc!.text, '01:07:59:39');
+  const m = buildClipMeta({ ...base, probe: sonyProbe('50/1', '01:07:59:39'), sony: x });
+  assert.ok(Math.abs(m.tc!.seconds - (3600 + 7 * 60 + 59 + 39 / 50)) < 1e-9);
+  // Без тайм-кода в контейнере текст для монтажки — тоже в кадрах 50p.
+  const bare = sonyProbe('50/1', '');
+  bare.streams = bare.streams!.slice(0, 2);
+  assert.equal(buildClipMeta({ ...base, probe: bare, sony: x }).tc!.text, '01:07:59:39');
+});
+
+test('Частота из Sony XML: p — кадры, i — полукадры', () => {
+  assert.equal(parseFps('25p'), 25);
+  assert.equal(parseFps('100.00p'), 100);
+  assert.equal(parseFps('50i'), 25);
+  assert.ok(Math.abs(parseFps('59.94i')! - 29.97) < 1e-9);
+  assert.equal(parseFps(undefined), null);
+});
+
+test('Телефон с переменной частотой: длина клипа по файлу, а не по удвоенной частоте', () => {
+  const m = buildClipMeta({
+    ...base, name: 'VID_20260612_160301.mp4', sony: null,
+    probe: {
+      streams: [
+        { codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', width: 1920, height: 1080, r_frame_rate: '60/1', avg_frame_rate: '30/1', nb_frames: '300', duration: '10.000' },
+        { codec_type: 'audio', codec_name: 'aac', channels: 2, sample_rate: '48000' },
+      ],
+      format: { duration: '10.02', tags: { creation_time: '2026-06-12T13:03:01.000000Z' } },
+    },
+  });
+  assert.equal(m.durationSec, 10);
+  assert.deepEqual(m.rate, { num: 30, den: 1 });
 });
 
 test('Sony S&Q: запись 100 к/с в файл 25p — помечается', () => {

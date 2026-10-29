@@ -475,19 +475,26 @@ export function Timeline() {
     return () => el.removeEventListener('wheel', onWheel);
   });
 
-  // Перетаскивание папок на дорожки.
-  const rowAtY = (clientY: number): number | 'new' | null => {
+  // Перетаскивание папок и файлов на дорожки: всё, что брошено на дорожку, — в её камеру.
+  // Над линейкой — на первую дорожку, ниже последней — на новую.
+  const rowAtY = (clientY: number): number | 'new' => {
     const rect = wrapRef.current!.getBoundingClientRect();
     const y = clientY - rect.top;
     const r = rows.find((row) => y >= row.y && y < row.y + row.h);
     if (r) return r.index;
-    return y > (rows.at(-1)?.y ?? 0) + (rows.at(-1)?.h ?? 0) ? 'new' : null;
+    return rows.length && y < rows[0].y ? rows[0].index : 'new';
   };
-  const onDrop = (e: React.DragEvent, target: number | 'new' | null) => {
+  const onDragOver = (e: React.DragEvent, target: number | 'new') => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setDropRow(target);
+  };
+  const onDrop = (e: React.DragEvent, target: number | 'new') => {
+    e.preventDefault();
+    e.stopPropagation();
     setDropRow(null);
     const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
-    if (!paths.length || target === null) return;
+    if (!paths.length) return;
     const cam = target === 'new' ? null : state.cameras[target];
     void addFolders(cam?.id ?? null, paths);
   };
@@ -507,8 +514,17 @@ export function Timeline() {
 
   return (
     <div className="timeline">
-      <div className="tl-heads">
-        <div className="tl-ruler-head">
+      <div
+        className="tl-heads"
+        onDragOver={(e) => onDragOver(e, 'new')}
+        onDragLeave={() => setDropRow(null)}
+        onDrop={(e) => onDrop(e, 'new')}
+      >
+        <div
+          className="tl-ruler-head"
+          onDragOver={(e) => { e.stopPropagation(); onDragOver(e, rows[0]?.index ?? 'new'); }}
+          onDrop={(e) => onDrop(e, rows[0]?.index ?? 'new')}
+        >
           <button className="btn small ghost" title="Показать всю съёмку" onClick={() => { const f = fitViewport(); if (f) dispatch({ type: 'viewport', viewport: f }); }}>Всё</button>
           <button className="btn small ghost" aria-label="Отдалить" onClick={() => zoom(1.6)}>−</button>
           <button className="btn small ghost" aria-label="Приблизить" onClick={() => zoom(1 / 1.6)}>+</button>
@@ -540,7 +556,7 @@ export function Timeline() {
               setMenu(null);
               setTrackMenu({ x: Math.min(e.clientX, window.innerWidth - 300), y: Math.min(e.clientY, window.innerHeight - 140), cameraId: r.cam.id });
             }}
-            onDragOver={(e) => { e.preventDefault(); setDropRow(r.index); }}
+            onDragOver={(e) => { e.stopPropagation(); onDragOver(e, r.index); }}
             onDragLeave={() => setDropRow(null)}
             onDrop={(e) => onDrop(e, r.index)}
           >
@@ -557,7 +573,7 @@ export function Timeline() {
         <div
           className={`tl-add ${dropRow === 'new' ? 'drop' : ''}`}
           onClick={() => dispatch({ type: 'add-camera' })}
-          onDragOver={(e) => { e.preventDefault(); setDropRow('new'); }}
+          onDragOver={(e) => { e.stopPropagation(); onDragOver(e, 'new'); }}
           onDragLeave={() => setDropRow(null)}
           onDrop={(e) => onDrop(e, 'new')}
         >
@@ -567,11 +583,18 @@ export function Timeline() {
       <div
         className="tl-canvas-wrap"
         ref={wrapRef}
-        onDragOver={(e) => { e.preventDefault(); setDropRow(rowAtY(e.clientY)); }}
+        onDragOver={(e) => onDragOver(e, rowAtY(e.clientY))}
         onDragLeave={() => setDropRow(null)}
         onDrop={(e) => onDrop(e, rowAtY(e.clientY))}
       >
         <canvas ref={canvasRef} onMouseDown={onMouseDown} onContextMenu={onContextMenu} />
+        {dropRow !== null && (() => {
+          // Куда упадут файлы: подсветка дорожки на всю ширину или места под дорожками для новой.
+          const r = dropRow === 'new' ? null : rows.find((row) => row.index === dropRow);
+          const top = r ? r.y : tracksBottom;
+          const height = r ? r.h : Math.max(44, size.h - tracksBottom);
+          return <div className={`tl-drop ${r ? '' : 'new'}`} style={{ top, height }}>{r ? '' : 'Новая дорожка'}</div>;
+        })()}
         {trackMenu && (() => {
           const cam = state.cameras.find((c) => c.id === trackMenu.cameraId);
           if (!cam) return null;

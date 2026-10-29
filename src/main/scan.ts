@@ -24,12 +24,20 @@ export interface ScanResult {
   clips: ClipMeta[];
   needsSdk: string[];
   unreadable: string[];
-  isFile: boolean; // добавили отдельный файл, а не папку
+  skipped: string[]; // перетащенные файлы, которые не видео и не звук
+  folders: string[]; // откуда клипы: перетащенные папки и папки перетащенных файлов
 }
+
+// Сайдкары и служебные файлы камер. Если их перетащили вместе с клипами, молча пропускаем.
+const SIDECAR_EXT = new Set([
+  '.xml', '.thm', '.jpg', '.jpeg', '.png', '.bim', '.smi', '.ppn', '.cpi', '.mpl', '.bdm', '.xmp', '.ind', '.ini',
+  '.txt', '.db', '.srt', '.sav', '.dat', '.bin', '.log', '.cfa', '.pek', '.ttl',
+]);
 
 interface Found {
   path: string;
   isProxy: boolean;
+  dropped: boolean; // файл перетащили сам по себе, а не нашли в папке
 }
 
 async function walk(dir: string, depth: number, inProxyDir: boolean, out: Found[], needsSdk: string[]): Promise<void> {
@@ -47,21 +55,25 @@ async function walk(dir: string, depth: number, inProxyDir: boolean, out: Found[
       }
       continue;
     }
-    if (e.isFile()) addFile(full, inProxyDir, out, needsSdk);
+    if (e.isFile()) addFile(full, inProxyDir, false, out, needsSdk);
   }
 }
 
-function addFile(full: string, inProxyDir: boolean, out: Found[], needsSdk: string[]): void {
+// false — файл не видео, не звук и не RAW.
+function addFile(full: string, inProxyDir: boolean, dropped: boolean, out: Found[], needsSdk: string[]): boolean {
   const name = basename(full);
-  if (name.startsWith('._')) return; // служебные файлы macOS на картах exFAT
+  if (name.startsWith('._')) return true; // служебные файлы macOS на картах exFAT
   const ext = extname(name).toLowerCase();
   if (NEEDS_SDK_EXT.has(ext)) {
     needsSdk.push(full);
   } else if (PROXY_EXT.has(ext)) {
-    out.push({ path: full, isProxy: true });
+    out.push({ path: full, isProxy: true, dropped });
   } else if (VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext)) {
-    out.push({ path: full, isProxy: inProxyDir });
+    out.push({ path: full, isProxy: inProxyDir, dropped });
+  } else {
+    return false;
   }
+  return true;
 }
 
 // Ключ для сопоставления клипа и его прокси: C0001S03 → C0001, GL010001 → G*010001.
@@ -70,6 +82,12 @@ function proxyKey(name: string): string {
   base = base.replace(/S03$/, '');
   base = base.replace(/^G[HXLS](\d{6})$/, 'G*$1');
   return base;
+}
+
+function commonPrefix(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
 }
 
 function hashId(s: string): string {
@@ -89,17 +107,53 @@ async function findSonyXml(path: string, siblings: Map<string, string[]>): Promi
   return hit ? join(dir, hit) : null;
 }
 
-// Папка камеры или отдельный файл: на дорожку можно перетащить и то и другое.
-export async function scanFolder(folder: string, onProgress: (done: number, total: number) => void): Promise<ScanResult> {
+export interface Collected {
+  media: { path: string; proxyPath: string | null }[];
+  needsSdk: string[];
+  skipped: string[];
+  folders: string[];
+}
+
+// Что читать из перетащенной пачки: папки обходятся целиком, файлы берутся как есть.
+// Прокси (LRV/LRF, папки Sub/Proxy) достаются клипу с тем же именем — с той же карты, если имена повторяются.
+// Прокси, перетащенный без своего клипа, читается как обычный клип: маленькое видео лучше, чем ничего.
+export async function collectPaths(paths: string[]): Promise<Collected> {
   const found: Found[] = [];
   const needsSdk: string[] = [];
-  const isFile = (await stat(folder).catch(() => null))?.isFile() ?? false;
-  if (isFile) addFile(folder, false, found, needsSdk);
-  else await walk(folder, 0, false, found, needsSdk);
+  const skipped: string[] = [];
+  const folders = new Set<string>();
+  for (const p of new Set(paths)) {
+    const st = await stat(p).catch(() => null);
+    if (st?.isFile()) {
+      folders.add(dirname(p));
+      const name = basename(p);
+      const known = addFile(p, PROXY_DIRS.test(basename(dirname(p))), true, found, needsSdk);
+      if (!known && !name.startsWith('.') && !SIDECAR_EXT.has(extname(name).toLowerCase())) skipped.push(p);
+    } else if (st?.isDirectory()) {
+      folders.add(p);
+      await walk(p, 0, false, found, needsSdk);
+    } else {
+      skipped.push(p);
+    }
+  }
 
-  const proxies = new Map<string, string>();
-  for (const f of found) if (f.isProxy) proxies.set(proxyKey(f.path), f.path);
-  const media = found.filter((f) => !f.isProxy);
+  const unique = [...new Map(found.map((f) => [f.path, f])).values()];
+  const proxies = new Map<string, string[]>();
+  for (const f of unique) if (f.isProxy) proxies.set(proxyKey(f.path), [...(proxies.get(proxyKey(f.path)) ?? []), f.path]);
+  const usedProxies = new Set<string>();
+  const media = unique.filter((f) => !f.isProxy).map((f) => {
+    const candidates = proxies.get(proxyKey(f.path)) ?? [];
+    const proxyPath = candidates.reduce<string | null>((best, c) => (best === null || commonPrefix(c, f.path) > commonPrefix(best, f.path) ? c : best), null);
+    if (proxyPath) usedProxies.add(proxyPath);
+    return { path: f.path, proxyPath };
+  });
+  for (const f of unique) if (f.isProxy && f.dropped && !usedProxies.has(f.path)) media.push({ path: f.path, proxyPath: null });
+  return { media, needsSdk, skipped, folders: [...folders] };
+}
+
+// Пачка папок и файлов, перетащенная на одну дорожку, читается одной задачей с общим ходом.
+export async function scanPaths(paths: string[], onProgress: (done: number, total: number) => void): Promise<ScanResult> {
+  const { media, needsSdk, skipped, folders } = await collectPaths(paths);
 
   const siblings = new Map<string, string[]>();
   for (const dir of new Set(media.map((m) => dirname(m.path)))) {
@@ -135,7 +189,7 @@ export async function scanFolder(folder: string, onProgress: (done: number, tota
             mtimeMs: st.mtimeMs,
             probe: pr,
             sony,
-            proxyPath: proxies.get(proxyKey(item.path)) ?? null,
+            proxyPath: item.proxyPath,
           }));
         }
       } catch {
@@ -147,5 +201,10 @@ export async function scanFolder(folder: string, onProgress: (done: number, tota
   }
   await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, worker));
   clips.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  return { clips, needsSdk, unreadable, isFile };
+  return { clips, needsSdk, unreadable, skipped, folders };
+}
+
+// Одна папка или один файл — для проверок из командной строки.
+export function scanFolder(folder: string, onProgress: (done: number, total: number) => void): Promise<ScanResult> {
+  return scanPaths([folder], onProgress);
 }

@@ -165,12 +165,24 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
   if (sony?.formatFps && (!rate || Math.abs(rateValue(rate) - sony.formatFps) > 0.5)) {
     rate = isNtscRate(sony.formatFps) ? { num: Math.round(sony.formatFps) * 1000, den: 1001 } : { num: sony.formatFps, den: 1 };
   }
-  const fps = rate ? rateValue(rate) : null;
+  let fps = rate ? rateValue(rate) : null;
 
   let frames: number | null = sony?.frames ?? (video?.nb_frames ? Number(video.nb_frames) : null);
   if (frames !== null && (!Number.isFinite(frames) || frames <= 0)) frames = null;
   let durationSec = frames !== null && fps ? frames / fps : Number(input.probe?.format?.duration ?? video?.duration ?? audio[0]?.duration ?? 0);
   if (!Number.isFinite(durationSec)) durationSec = 0;
+
+  // Переменная частота (телефоны): r_frame_rate бывает кратен настоящей — тогда длина по кадрам выходит
+  // вдвое короче. Если она расходится с длиной видео в файле, верим файлу и средней частоте.
+  const streamSec = Number(video?.duration);
+  if (!sony && frames !== null && fps && streamSec > 0 && Math.abs(frames / fps - streamSec) > Math.max(0.5, streamSec * 0.02)) {
+    const avg = parseRate(video?.avg_frame_rate);
+    if (avg) {
+      rate = avg;
+      fps = rateValue(avg);
+    }
+    durationSec = streamSec;
+  }
 
   // Замедленная (S&Q 100/120 к/с в файл 25p) или ускоренная съёмка: запись длилась не столько, сколько файл.
   const captureFps = sony?.captureFps && fps && Math.abs(sony.captureFps - fps) > 0.5 ? sony.captureFps : null;
@@ -192,7 +204,8 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     const actual = fps && isNtscRate(fps) ? (sony.tc.countRate * 1000) / 1001 : sony.tc.countRate;
     tc = {
       text: containerTcText ?? sony.tc.text,
-      seconds: tcToSeconds(sony.tc, sony.tc.countRate, actual),
+      // У 50p и 59,94p второй кадр пары — ещё половина кадра тайм-кода.
+      seconds: tcToSeconds(sony.tc, sony.tc.countRate, actual) + (sony.tc.half ? 0.5 / actual : 0),
       countRate: sony.tc.countRate,
       drop: sony.tc.drop,
       source: 'sony-xml',

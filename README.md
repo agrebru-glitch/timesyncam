@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-Setup-0.3.3.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.4/TimesynCam-Setup-0.3.4.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-0.3.3-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.4/TimesynCam-0.3.4-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-0.3.3-mac-x64.dmg">Mac с процессором Intel</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-0.3.3-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.4/TimesynCam-0.3.4-mac-x64.dmg">Mac с процессором Intel</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.4/TimesynCam-0.3.4-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 
@@ -40,7 +40,7 @@ TimesynCam делает эту работу за вас. Перетащите п
 
 ## Возможности
 
-- **Своя дорожка для каждой камеры и рекордера.** Несколько карт одной камеры — на одну дорожку. Можно перетащить папку целиком или отдельные файлы; звук — WAV/BWF (в том числе RF64), M4A, MP3, AAC, FLAC, AIFF, CAF, OGG, Opus, WMA и другие форматы, которые читает FFmpeg.
+- **Своя дорожка для каждой камеры и рекордера.** Несколько карт одной камеры — на одну дорожку. Можно перетащить папку целиком или сразу пачку файлов — видео и звук вперемешку, они лягут на ту дорожку, куда их бросили; звук — WAV/BWF (в том числе RF64), M4A, MP3, AAC, FLAC, AIFF, CAF, OGG, Opus, WMA и другие форматы, которые читает FFmpeg.
 - **Камеры с тайм-кодом и без.** Камера с синхронизированным тайм-кодом (Tentacle, jam sync) становится опорной, остальные выравниваются по своим часам.
 - **Точность до кадра там, где это возможно.** Если тайм-код камеры идёт непрерывно (Free Run), паузы между клипами точны до кадра, даже когда сам тайм-код не совпадает с реальным временем.
 - **Сверка по звуку.** После раскладки по тайм-коду программа сверяет камеры по общему звуку: точки зацепки по ходу съёмки поправляют клипы, а камеры со сбитыми часами или чужим часовым поясом находятся по звуку во всей записи. Режим выбирается по кнопке «Синхронизировать».

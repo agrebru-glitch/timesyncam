@@ -5,7 +5,8 @@ export interface SonyXmlMeta {
   frames: number | null;
   formatFps: number | null;
   captureFps: number | null;
-  tc: { h: number; m: number; s: number; f: number; countRate: number; halfStep: boolean; drop: boolean; text: string } | null;
+  // half — второй кадр пары у 50p/59,94p: тайм-код считается по 25/30, а кадров вдвое больше.
+  tc: { h: number; m: number; s: number; f: number; half: boolean; countRate: number; halfStep: boolean; drop: boolean; text: string } | null;
   creation: { epochSec: number; tzOffsetMin: number | null } | null;
   make?: string;
   model?: string;
@@ -27,22 +28,27 @@ function bcd(byte: string, mask: number): number {
 }
 
 // Значение LTC у Sony записано байтами кадры-секунды-минуты-часы в BCD, старшие биты — флаги.
-export function decodeSonyLtc(value: string): { h: number; m: number; s: number; f: number; dropFlag: boolean } | null {
+// Бит 0x80 часов при halfStep — второй кадр пары (50p, 59,94p).
+export function decodeSonyLtc(value: string): { h: number; m: number; s: number; f: number; dropFlag: boolean; halfFlag: boolean } | null {
   if (!/^[0-9a-fA-F]{8}$/.test(value)) return null;
   const ff = value.slice(0, 2);
+  const hh = value.slice(6, 8);
   return {
     f: bcd(ff, 0x3f),
     s: bcd(value.slice(2, 4), 0x7f),
     m: bcd(value.slice(4, 6), 0x7f),
-    h: bcd(value.slice(6, 8), 0x3f),
+    h: bcd(hh, 0x3f),
     dropFlag: (parseInt(ff, 16) & 0x40) !== 0,
+    halfFlag: (parseInt(hh, 16) & 0x80) !== 0,
   };
 }
 
-function parseFps(text: string | undefined): number | null {
+// 25p, 50.00p, 59.94p — кадры в секунду; 50i, 59.94i — полукадры, кадров вдвое меньше.
+export function parseFps(text: string | undefined): number | null {
   if (!text) return null;
-  const m = /([\d.]+)/.exec(text);
-  return m ? Number(m[1]) : null;
+  const m = /([\d.]+)\s*([ip])?/i.exec(text);
+  if (!m) return null;
+  return m[2]?.toLowerCase() === 'i' ? Number(m[1]) / 2 : Number(m[1]);
 }
 
 export function parseSonyXml(xml: string): SonyXmlMeta | null {
@@ -62,12 +68,19 @@ export function parseSonyXml(xml: string): SonyXmlMeta | null {
     const decoded = first ? decodeSonyLtc(first[1]) : null;
     if (decoded && tcFps > 0) {
       const drop = decoded.dropFlag && (tcFps === 30 || tcFps === 60);
+      const half = halfStep && decoded.halfFlag;
+      // Текст — в кадрах самого клипа, как его покажет монтажка: у 50p кадры 0–49.
+      const frame = halfStep ? decoded.f * 2 + (half ? 1 : 0) : decoded.f;
       tc = {
-        ...decoded,
+        h: decoded.h,
+        m: decoded.m,
+        s: decoded.s,
+        f: decoded.f,
+        half,
         countRate: tcFps,
         halfStep,
         drop,
-        text: `${pad2(decoded.h)}:${pad2(decoded.m)}:${pad2(decoded.s)}${drop ? ';' : ':'}${pad2(decoded.f)}`,
+        text: `${pad2(decoded.h)}:${pad2(decoded.m)}:${pad2(decoded.s)}${drop ? ';' : ':'}${pad2(frame)}`,
       };
     }
   }
