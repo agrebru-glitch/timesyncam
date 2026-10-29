@@ -38,6 +38,10 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: nu
   });
 }
 
+export function runTool(name: 'ffmpeg' | 'ffprobe', args: string[], timeoutMs: number) {
+  return run(name === 'ffmpeg' ? FFMPEG : FFPROBE, args, timeoutMs);
+}
+
 export async function toolsAvailable(): Promise<{ ffprobe: boolean; ffmpeg: boolean }> {
   const check = async (cmd: string) => {
     try {

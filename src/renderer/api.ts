@@ -10,8 +10,9 @@ export interface Api {
   pickFolders(): Promise<string[] | null>;
   scanFolder(scanId: string, folder: string): Promise<ScanResult>;
   onScanProgress(cb: (p: { scanId: string; done: number; total: number }) => void): () => void;
-  onAutoload(cb: (p: { folders: string[]; sync: boolean; tab?: string; at?: string }) => void): void;
+  onAutoload(cb: (p: { folders: string[]; sync: boolean; tab?: string; at?: string; menu?: boolean }) => void): void;
   grabFrame(path: string, seconds: number): Promise<string | null>;
+  audioEnvelope(path: string, startSec: number, durSec: number): Promise<{ env: Float32Array; peakDb: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;
   reveal(path: string): Promise<void>;
   tools(): Promise<{ ffprobe: boolean; ffmpeg: boolean }>;

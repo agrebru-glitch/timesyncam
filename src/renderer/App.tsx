@@ -2,12 +2,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import type { Dispatch } from 'react';
 import type { Issue, Placement } from '../core/types.ts';
 import { previewPlacements, runSync } from '../core/sync.ts';
+import { heardCameras, refineByAudio } from '../core/audioSync.ts';
 import { defaultTimelineRate } from '../core/fcp7.ts';
 import { rateValue } from '../core/timecode.ts';
 import { pluralRu } from '../core/format.ts';
 import { api } from './api.ts';
 import { canExport, initialState, isScanning, needsSync, newCamera, reducer } from './state.ts';
-import type { Action, State } from './state.ts';
+import type { Action, State, SyncMode } from './state.ts';
+import { SyncMenu } from './components/SyncMenu.tsx';
 import { IconExport, IconLock, IconSync, IconX } from './icons.tsx';
 import { CameraPanel } from './components/CameraPanel.tsx';
 import { Viewer } from './components/Viewer.tsx';
@@ -24,7 +26,16 @@ interface Ctx {
   issues: Issue[];
   fps: number;
   addFolders: (cameraId: string | null, folders: string[]) => Promise<void>;
-  doSync: () => void;
+  doSync: (mode?: SyncMode) => void;
+}
+
+const MODE_KEY = 'timesyncam.syncMode';
+function savedMode(): SyncMode {
+  try {
+    return localStorage.getItem(MODE_KEY) === 'timecode' ? 'timecode' : 'audio';
+  } catch {
+    return 'audio';
+  }
 }
 
 const AppContext = createContext<Ctx | null>(null);
@@ -37,7 +48,7 @@ export function useApp(): Ctx {
 let scanIssueSeq = 0;
 
 export function App() {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, dispatch] = useReducer(reducer, initialState, (s) => ({ ...s, syncMode: savedMode() }));
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -47,7 +58,7 @@ export function App() {
     [synced, state.sync, state.cameras],
   );
   const issues = useMemo(() => {
-    const list = [...state.scanIssues, ...(synced && state.sync ? state.sync.issues : [])];
+    const list = [...state.scanIssues, ...(synced && state.sync ? state.sync.issues : []), ...(synced && state.audio ? state.audio.issues : [])];
     if (state.tools && !state.tools.ffprobe) {
       list.unshift({
         id: 'tools', severity: 'error', cameraId: null,
@@ -58,7 +69,7 @@ export function App() {
     }
     const order = { error: 0, warning: 1, info: 2 };
     return list.sort((a, b) => order[a.severity] - order[b.severity]);
-  }, [state.scanIssues, state.sync, synced, state.tools]);
+  }, [state.scanIssues, state.sync, state.audio, synced, state.tools]);
   const fps = useMemo(() => rateValue(defaultTimelineRate(state.cameras)), [state.cameras]);
 
   const addFolders = useCallback(async (cameraId: string | null, folders: string[]) => {
@@ -104,30 +115,70 @@ export function App() {
     }
   }, []);
 
-  const doSync = useCallback(() => {
+  // Синхронизация: сначала тайм-код и часы, затем — если выбрано — сверка по звуку.
+  const doSync = useCallback(async (mode?: SyncMode) => {
     const s = stateRef.current;
-    if (isScanning(s)) return;
-    dispatch({ type: 'synced', result: runSync(s.cameras), fit: true });
+    if (isScanning(s) || s.audioRun) return;
+    const chosen = mode ?? s.syncMode;
+    dispatch({ type: 'sync-menu', open: false });
+    if (mode) {
+      dispatch({ type: 'sync-mode', mode });
+      try {
+        localStorage.setItem(MODE_KEY, mode);
+      } catch {
+        // запоминать режим необязательно
+      }
+    }
+    const cameras = s.cameras;
+    const version = s.version;
+    const coarse = runSync(cameras);
+    dispatch({ type: 'synced', result: coarse, fit: true });
+    if (chosen !== 'audio' || stateRef.current.tools?.ffmpeg === false) {
+      dispatch({ type: 'audio-done', result: null });
+      return;
+    }
+    dispatch({ type: 'audio-start' });
+    try {
+      const audio = await refineByAudio(cameras, coarse, (clip, start, dur) => api.audioEnvelope(clip.path, start, dur), {
+        searchSec: 10,
+        maxAnchors: 8,
+        isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
+        onProgress: (done, total) => dispatch({ type: 'audio-progress', done, total }),
+      });
+      if (stateRef.current.version !== version) {
+        dispatch({ type: 'audio-done', result: null });
+        return;
+      }
+      dispatch({ type: 'audio-done', result: audio });
+      // Звук мог передвинуть камеры на часы — заново показываем всю съёмку.
+      dispatch({ type: 'synced', result: runSync(stateRef.current.cameras, audio.corrections, heardCameras(audio)), fit: true });
+    } catch {
+      dispatch({ type: 'audio-done', result: null });
+      dispatch({ type: 'toast', text: 'Сверить по звуку не получилось — камеры остались по тайм-коду и часам.' });
+    }
   }, []);
 
   // Ручная подгонка и удаление клипов с таймлинии сразу пересчитывают уже сделанную синхронизацию.
   const shiftKey = state.cameras.map((c) => `${c.id}:${c.manualShiftSec}:${c.excludedClipIds.length}`).join('|');
   useEffect(() => {
     const s = stateRef.current;
-    if (s.sync && s.syncedVersion === s.version) dispatch({ type: 'synced', result: runSync(s.cameras), fit: false });
+    if (s.sync && s.syncedVersion === s.version && !s.audioRun) {
+      dispatch({ type: 'synced', result: runSync(s.cameras, s.audio?.corrections ?? {}, heardCameras(s.audio)), fit: false });
+    }
   }, [shiftKey]);
 
   useEffect(() => {
     const off = api.onScanProgress((p) => dispatch({ type: 'scan-progress', cameraId: p.scanId, done: p.done, total: p.total }));
     void api.tools().then((tools) => dispatch({ type: 'tools', tools }));
     // Автозагрузка папок из переменных окружения — для проверки сборки без ручных действий.
-    api.onAutoload(async ({ folders, sync, tab, at }) => {
+    api.onAutoload(async ({ folders, sync, tab, at, menu }) => {
       const first = stateRef.current.cameras[0];
       for (let i = 0; i < folders.length; i++) {
         await addFolders(i === 0 && first.clips.length === 0 ? first.id : null, [folders[i]]);
       }
-      if (sync) setTimeout(() => doSync(), 50);
+      if (sync) setTimeout(() => void doSync(), 50);
       if (tab === 'errors' || tab === 'faq') setTimeout(() => dispatch({ type: 'tab', tab }), 100);
+      if (menu) setTimeout(() => dispatch({ type: 'sync-menu', open: true }), 200);
       const m = at ? /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(at) : null;
       if (m) {
         setTimeout(() => {
@@ -200,6 +251,8 @@ export function App() {
 
   const exportTitle = scanning
     ? 'Дождитесь, пока программа дочитает клипы'
+    : state.audioRun
+      ? 'Дождитесь окончания сверки по звуку'
     : !state.sync
       ? 'Сначала синхронизируйте камеры'
       : needsSync(state)
@@ -219,13 +272,21 @@ export function App() {
             <button className={`tab ${state.tab === 'faq' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'faq' })}>Настройка камер</button>
           </nav>
           <span className="spacer" />
-          <button
-            className={`btn ${wantSync ? 'primary pulse' : ''} ${scanning ? 'locked' : ''}`}
-            onClick={doSync}
-            title={scanning ? 'Дождитесь, пока программа дочитает клипы' : wantSync ? 'Есть новые клипы — разложите их по времени' : 'Пересчитать синхронизацию'}
-          >
-            <IconSync /> {scanning ? 'Читаю клипы…' : 'Синхронизировать'}
-          </button>
+          <div className="sync-wrap">
+            <button
+              className={`btn ${wantSync && !state.audioRun ? 'primary pulse' : ''} ${scanning || state.audioRun ? 'locked' : ''}`}
+              onClick={() => !scanning && !state.audioRun && dispatch({ type: 'sync-menu', open: !state.syncMenuOpen })}
+              title={scanning ? 'Дождитесь, пока программа дочитает клипы' : wantSync ? 'Есть новые клипы — разложите их по времени' : 'Пересчитать синхронизацию'}
+            >
+              <IconSync className={`icon ${state.audioRun ? 'spin' : ''}`} />
+              {scanning
+                ? 'Читаю клипы…'
+                : state.audioRun
+                  ? `Сверяю звук${state.audioRun.total ? ` ${state.audioRun.done} из ${state.audioRun.total}` : '…'}`
+                  : 'Синхронизировать'}
+            </button>
+            {state.syncMenuOpen && <SyncMenu />}
+          </div>
           <button
             className={`btn ${exportOk ? 'primary' : 'locked'}`}
             onClick={() => (exportOk ? dispatch({ type: 'export-open', open: true }) : dispatch({ type: 'toast', text: exportTitle }))}

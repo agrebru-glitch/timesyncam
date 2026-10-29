@@ -166,6 +166,30 @@ export function Timeline() {
       }
     }
 
+    // Точки сверки по звуку: зелёная — задала или сменила поправку, белая — подтвердила, серая — отброшена.
+    if (synced && state.audio) {
+      for (const camRes of state.audio.cameras) {
+        const row = rows.find((r) => r.cam.id === camRes.cameraId);
+        if (!row) continue;
+        for (const a of camRes.anchors) {
+          const ax = x(a.at);
+          if (ax < -6 || ax > size.w + 6) continue;
+          const ay = row.y + ROW_H - 7;
+          g.fillStyle = a.role === 'start' || a.role === 'shift' ? '#3ccf7e' : a.role === 'confirm' ? 'rgba(255,255,255,0.9)' : '#6f727a';
+          g.strokeStyle = 'rgba(0,0,0,0.6)';
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(ax, ay - 5);
+          g.lineTo(ax + 5, ay);
+          g.lineTo(ax, ay + 5);
+          g.lineTo(ax - 5, ay);
+          g.closePath();
+          g.fill();
+          g.stroke();
+        }
+      }
+    }
+
     // Курсор.
     if (state.playhead !== null) {
       const px = Math.round(x(state.playhead)) + 0.5;
@@ -180,7 +204,7 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, vp, rows, placements, synced, state.playhead, state.selectedClipId, errorClips, speedClips, tz]);
+  }, [size, vp, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, errorClips, speedClips, tz]);
 
   // Мышь: щелчок ставит курсор и выделяет клип, по линейке можно водить.
   const timeAt = (clientX: number) => {

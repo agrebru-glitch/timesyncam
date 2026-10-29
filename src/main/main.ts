@@ -5,6 +5,7 @@ import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { scanFolder } from './scan.ts';
 import { grabFrame, toolsAvailable } from './ffmpeg.ts';
+import { audioEnvelope } from './audio.ts';
 
 // Встроенный плеер получает доступ только к файлам, которые программа сама нашла при сканировании.
 const allowedMedia = new Set<string>();
@@ -77,6 +78,7 @@ function createWindow(): void {
         sync: process.env.SYNC_AUTOSYNC === '1',
         tab: process.env.SYNC_TAB,
         at: process.env.SYNC_PLAYHEAD,
+        menu: process.env.SYNC_MENU === '1',
       });
     }
     const shot = process.env.SYNC_SHOT;
@@ -108,6 +110,11 @@ ipcMain.handle('scan:folder', async (event, scanId: string, folder: string) => {
 ipcMain.handle('media:grab', async (_e, path: string, seconds: number) => {
   if (!allowedMedia.has(path)) return null;
   return grabFrame(path, seconds);
+});
+
+ipcMain.handle('audio:envelope', async (_e, path: string, startSec: number, durSec: number) => {
+  if (!allowedMedia.has(path)) return null;
+  return audioEnvelope(path, startSec, durSec);
 });
 
 ipcMain.handle('export:save', async (_e, defaultName: string, content: string) => {

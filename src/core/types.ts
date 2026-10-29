@@ -92,6 +92,7 @@ export interface Camera {
   manualShiftSec: number;
   timecodeTrust: TimecodeTrust;
   excludedClipIds: string[]; // убраны с таймлинии пользователем (файлы на диске не трогаются)
+  audioAssist: boolean; // поправлять камеру по звуку
   scanning: { done: number; total: number } | null;
 }
 

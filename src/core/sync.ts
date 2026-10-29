@@ -88,7 +88,7 @@ function activeClips(cam: Camera): ClipMeta[] {
   return cam.clips.filter((c) => !excluded.has(c.id));
 }
 
-function syncCamera(cam: Camera, tzMin: number): CameraOutcome {
+function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, number>): CameraOutcome {
   const issues: Issue[] = [];
   const clips = activeClips(cam);
   const sync: CameraSync = {
@@ -217,7 +217,7 @@ function syncCamera(cam: Camera, tzMin: number): CameraOutcome {
         method = 'timecode-and-clock';
       }
     }
-    raw.push({ clip: c, start: start + cam.manualShiftSec, method });
+    raw.push({ clip: c, start: start + cam.manualShiftSec + (corrections[c.id] ?? 0), method });
   }
 
   const untimed = clips.filter((c) => !c.clock);
@@ -297,9 +297,11 @@ export function pickDisplayTz(cameras: Camera[]): number {
   return localTzOffsetMin();
 }
 
-export function runSync(cameras: Camera[]): SyncResult {
+// corrections — поправки по звуку для отдельных клипов (секунды), см. audioSync.ts.
+// heardCameras — камеры, которые уже сверены по звуку: подсказка сверить их по хлопку им не нужна.
+export function runSync(cameras: Camera[], corrections: Record<string, number> = {}, heardCameras: Set<string> = new Set()): SyncResult {
   const tz = pickDisplayTz(cameras);
-  const outcomes = cameras.map((c) => syncCamera(c, tz));
+  const outcomes = cameras.map((c) => syncCamera(c, tz, corrections));
   const placements = outcomes.flatMap((o) => o.placements);
   const issues = outcomes.flatMap((o) => o.issues);
   const syncs = outcomes.map((o) => o.sync);
@@ -350,7 +352,7 @@ export function runSync(cameras: Camera[]): SyncResult {
 
     const reference = withRange.filter((s) => s.timeSource === 'timecode');
     for (const s of withRange) {
-      if (s.timeSource === 'timecode' || reference.length === 0) continue;
+      if (s.timeSource === 'timecode' || reference.length === 0 || heardCameras.has(s.cameraId)) continue;
       const cam = cameras.find((c) => c.id === s.cameraId)!;
       issues.push(issue({
         severity: 'info',

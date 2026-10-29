@@ -72,6 +72,7 @@ export function camera(name: string, clips: ClipMeta[], over: Partial<Camera> = 
     manualShiftSec: 0,
     timecodeTrust: 'auto',
     excludedClipIds: [],
+    audioAssist: true,
     scanning: null,
     ...over,
   };

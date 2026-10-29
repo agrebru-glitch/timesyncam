@@ -1,6 +1,10 @@
 import type { Camera, ClipMeta, Issue, SyncResult, TimecodeTrust } from '../core/types.ts';
+import type { AudioSyncResult } from '../core/audioSync.ts';
 
 export type Tab = 'sync' | 'errors' | 'faq';
+
+// Как синхронизировать: тайм-код и часы, затем сверка по звуку — или только тайм-код и часы.
+export type SyncMode = 'audio' | 'timecode';
 
 export interface Viewport {
   start: number; // эпоха, левый край таймлинии
@@ -30,6 +34,10 @@ export interface State {
   exportOpen: boolean;
   toasts: Toast[];
   tools: { ffprobe: boolean; ffmpeg: boolean } | null;
+  syncMode: SyncMode;
+  syncMenuOpen: boolean;
+  audioRun: { done: number; total: number } | null; // идёт сверка по звуку
+  audio: AudioSyncResult | null;
 }
 
 let camSeq = 0;
@@ -43,6 +51,7 @@ export function newCamera(index: number): Camera {
     manualShiftSec: 0,
     timecodeTrust: 'auto',
     excludedClipIds: [],
+    audioAssist: true,
     scanning: null,
   };
 }
@@ -64,6 +73,10 @@ export const initialState: State = {
   exportOpen: false,
   toasts: [],
   tools: null,
+  syncMode: 'audio',
+  syncMenuOpen: false,
+  audioRun: null,
+  audio: null,
 };
 
 export type Action =
@@ -87,7 +100,13 @@ export type Action =
   | { type: 'export-open'; open: boolean }
   | { type: 'toast'; text: string; revealPath?: string }
   | { type: 'toast-dismiss'; id: number }
-  | { type: 'tools'; tools: { ffprobe: boolean; ffmpeg: boolean } };
+  | { type: 'tools'; tools: { ffprobe: boolean; ffmpeg: boolean } }
+  | { type: 'sync-menu'; open: boolean }
+  | { type: 'sync-mode'; mode: SyncMode }
+  | { type: 'audio-start' }
+  | { type: 'audio-progress'; done: number; total: number }
+  | { type: 'audio-done'; result: AudioSyncResult | null }
+  | { type: 'set-audio-assist'; cameraId: string; on: boolean };
 
 let toastSeq = 0;
 
@@ -118,7 +137,8 @@ export function reducer(state: State, a: Action): State {
         cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, folders: [...c.folders, a.folder], scanning: { done: 0, total: 0 } })),
       };
     case 'scan-progress':
-      return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, scanning: { done: a.done, total: a.total } })) };
+      // Сообщение о ходе чтения может прийти уже после конца чтения — тогда его не учитываем.
+      return { ...state, cameras: mapCamera(state, a.cameraId, (c) => (c.scanning ? { ...c, scanning: { done: a.done, total: a.total } } : c)) };
     case 'scan-done':
       return {
         ...state,
@@ -183,6 +203,18 @@ export function reducer(state: State, a: Action): State {
       return { ...state, toasts: state.toasts.filter((t) => t.id !== a.id) };
     case 'tools':
       return { ...state, tools: a.tools };
+    case 'sync-menu':
+      return { ...state, syncMenuOpen: a.open };
+    case 'sync-mode':
+      return { ...state, syncMode: a.mode };
+    case 'audio-start':
+      return { ...state, audioRun: { done: 0, total: 0 }, audio: null };
+    case 'audio-progress':
+      return { ...state, audioRun: { done: a.done, total: a.total } };
+    case 'audio-done':
+      return { ...state, audioRun: null, audio: a.result };
+    case 'set-audio-assist':
+      return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, audioAssist: a.on })), version: state.version + 1 };
   }
 }
 
@@ -196,5 +228,5 @@ export function isScanning(s: State): boolean {
 }
 
 export function canExport(s: State): boolean {
-  return !!s.sync && !needsSync(s) && !isScanning(s) && s.sync.placements.length > 0;
+  return !!s.sync && !needsSync(s) && !isScanning(s) && !s.audioRun && s.sync.placements.length > 0;
 }

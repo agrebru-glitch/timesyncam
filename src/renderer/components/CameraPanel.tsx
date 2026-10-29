@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Camera, CameraSync, TimecodeTrust } from '../../core/types.ts';
+import type { AudioCameraResult } from '../../core/audioSync.ts';
+import { formatSigned } from '../../core/audioSync.ts';
 import { formatClockTime, formatDate, formatDurationHuman, formatFps, formatShift, formatSize, parseShift, pluralRu, resolutionLabel } from '../../core/format.ts';
 import { rateValue } from '../../core/timecode.ts';
 import { useApp } from '../App.tsx';
@@ -44,6 +46,38 @@ function timeSourceText(cs: CameraSync | undefined, cam: Camera): { title: strin
     title: 'Только часы камеры',
     sub: cs.recRun ? 'Тайм-код шёл только во время записи. Точность около секунды.' : 'Точность около секунды. Точно подгоните по хлопку.',
   };
+}
+
+function audioText(au: AudioCameraResult | undefined, cam: Camera, running: boolean): { title: string; sub?: string; tone?: 'warn' | 'ok' } | null {
+  if (running) return { title: 'Сверяю…' };
+  if (!au) return null;
+  const clips = au.anchors.filter((a) => a.role !== 'weak' && a.role !== 'ignored').length;
+  switch (au.status) {
+    case 'reference':
+      return { title: 'Опорная для сверки', sub: 'По её звуку выравниваются остальные камеры' };
+    case 'checked':
+      return au.correction !== null && Math.abs(au.correction) > 0.06
+        ? { title: `Расходится по звуку на ${formatSigned(au.correction)}`, sub: 'Тайм-код точный, раскладка не менялась. Возможно, камеры стояли далеко друг от друга.', tone: 'warn' }
+        : { title: 'Звук совпал с тайм-кодом', tone: 'ok' };
+    case 'confirmed':
+      return { title: 'Звук подтвердил раскладку', sub: `Точек сверки: ${clips}, расхождение меньше кадра`, tone: 'ok' };
+    case 'applied': {
+      const wide = au.wideShift != null ? `Найдена по звуку: часы сбиты на ${formatDurationHuman(Math.abs(au.wideShift))}. ` : '';
+      if (au.model === 'per-clip') return { title: 'Поправлена по звуку', sub: `${wide}Своя поправка у клипов с общим звуком (${clips}), остальным — по ближайшей точке`, tone: 'ok' };
+      if (au.model === 'per-anchor') return { title: `Поправка менялась по ходу съёмки: ${au.steps.length} шага`, sub: `${wide}В начале ${formatSigned(au.steps[0].correction)}, в конце ${formatSigned(au.steps[au.steps.length - 1].correction)}`, tone: 'ok' };
+      return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}`, tone: 'ok' };
+    }
+    case 'no-overlap':
+      return { title: 'Не с чем сверить', sub: 'Нет общего звука с другими камерами' };
+    case 'no-match':
+      return { title: 'Совпадения по звуку нет', sub: 'Проверьте стыковку по хлопку', tone: 'warn' };
+    case 'silent':
+      return { title: 'В звуке тишина', sub: 'Микрофон камеры был выключен или уровень стоял на нуле', tone: 'warn' };
+    case 'no-audio':
+      return { title: 'Без звука' };
+    case 'disabled':
+      return cam.audioAssist ? null : { title: 'Поправка по звуку выключена' };
+  }
 }
 
 function CameraCard({ cam, index }: { cam: Camera; index: number }) {
@@ -91,6 +125,8 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             : { cls: 'ok', text: 'Готово' };
 
   const ts = timeSourceText(synced ? cs : undefined, cam);
+  const au = synced ? state.audio?.cameras.find((c) => c.cameraId === cam.id) : undefined;
+  const at = synced ? audioText(au, cam, !!state.audioRun) : null;
   const isActive = state.activeCameraId === cam.id;
 
   const onDrop = (e: React.DragEvent) => {
@@ -196,6 +232,15 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             )}
             <dt>Время</dt>
             <dd>{ts.title}<span className="sub">{ts.sub}</span></dd>
+            {at && (
+              <>
+                <dt>Звук</dt>
+                <dd style={{ color: at.tone === 'warn' ? 'var(--warning)' : at.tone === 'ok' ? 'var(--success)' : undefined }}>
+                  {at.title}
+                  {at.sub && <span className="sub">{at.sub}</span>}
+                </dd>
+              </>
+            )}
             {info.excluded > 0 && (
               <>
                 <dt>Убрано</dt>
@@ -219,6 +264,12 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
           >
             {(Object.keys(TRUST_LABELS) as TimecodeTrust[]).map((k) => <option key={k} value={k}>{TRUST_LABELS[k]}</option>)}
           </select>
+          {info.channels > 0 && (
+            <label className="check" onClick={(e) => e.stopPropagation()} title="Используется в режиме «Тайм-код + звук»">
+              <input type="checkbox" checked={cam.audioAssist} onChange={(e) => dispatch({ type: 'set-audio-assist', cameraId: cam.id, on: e.target.checked })} />
+              Поправлять по звуку
+            </label>
+          )}
 
           <div className="section-label">Сдвинуть все клипы камеры</div>
           <div className="shift-row" onClick={(e) => e.stopPropagation()}>
