@@ -10,6 +10,18 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-Setup-0.3.0.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  &nbsp;
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-0.3.0-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-0.3.0-mac-x64.dmg">Mac с процессором Intel</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-0.3.0-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/latest"><img src="https://img.shields.io/github/v/release/agrebru-glitch/timesyncam?label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7" alt="Релиз"></a>
   <a href="https://github.com/agrebru-glitch/timesyncam/actions/workflows/ci.yml"><img src="https://github.com/agrebru-glitch/timesyncam/actions/workflows/ci.yml/badge.svg" alt="Проверки"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-GPL--3.0-blue" alt="Лицензия GPL-3.0"></a>
