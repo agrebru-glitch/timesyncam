@@ -139,7 +139,11 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
       });
     }
   }
-  items.sort((a, b) => a.offset - b.offset || b.lane - a.lane);
+  // Порядок в файле — по дорожкам: сначала звук без видео (рекордер), потом камеры сверху вниз, в каждой — по времени.
+  // DaVinci раскладывает звук клипов по дорожкам в том порядке, в каком встречает их в файле: так звук каждой камеры
+  // ложится в том же порядке, что и её видео, а не по тому, какая камера включилась раньше.
+  const laneOrder = (l: number) => (l < 0 ? -l : 1000 + l);
+  items.sort((a, b) => laneOrder(a.lane) - laneOrder(b.lane) || a.offset - b.offset);
 
   const total = frames(Math.max(1, endFrame), seq);
   return `<?xml version="1.0" encoding="UTF-8"?>

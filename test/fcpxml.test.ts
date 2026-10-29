@@ -76,3 +76,17 @@ test('FCPXML: 29,97 — время в долях 1001/30000', () => {
     assert.ok(Math.abs(frames - Math.round(frames)) < 1e-6, m[1]);
   }
 });
+
+test('FCPXML: клипы в файле по дорожкам — рекордер, потом камеры сверху вниз, чтобы звук лёг под своё видео', () => {
+  // Камера 2 включилась раньше камеры 1, рекордер — раньше всех.
+  const a1 = clip({ start: T16 + 100 });
+  const a2 = clip({ start: T16 + 300 });
+  const b1 = clip({ start: T16 + 50 });
+  const rec = clip({ start: T16 + 10 });
+  Object.assign(rec, { name: 'ZOOM0001.WAV', hasVideo: false, rate: null, frames: null, width: null, height: null, durationSec: 600, recordedSec: 600 });
+  const cams = [camera('Камера 1', [a1, a2]), camera('Камера 2', [b1]), camera('Рекордер', [rec])];
+  const r = runSync(cams);
+  const xml = buildFcpxml(cams, r, { name: 'Порядок', rate: { num: 25, den: 1 }, width: 3840, height: 2160 });
+  const order = [...xml.matchAll(/<asset-clip [^>]*lane="(-?\d+)"[^>]*name="([^"]+)"/g)].map((m) => `${m[1]} ${m[2]}`);
+  assert.deepEqual(order, [`-1 ZOOM0001.WAV`, `1 ${a1.name}`, `1 ${a2.name}`, `2 ${b1.name}`]);
+});
