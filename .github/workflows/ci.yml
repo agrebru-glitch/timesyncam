@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   check:
-    name: Типы, тесты, сборка
-    runs-on: windows-latest
+    name: Типы, тесты, сборка (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'electron';
 import { createReadStream } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
@@ -183,7 +183,68 @@ for (const s of [process.stdout, process.stderr]) s?.on('error', (e: NodeJS.Errn
 // Windows группирует окна на панели задач по этому имени — со значком TimesynCam, а не Electron.
 if (process.platform === 'win32') app.setAppUserModelId('io.github.agrebru-glitch.timesyncam');
 
+// На Mac меню программы всегда на виду в верхней строке экрана — делаем его русским.
+// Пункт «Правка» нужен и для ⌘C / ⌘V в полях ввода.
+function setMacMenu(): void {
+  app.setAboutPanelOptions({
+    applicationName: 'TimesynCam',
+    applicationVersion: app.getVersion(),
+    copyright: '© 2026 Andrey Grebenikov · GPL-3.0',
+    website: LINKS.github,
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'TimesynCam',
+      submenu: [
+        { role: 'about', label: 'О программе TimesynCam' },
+        { type: 'separator' },
+        { role: 'hide', label: 'Скрыть TimesynCam' },
+        { role: 'hideOthers', label: 'Скрыть остальные' },
+        { role: 'unhide', label: 'Показать все' },
+        { type: 'separator' },
+        { role: 'quit', label: 'Завершить TimesynCam' },
+      ],
+    },
+    {
+      label: 'Правка',
+      submenu: [
+        { role: 'undo', label: 'Отменить' },
+        { role: 'redo', label: 'Повторить' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Вырезать' },
+        { role: 'copy', label: 'Скопировать' },
+        { role: 'paste', label: 'Вставить' },
+        { role: 'selectAll', label: 'Выбрать все' },
+      ],
+    },
+    {
+      label: 'Вид',
+      submenu: [{ role: 'togglefullscreen', label: 'Полноэкранный режим' }],
+    },
+    {
+      label: 'Окно',
+      submenu: [
+        { role: 'minimize', label: 'Свернуть' },
+        { role: 'zoom', label: 'Изменить масштаб' },
+        { type: 'separator' },
+        { role: 'close', label: 'Закрыть окно' },
+        { role: 'front', label: 'Все окна — на передний план' },
+      ],
+    },
+    {
+      role: 'help',
+      label: 'Справка',
+      submenu: [{ label: 'TimesynCam на GitHub', click: () => void shell.openExternal(LINKS.github) }],
+    },
+  ]));
+}
+
 app.whenReady().then(() => {
+  if (process.platform === 'darwin') {
+    setMacMenu();
+    // Без установки (npm start) в Dock — значок Electron; ставим свой.
+    if (!app.isPackaged) app.dock?.setIcon(join(__dirname, '../icon.png'));
+  }
   registerMediaProtocol();
   createWindow();
 });

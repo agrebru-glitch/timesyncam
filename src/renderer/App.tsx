@@ -21,6 +21,7 @@ import { Timeline } from './components/Timeline.tsx';
 import { ErrorsPage } from './components/ErrorsPage.tsx';
 import { FaqPage } from './components/FaqPage.tsx';
 import { ExportDialog } from './components/ExportDialog.tsx';
+import { isMac } from './platform.ts';
 
 interface Ctx {
   state: State;
@@ -78,7 +79,9 @@ export function App() {
       list.unshift({
         id: 'tools', severity: 'error', cameraId: null,
         title: 'Не найден ffprobe — программа не может читать клипы',
-        details: 'Положите ffprobe.exe и ffmpeg.exe в папку bin рядом с программой или установите FFmpeg и добавьте его в PATH.',
+        details: isMac
+          ? 'Переустановите программу из образа .dmg с GitHub — FFmpeg входит в него. Или установите FFmpeg (например, brew install ffmpeg).'
+          : 'Положите ffprobe.exe и ffmpeg.exe в папку bin рядом с программой или установите FFmpeg и добавьте его в PATH.',
         actions: [],
       });
     }
@@ -319,12 +322,19 @@ export function App() {
   }, [state.playing, placements]);
 
   // Клавиши как в монтажке: пробел, стрелки (Shift — по секунде), Home/End.
+  // На Mac без клавиш Home/End то же делают ⌘ + ← →.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'SELECT') return;
       const s = stateRef.current;
       if (s.tab !== 'sync') return;
-      if (e.code === 'Space') {
+      const home = e.code === 'Home' || (isMac && e.metaKey && e.code === 'ArrowLeft');
+      const end = e.code === 'End' || (isMac && e.metaKey && e.code === 'ArrowRight');
+      if (home || end) {
+        e.preventDefault();
+        if (!placements.length) return;
+        dispatch({ type: 'playhead', at: home ? Math.min(...placements.map((p) => p.start)) : Math.max(...placements.map((p) => p.end)) });
+      } else if (e.code === 'Space') {
         e.preventDefault();
         if (s.playhead !== null) dispatch({ type: 'play', playing: !s.playing });
       } else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
@@ -333,10 +343,6 @@ export function App() {
         const step = (e.shiftKey ? 1 : 1 / fps) * (e.code === 'ArrowLeft' ? -1 : 1);
         dispatch({ type: 'play', playing: false });
         dispatch({ type: 'playhead', at: s.playhead + step });
-      } else if (e.code === 'Home' && placements.length) {
-        dispatch({ type: 'playhead', at: Math.min(...placements.map((p) => p.start)) });
-      } else if (e.code === 'End' && placements.length) {
-        dispatch({ type: 'playhead', at: Math.max(...placements.map((p) => p.end)) });
       }
     };
     window.addEventListener('keydown', onKey);
