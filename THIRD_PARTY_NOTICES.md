@@ -37,6 +37,10 @@ FFmpeg — торговая марка Fabrice Bellard, автора проек�
 - Лицензия: MIT.
 - Исходный код: [kazuhikoarase/qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator).
 
+## Логотип CloudTips
+
+Логотип CloudTips в README (`docs/images/cloudtips.svg`, знак в центре `docs/images/support-qr.svg`) — товарный знак его владельца. Используется только как ссылка на страницу чаевых проекту и в программу не входит.
+
 ## Шрифты и иконки
 
 Интерфейс использует системные шрифты Windows. Иконки нарисованы для TimesynCam и распространяются вместе с программой по её лицензии.

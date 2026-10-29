@@ -36,6 +36,7 @@ export interface ControlFrame {
 export interface ControlOutcome {
   pre: Record<string, number>; // поправка каждого клипа камер с контрольным кадром
   fixed: Set<string>; // эти камеры — опорные для сверки по звуку
+  clips: Set<string>; // клипы, в которых снят экран, — стоят точно сами по себе
   cameras: Map<string, { correction: number; precisionSec: number; transitions: number; frames: number }>;
 }
 
@@ -46,23 +47,28 @@ export function controlCorrections(
   placements: { clipId: string; cameraId: string; start: number }[],
   clockOnly: Set<string>,
 ): ControlOutcome {
-  const byCam = new Map<string, { delta: number; precision: number; transitions: number }[]>();
+  const byCam = new Map<string, { clipId: string; delta: number; precision: number; transitions: number }[]>();
   for (const { frame, result } of results) {
     const p = placements.find((x) => x.clipId === frame.clipId);
     if (!p) continue;
     const list = byCam.get(frame.cameraId) ?? [];
-    list.push({ delta: result.clipStartEpoch - p.start, precision: result.precisionSec, transitions: result.transitions });
+    list.push({ clipId: frame.clipId, delta: result.clipStartEpoch - p.start, precision: result.precisionSec, transitions: result.transitions });
     byCam.set(frame.cameraId, list);
   }
   const pre: Record<string, number> = {};
   const fixed = new Set<string>();
+  const clips = new Set<string>();
   const cameras: ControlOutcome['cameras'] = new Map();
   for (const [camId, list] of byCam) {
     const best = list.filter((x) => x.transitions > 0);
     const use = best.length ? best : list;
     const correction = median(use.map((x) => x.delta));
     for (const p of placements) if (p.cameraId === camId) pre[p.clipId] = correction;
-    if (!clockOnly.has(camId)) fixed.add(camId);
+    for (const x of list) clips.add(x.clipId);
+    // Без тайм-кода часы у каждого клипа ошибаются по-своему: клип с экраном ставим по нему самому,
+    // остальные — общим сдвигом, их дальше уточнит звук.
+    if (clockOnly.has(camId)) for (const x of use) pre[x.clipId] = x.delta;
+    else fixed.add(camId);
     cameras.set(camId, {
       correction,
       precisionSec: Math.min(...use.map((x) => x.precision)),
@@ -70,7 +76,7 @@ export function controlCorrections(
       frames: list.length,
     });
   }
-  return { pre, fixed, cameras };
+  return { pre, fixed, clips, cameras };
 }
 
 function median(v: number[]): number {

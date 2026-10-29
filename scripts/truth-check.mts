@@ -1,6 +1,6 @@
 // Точность на демо-съёмке: сравнивает раскладку с настоящим временем клипов из truth.json.
 //   node scripts/make-demo.mjs <папка>
-//   node scripts/truth-check.mts <папка>
+//   node scripts/truth-check.mts <папка> [--qr-only GoPro,A7 III]
 // Показывает ошибку каждого клипа в трёх режимах: только тайм-код, тайм-код + звук, контрольный кадр + тайм-код + звук.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,6 +15,9 @@ import { rateValue } from '../src/core/timecode.ts';
 import type { Camera, SyncResult } from '../src/core/types.ts';
 
 const DEMO = process.argv[2];
+// Экран синхронизации снимали только эти камеры (по части имени папки); без флага — все, у кого он есть.
+const qrOnlyArg = process.argv.indexOf('--qr-only');
+const qrOnly = qrOnlyArg > 0 ? process.argv[qrOnlyArg + 1].split(',') : null;
 const truth = new Map<string, number>((JSON.parse(readFileSync(join(DEMO, 'truth.json'), 'utf8')) as { file: string; epoch: number }[]).map((t) => [t.file, t.epoch]));
 const dirs = readdirSync(DEMO).filter((d) => statSync(join(DEMO, d)).isDirectory()).sort();
 const cameras: Camera[] = [];
@@ -45,6 +48,7 @@ errors(runSync(cameras, audio.corrections), 'Тайм-код + звук');
 // Контрольные кадры — короткие клипы с экраном синхронизации.
 const controls: { frame: ControlFrame; result: QrResult }[] = [];
 for (const cam of cameras) {
+  if (qrOnly && !qrOnly.some((s) => cam.id.includes(s))) continue;
   for (const c of cam.clips) {
     if (!c.hasVideo || !c.rate || !c.width || !c.height || c.durationSec < 6 || c.durationSec > 9) continue;
     const s = await scanQr(c.path, c.durationSec / 2, rateValue(c.rate), c.width, c.height, c.durationSec);
@@ -55,5 +59,5 @@ for (const cam of cameras) {
   }
 }
 const ctl = controlCorrections(controls, coarse.placements, new Set(coarse.cameras.filter((x) => x.timeSource === 'clock').map((x) => x.cameraId)));
-const withControl = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: 10, maxAnchors: 8, isEnabled: () => true, pre: ctl.pre, fixed: ctl.fixed });
+const withControl = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: 10, maxAnchors: 8, isEnabled: () => true, pre: ctl.pre, fixed: ctl.fixed, controlClips: ctl.clips });
 errors(runSync(cameras, withControl.corrections), 'Контрольный кадр + тайм-код + звук');

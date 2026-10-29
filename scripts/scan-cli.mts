@@ -86,6 +86,7 @@ if (withAudio) {
     isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
     pre: control.pre,
     fixed: control.fixed,
+    controlClips: control.clips,
   });
   console.log(`--- Сверка по звуку: ${((performance.now() - t) / 1000).toFixed(1)} с`);
   for (const c of audio.cameras) {

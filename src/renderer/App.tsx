@@ -14,7 +14,7 @@ import type { Action, ControlInfo, State, SyncMode } from './state.ts';
 import { QrScreen } from './components/QrScreen.tsx';
 import { SyncMenu } from './components/SyncMenu.tsx';
 import { requestWaveforms } from './waveforms.ts';
-import { IconExport, IconLock, IconSync, IconX } from './icons.tsx';
+import { IconExport, IconHeart, IconLock, IconQr, IconSync, IconX, LogoMark } from './icons.tsx';
 import { CameraPanel } from './components/CameraPanel.tsx';
 import { Viewer } from './components/Viewer.tsx';
 import { Timeline } from './components/Timeline.tsx';
@@ -155,6 +155,7 @@ export function App() {
     // Контрольные кадры: читаем экран синхронизации.
     let pre: Record<string, number> = {};
     let fixed = new Set<string>();
+    let controlClips = new Set<string>();
     const frames = Object.values(s.controlFrames).filter((f) => cameras.some((c) => c.id === f.cameraId && c.clips.some((x) => x.id === f.clipId)));
     if (chosen === 'control' && frames.length && !noFfmpeg) {
       dispatch({ type: 'qr-start', total: frames.length });
@@ -194,6 +195,7 @@ export function App() {
       const outcome = controlCorrections(found, coarse.placements, clockOnly);
       pre = outcome.pre;
       fixed = outcome.fixed;
+      controlClips = outcome.clips;
       const info: Record<string, ControlInfo> = {};
       for (const [camId, c] of outcome.cameras) info[camId] = c;
       dispatch({ type: 'qr-done', control: info, issues: qrIssues, pre, fixed: [...fixed] });
@@ -218,6 +220,7 @@ export function App() {
         onProgress: (done, total) => dispatch({ type: 'audio-progress', done, total }),
         pre,
         fixed,
+        controlClips,
       });
       if (stateRef.current.version !== version) {
         dispatch({ type: 'audio-done', result: null });
@@ -365,13 +368,18 @@ export function App() {
     <AppContext.Provider value={ctx}>
       <div className="app">
         <header className="topbar">
-          <span className="brand">TimesynCam</span>
           <nav className="tabs">
             <button className={`tab ${state.tab === 'sync' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'sync' })}>Синхронизация</button>
             <button className={`tab ${state.tab === 'errors' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'errors' })}>
               Ошибки {badgeCount > 0 && <span className={`badge ${badge}`}>{badgeCount}</span>}
             </button>
             <button className={`tab ${state.tab === 'faq' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'faq' })}>Настройка камер</button>
+            <button className="tab tab-qr" onClick={() => dispatch({ type: 'qr-screen', open: true })} title="QR-код с точным временем — снимите его каждой камерой 5–10 секунд">
+              <IconQr className="icon" /> Экран синхронизации
+            </button>
+            <button className="tab tab-support" onClick={() => void api.openLink('support')} title="Откроется страница CloudTips в браузере">
+              <IconHeart className="icon" /> Поддержать проект
+            </button>
           </nav>
           <span className="spacer" />
           <div className="sync-wrap">
@@ -403,6 +411,10 @@ export function App() {
         {state.tab === 'sync' && <SyncWorkspace />}
         {state.tab === 'errors' && <ErrorsPage />}
         {state.tab === 'faq' && <FaqPage />}
+        <footer className="statusbar">
+          <LogoMark className="statusbar-logo" />
+          <span className="statusbar-name">TimesynCam {__APP_VERSION__}</span>
+        </footer>
         {state.exportOpen && <ExportDialog />}
         {state.qrScreenOpen && <QrScreen />}
 

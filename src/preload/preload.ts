@@ -20,6 +20,7 @@ const api = {
     ipcRenderer.invoke('qr:scan', path, localSec, fps, width, height, durationSec),
   saveExport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('export:save', defaultName, content),
   reveal: (path: string) => ipcRenderer.invoke('shell:reveal', path),
+  openLink: (name: 'support' | 'github') => ipcRenderer.invoke('shell:open-link', name),
   tools: (): Promise<{ ffprobe: boolean; ffmpeg: boolean }> => ipcRenderer.invoke('app:tools'),
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
 };

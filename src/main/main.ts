@@ -59,6 +59,7 @@ function createWindow(): void {
     backgroundColor: '#17181b',
     autoHideMenuBar: true,
     title: 'TimesynCam',
+    icon: join(__dirname, '../icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/preload.cjs'),
       contextIsolation: true,
@@ -161,7 +162,26 @@ ipcMain.handle('export:save', async (_e, defaultName: string, content: string) =
 });
 
 ipcMain.handle('shell:reveal', (_e, path: string) => shell.showItemInFolder(path));
+
+// Внешние ссылки открываются в браузере — только эти, по имени, а не любой адрес из интерфейса.
+const LINKS: Record<string, string> = {
+  support: 'https://pay.cloudtips.ru/p/17376eab',
+  github: 'https://github.com/agrebru-glitch/timesyncam',
+};
+ipcMain.handle('shell:open-link', (_e, name: string) => {
+  const url = LINKS[name];
+  if (url) void shell.openExternal(url);
+});
 ipcMain.handle('app:tools', () => toolsAvailable());
+
+// Если программу запустили из терминала и закрыли его, запись в консоль падает с EPIPE —
+// это не повод показывать пользователю окно с ошибкой.
+for (const s of [process.stdout, process.stderr]) s?.on('error', (e: NodeJS.ErrnoException) => {
+  if (e.code !== 'EPIPE') throw e;
+});
+
+// Windows группирует окна на панели задач по этому имени — со значком TimesynCam, а не Electron.
+if (process.platform === 'win32') app.setAppUserModelId('io.github.agrebru-glitch.timesyncam');
 
 app.whenReady().then(() => {
   registerMediaProtocol();

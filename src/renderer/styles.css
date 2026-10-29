@@ -39,14 +39,23 @@ button, input, select { font: inherit; color: inherit; }
 .num { font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
-.app { display: grid; grid-template-rows: 48px minmax(0, 1fr); height: 100%; }
+.app { display: grid; grid-template-rows: 48px minmax(0, 1fr) 30px; height: 100%; }
 
 /* Верхняя панель */
 .topbar {
   display: flex; align-items: center; gap: 8px; padding: 0 12px;
   background: var(--surface-1); border-bottom: 1px solid var(--border);
 }
-.brand { font-weight: 600; letter-spacing: 0.2px; margin-right: 12px; }
+/* Нижняя строка — знак, название и версия, как в монтажных программах. */
+.statusbar { display: flex; align-items: center; gap: 8px; padding: 0 14px; background: var(--surface-1); border-top: 1px solid var(--border); color: var(--text-2); font-size: 12px; font-weight: 600; letter-spacing: 0.2px; }
+.statusbar-logo { width: 22px; height: 18px; flex: none; }
+.statusbar-name { color: var(--text); }
+.tab.tab-qr { display: inline-flex; align-items: center; gap: 6px; color: #6fdc9d; }
+.tab.tab-qr:hover { background: rgba(31, 92, 56, 0.45); color: #8fe8b4; }
+.tab.tab-qr .icon { width: 15px; height: 15px; }
+.tab.tab-support { display: inline-flex; align-items: center; gap: 6px; color: #ff8fa3; }
+.tab.tab-support:hover { background: rgba(140, 40, 60, 0.4); color: #ffb3c1; }
+.tab.tab-support .icon { width: 15px; height: 15px; }
 .tabs { display: flex; gap: 2px; background: var(--bg); padding: 3px; border-radius: 9px; }
 .tab {
   border: 0; background: transparent; padding: 5px 14px; border-radius: 6px; cursor: pointer; color: var(--text-2);
@@ -210,6 +219,12 @@ button, input, select { font: inherit; color: inherit; }
 .faq { max-width: 820px; }
 .faq section { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px 20px; margin-bottom: 12px; }
 .faq section.flash { border-color: var(--accent); }
+/* Главный способ синхронизации — выделен, как рекомендуемый пункт меню. */
+.faq section.featured { border-color: #2f9a5c; background: rgba(31, 92, 56, 0.28); }
+.faq section.featured h2 { font-size: 17px; }
+.featured-head { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; margin-bottom: 4px; }
+.btn.featured-btn { flex: none; background: #2f9a5c; border-color: #2f9a5c; color: #fff; }
+.btn.featured-btn:hover { background: #38b06a; border-color: #38b06a; }
 .faq h2 { font-size: 15px; margin: 0 0 6px; font-weight: 600; }
 .faq p, .faq li { color: var(--text-2); line-height: 1.6; user-select: text; }
 .faq p { margin: 6px 0; }
@@ -228,7 +243,7 @@ button, input, select { font: inherit; color: inherit; }
 .field input, .field select { height: 30px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 0 8px; }
 .note { background: var(--surface-1); border-radius: var(--radius); padding: 10px 12px; color: var(--text-2); font-size: 12px; margin: 14px 0 16px; line-height: 1.6; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+.toasts { position: fixed; right: 16px; bottom: 44px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
 .toast { background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: 10px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; max-width: 460px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
 
 .qr-screen { position: fixed; inset: 0; z-index: 40; background: #fff; color: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
@@ -241,3 +256,5 @@ button, input, select { font: inherit; color: inherit; }
 .tiles.preview-off { display: flex; align-items: center; justify-content: center; }
 .preview-off-box { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 360px; text-align: center; color: var(--text-2); }
 .preview-off-box b { color: var(--text); font-size: 14px; }
+.link { border: 0; background: none; padding: 0; font: inherit; color: var(--accent-hover); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.link:hover { color: var(--text); }

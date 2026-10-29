@@ -197,6 +197,7 @@ export interface AudioOptions {
   concurrency?: number;
   pre?: Record<string, number>; // поправки по контрольным кадрам
   fixed?: Set<string>; // камеры с контрольным кадром — опорные
+  controlClips?: Set<string>; // клипы, в которых снят экран синхронизации
 }
 
 const hasAudio = (c: ClipMeta) => c.audioChannels > 0 && c.captureFps === null;
@@ -300,6 +301,17 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     for (const p of coarse.placements) if (p.cameraId === camId && pre[p.clipId] !== undefined && corrections[p.clipId] === undefined) corrections[p.clipId] = pre[p.clipId];
   };
   const startOf = (p: Placement) => p.start + (corrections[p.clipId] ?? 0);
+  // Клипы камер без тайм-кода, которые не подтвердил ни звук, ни экран: их место — догадка,
+  // поэтому другие камеры по ним не равняются.
+  const untrusted = new Set<string>();
+  const refsOf = (ids: string[]) => ids.flatMap((id) => placementsOf(id)).filter((p) => !untrusted.has(p.clipId));
+  const markUntrusted = (camId: string, anchors: AudioAnchor[], applied: boolean) => {
+    if (sourceOf.get(camId) !== 'clock') return;
+    for (const p of allOf(camId)) {
+      const own = applied && anchors.some((a) => a.clipId === p.clipId && (a.role === 'start' || a.role === 'confirm' || a.role === 'shift'));
+      if (!own && !opts.controlClips?.has(p.clipId)) untrusted.add(p.clipId);
+    }
+  };
   const results = new Map<string, AudioCameraResult>();
   const issues: Issue[] = [];
   const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? '';
@@ -317,7 +329,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
 
   const overlapWith = (a: string, set: string[]) => {
     let total = 0;
-    for (const p of placementsOf(a)) for (const id of set) for (const q of placementsOf(id)) {
+    for (const p of placementsOf(a)) for (const id of set) for (const q of placementsOf(id).filter((x) => !untrusted.has(x.clipId))) {
       const ps = startOf(p);
       const qs = startOf(q);
       total += Math.max(0, Math.min(ps + p.end - p.start, qs + q.end - q.start) - Math.max(ps, qs));
@@ -337,8 +349,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   // Камеры с точным тайм-кодом тоже сверяем между собой — только чтобы сообщить о расхождении.
   const plans: { camId: string; pairs: Pair[]; checkOnly: boolean }[] = [];
   const planFor = (camId: string, refs: string[], checkOnly: boolean) => {
-    const refPlacements = refs.flatMap((id) => placementsOf(id));
-    let pairs = findPairs(placementsOf(camId), refPlacements, startOf);
+    let pairs = findPairs(placementsOf(camId), refsOf(refs), startOf);
     const perClip = sourceOf.get(camId) === 'clock' && !checkOnly;
     if (!perClip) pairs = spreadPick(pairs, opts.maxAnchors);
     return { camId, pairs, checkOnly };
@@ -456,7 +467,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   // Берём до трёх самых длинных клипов камеры и ищем их звук во всех клипах уже выровненных камер.
   const wideSearch = async (camId: string): Promise<{ shift: number; probes: number } | null> => {
     const targets = [...placementsOf(camId)].sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, 4);
-    const refs = fixed.flatMap((id) => placementsOf(id));
+    const refs = refsOf(fixed);
     if (!targets.length || !refs.length) return null;
     // Сначала звук самой камеры: если он пустой, искать нечего. Короткие пробы в начале, середине и конце клипа:
     // общий звук с другой камерой может длиться всего десяток секунд.
@@ -498,8 +509,13 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   };
 
   // Остальные камеры — по очереди, начиная с той, у которой больше общего звука с уже выровненными.
+  // Камеры без тайм-кода — после камер с тайм-кодом: так каждому их клипу есть с чем сравниться.
+  const rank = (id: string) => {
+    const o = overlapWith(id, fixed);
+    return (o > 0 ? (sourceOf.get(id) === 'clock' ? 1 : 2) : 0) * 1e9 + o;
+  };
   while (queue.length) {
-    queue.sort((a, b) => overlapWith(b, fixed) - overlapWith(a, fixed));
+    queue.sort((a, b) => rank(b) - rank(a));
     const camId = queue.shift()!;
     const enabled = opts.isEnabled(camId);
     let plan = planFor(camId, fixed, false);
@@ -526,6 +542,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
         details: 'Рядом по времени клипы этой камеры не идут одновременно с другими камерами, а поиск по всей записи совпадения не нашёл. Камера осталась по тайм-коду и часам.',
         actions: [],
       }));
+      markUntrusted(camId, [], false);
       fixed.push(camId);
       continue;
     }
@@ -553,6 +570,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
       }));
     }
     issues.push(...res.issues.map((i) => issue({ ...i, title: i.title.replace('{cam}', nameOf(camId)) })));
+    markUntrusted(camId, anchors, enabled);
     fixed.push(camId);
   }
 
