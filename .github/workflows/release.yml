@@ -132,6 +132,10 @@ jobs:
 
       - run: npm run build
       - run: npx electron-builder --mac --${{ matrix.arch }} --publish never
+        env:
+          # В pull request electron-builder по умолчанию не подписывает. Подпись у нас ad-hoc,
+          # без сертификатов и секретов, — включаем, чтобы проверялось то же, что уйдёт в релиз.
+          CSC_FOR_PULL_REQUEST: 'true'
 
       - name: Проверка программы
         run: |
