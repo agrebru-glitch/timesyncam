@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 const api = {
   pickFolders: (): Promise<string[] | null> => ipcRenderer.invoke('dialog:pick-folder'),
+  pickFiles: (): Promise<string[] | null> => ipcRenderer.invoke('dialog:pick-files'),
   scanFolder: (scanId: string, folder: string) => ipcRenderer.invoke('scan:folder', scanId, folder),
   onScanProgress: (cb: (p: { scanId: string; done: number; total: number }) => void) => {
     const listener = (_e: unknown, p: { scanId: string; done: number; total: number }) => cb(p);

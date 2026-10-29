@@ -16,7 +16,7 @@
 
 ## Кодеки и контейнеры
 
-Всё, что читает FFmpeg: H.264, H.265, ProRes, DNxHD/HR, MPEG-2, AV1, VP9, CineForm, Motion JPEG, несжатое видео; контейнеры MP4, MOV, MXF, MTS/M2TS, MKV, AVI. Звук — WAV/BWF и звуковые дорожки видеофайлов.
+Всё, что читает FFmpeg: H.264, H.265, ProRes, DNxHD/HR, MPEG-2, AV1, VP9, CineForm, Motion JPEG, несжатое видео; контейнеры MP4, MOV, MXF, MTS/M2TS, MKV, AVI. Звук — WAV/BWF (в том числе RF64 и W64 для записей больше 4 ГБ), M4A (AAC, ALAC), MP3, MP2, AAC, FLAC, AIFF, CAF, OGG/Opus, WMA, AC3/E-AC3, DTS, AMR, WavPack, APE, MKA и звуковые дорожки видеофайлов. Папку можно перетащить целиком, а можно — отдельные файлы.
 
 **Пока не читаются**: BRAW, R3D, Canon RAW (CRM), ARRIRAW. Их нужно перегнать в ProRes или H.264/H.265 с сохранением тайм-кода, например в DaVinci Resolve. Программа покажет, сколько таких файлов нашлось в папке.
 

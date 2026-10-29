@@ -128,7 +128,7 @@ function chroma(pix: string | undefined): string | null {
   return null;
 }
 
-export function codecLabel(video: FfprobeStream | undefined, audio: FfprobeStream | undefined): string | null {
+export function codecLabel(video: FfprobeStream | undefined, audio: FfprobeStream | undefined, formatName?: string): string | null {
   if (video) {
     const c = video.codec_name ?? '';
     const names: Record<string, string> = {
@@ -143,7 +143,9 @@ export function codecLabel(video: FfprobeStream | undefined, audio: FfprobeStrea
   }
   if (audio) {
     const bits = audio.bits_per_raw_sample ?? (audio.bits_per_sample ? String(audio.bits_per_sample) : undefined);
-    if (audio.codec_name?.startsWith('pcm')) return `WAV${bits && bits !== '0' ? ` ${bits}-bit` : ''}`;
+    // Несжатый звук подписываем по контейнеру: WAV (и RF64), AIFF, CAF, W64.
+    const pcmBox = /aiff/.test(formatName ?? '') ? 'AIFF' : /caf/.test(formatName ?? '') ? 'CAF' : /w64/.test(formatName ?? '') ? 'W64' : 'WAV';
+    if (audio.codec_name?.startsWith('pcm')) return `${pcmBox}${bits && bits !== '0' ? ` ${bits}-bit` : ''}`;
     return audio.codec_name?.toUpperCase() ?? null;
   }
   return null;
@@ -264,7 +266,7 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     width: video?.width ?? sony?.width ?? null,
     height: video?.height ?? sony?.height ?? null,
     codec: video?.codec_name ?? audio[0]?.codec_name ?? null,
-    codecLabel: codecLabel(video, audio[0]),
+    codecLabel: codecLabel(video, audio[0], input.probe?.format?.format_name),
     hasVideo: !!video,
     audioChannels: audio.reduce((n, s) => n + (s.channels ?? 0), 0),
     audioSampleRate: audio[0]?.sample_rate ? Number(audio[0].sample_rate) : null,

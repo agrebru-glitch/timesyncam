@@ -59,7 +59,8 @@ export type IssueAction =
   | { kind: 'show-clip'; clipId: string }
   | { kind: 'shift-camera'; cameraId: string; seconds: number }
   | { kind: 'exclude-clips'; cameraId: string; clipIds: string[] }
-  | { kind: 'open-faq'; anchor: string };
+  | { kind: 'open-faq'; anchor: string }
+  | { kind: 'make-follower'; cameraId: string };
 
 export interface Issue {
   id: string;
@@ -93,6 +94,7 @@ export interface Camera {
   timecodeTrust: TimecodeTrust;
   excludedClipIds: string[]; // убраны с таймлинии пользователем (файлы на диске не трогаются)
   audioAssist: boolean; // поправлять камеру по звуку
+  follower?: boolean; // ведомая: сверяется по звуку других камер с допуском, но сама их не сдвигает
   scanning: { done: number; total: number } | null;
 }
 

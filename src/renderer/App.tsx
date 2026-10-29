@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import type { Dispatch } from 'react';
 import type { Issue, Placement } from '../core/types.ts';
-import { previewPlacements, runSync } from '../core/sync.ts';
+import { pilePlacements, runSync } from '../core/sync.ts';
 import { heardCameras, refineByAudio } from '../core/audioSync.ts';
 import { controlCorrections } from '../core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
@@ -70,7 +70,7 @@ export function App() {
 
   const synced = !!state.sync && !needsSync(state);
   const placements = useMemo(
-    () => (synced && state.sync ? state.sync.placements : previewPlacements(state.cameras)),
+    () => (synced && state.sync ? state.sync.placements : pilePlacements(state.cameras)),
     [synced, state.sync, state.cameras],
   );
   const issues = useMemo(() => {
@@ -124,8 +124,10 @@ export function App() {
         scanIssueSeq += 1;
         scanIssues.push({
           id: `s${scanIssueSeq}`, severity: 'warning', cameraId: targetId,
-          title: `«${camName}»: в папке не нашлось видео и звука`,
-          details: folder,
+          title: res.isFile
+            ? `«${camName}»: ${folder.split(/[\\/]/).pop()} — не видео и не звук`
+            : `«${camName}»: в папке не нашлось видео и звука`,
+          details: res.isFile ? `${folder}. Программа читает видео MP4, MOV, MXF, MTS, AVI, MKV и звук WAV, M4A, MP3, AAC, FLAC, AIFF, OGG, Opus, WMA и другие.` : folder,
           actions: [],
         });
       }
@@ -141,6 +143,7 @@ export function App() {
     if (isScanning(s) || s.audioRun || s.qrRun) return;
     const chosen = mode ?? s.syncMode;
     dispatch({ type: 'sync-menu', open: false });
+    dispatch({ type: 'control-hint-close' });
     if (mode) {
       dispatch({ type: 'sync-mode', mode });
       try {
@@ -220,6 +223,7 @@ export function App() {
         searchSec: 10,
         maxAnchors: 8,
         isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
+        followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)),
         onProgress: (done, total) => dispatch({ type: 'audio-progress', done, total }),
         pre,
         fixed,
@@ -308,7 +312,7 @@ export function App() {
       const s = stateRef.current;
       const dt = (now - last) / 1000;
       last = now;
-      const end = s.sync?.end ?? Math.max(0, ...placements.map((p) => p.end));
+      const end = Math.max(0, ...placements.map((p) => p.end));
       const next = (s.playhead ?? 0) + dt;
       if (next >= end) {
         dispatch({ type: 'play', playing: false });
@@ -342,7 +346,10 @@ export function App() {
         if (s.playhead === null) return;
         const step = (e.shiftKey ? 1 : 1 / fps) * (e.code === 'ArrowLeft' ? -1 : 1);
         dispatch({ type: 'play', playing: false });
-        dispatch({ type: 'playhead', at: s.playhead + step });
+        // Не дальше начала и конца съёмки.
+        const lo = Math.min(...placements.map((p) => p.start));
+        const hi = Math.max(...placements.map((p) => p.end));
+        dispatch({ type: 'playhead', at: placements.length ? Math.min(Math.max(s.playhead + step, lo), hi) : s.playhead + step });
       }
     };
     window.addEventListener('keydown', onKey);
@@ -353,6 +360,15 @@ export function App() {
   const scanning = isScanning(state);
   const wantSync = needsSync(state) && !scanning;
   const exportOk = canExport(state);
+  // Пока программа читает клипы, экран синхронизации или сверяет звук — кнопка светится и заполняется по ходу работы.
+  const busy = scanning || !!state.audioRun || !!state.qrRun;
+  const scanDone = state.cameras.reduce((n, c) => n + (c.scanning?.done ?? 0), 0);
+  const scanTotal = state.cameras.reduce((n, c) => n + (c.scanning?.total ?? 0), 0);
+  const progress = state.qrRun
+    ? state.qrRun.done / Math.max(1, state.qrRun.total)
+    : state.audioRun
+      ? state.audioRun.total ? state.audioRun.done / state.audioRun.total : 0
+      : scanning && scanTotal ? scanDone / scanTotal : 0;
   const counts = { error: 0, warning: 0, info: 0 };
   for (const i of issues) counts[i.severity] += 1;
   const badge = counts.error ? 'danger' : counts.warning ? 'warning' : 'info';
@@ -390,18 +406,22 @@ export function App() {
           <span className="spacer" />
           <div className="sync-wrap">
             <button
-              className={`btn ${wantSync && !state.audioRun && !state.qrRun ? 'primary pulse' : ''} ${scanning || state.audioRun || state.qrRun ? 'locked' : ''}`}
-              onClick={() => !scanning && !state.audioRun && !state.qrRun && dispatch({ type: 'sync-menu', open: !state.syncMenuOpen })}
-              title={scanning ? 'Дождитесь, пока программа дочитает клипы' : wantSync ? 'Есть новые клипы — разложите их по времени' : 'Пересчитать синхронизацию'}
+              className={`btn ${wantSync && !busy ? 'primary pulse' : ''} ${busy ? 'busy' : ''}`}
+              style={busy ? ({ '--progress': `${Math.round(progress * 100)}%` } as React.CSSProperties) : undefined}
+              aria-busy={busy}
+              onClick={() => !busy && dispatch({ type: 'sync-menu', open: !state.syncMenuOpen })}
+              title={scanning ? 'Дождитесь, пока программа дочитает клипы' : busy ? 'Идёт синхронизация' : wantSync ? 'Есть новые клипы — разложите их по времени' : 'Пересчитать синхронизацию'}
             >
-              <IconSync className={`icon ${state.audioRun || state.qrRun ? 'spin' : ''}`} />
-              {scanning
-                ? 'Читаю клипы…'
-                : state.qrRun
-                  ? `Читаю экран синхронизации ${state.qrRun.done} из ${state.qrRun.total}`
-                : state.audioRun
-                  ? `Сверяю звук${state.audioRun.total ? ` ${state.audioRun.done} из ${state.audioRun.total}` : '…'}`
-                  : 'Синхронизировать'}
+              <IconSync className={`icon ${busy ? 'spin' : ''}`} />
+              <span>
+                {scanning
+                  ? 'Читаю клипы…'
+                  : state.qrRun
+                    ? `Читаю экран синхронизации ${state.qrRun.done} из ${state.qrRun.total}`
+                  : state.audioRun
+                    ? `Сверяю звук${state.audioRun.total ? ` ${state.audioRun.done} из ${state.audioRun.total}` : '…'}`
+                    : 'Синхронизировать'}
+              </span>
             </button>
             {state.syncMenuOpen && <SyncMenu />}
           </div>
@@ -449,7 +469,35 @@ function Toast({ id, text, revealPath }: { id: number; text: string; revealPath?
   );
 }
 
+// Напоминание, когда на таймлинии появилась вторая (и каждая следующая) камера.
+// Стоит слева внизу над таймлинией, чтобы не закрывать начало дорожек — там обычно и лежит клип с экраном.
+function ControlHint() {
+  const { dispatch } = useApp();
+  useEffect(() => {
+    const t = setTimeout(() => dispatch({ type: 'control-hint-close' }), 25000);
+    return () => clearTimeout(t);
+  }, [dispatch]);
+  return (
+    <div className="control-hint" role="status">
+      <span className="control-hint-icon"><IconQr /></span>
+      <div className="control-hint-body">
+        <b>Не забудьте отметить контрольный кадр</b>
+        <span>
+          Это кадр с QR-кодом экрана синхронизации, снятый до или после съёмки всеми камерами или несколькими из них.
+          Найдите его в клипе и нажмите правой кнопкой → «Выбрать контрольным кадром».
+        </span>
+        <div className="control-hint-actions">
+          <button className="btn small" onClick={() => dispatch({ type: 'tab', tab: 'faq', faqAnchor: 'qr-screen' })}>Как снять экран</button>
+          <button className="btn small ghost" onClick={() => dispatch({ type: 'control-hint-close' })}>Понятно</button>
+        </div>
+      </div>
+      <button className="btn small ghost control-hint-close" aria-label="Закрыть" onClick={() => dispatch({ type: 'control-hint-close' })}><IconX /></button>
+    </div>
+  );
+}
+
 function SyncWorkspace() {
+  const { state } = useApp();
   const wrapRef = useRef<HTMLDivElement>(null);
   const onSplitter = (e: React.MouseEvent) => {
     const el = wrapRef.current;
@@ -472,6 +520,7 @@ function SyncWorkspace() {
       <div className="upper">
         <CameraPanel />
         <Viewer />
+        {state.controlHint !== null && <ControlHint key={state.controlHint} />}
       </div>
       <div className="splitter" onMouseDown={onSplitter} />
       <Timeline />

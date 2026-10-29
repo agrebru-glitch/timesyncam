@@ -16,6 +16,10 @@ export function ErrorsPage() {
       dispatch({ type: 'exclude-clips', cameraId: a.cameraId, clipIds: a.clipIds });
       dispatch({ type: 'toast', text: `Убрано с таймлинии: ${a.clipIds.length}. Файлы на диске не тронуты — вернуть можно в карточке камеры.` });
     }
+    if (a.kind === 'make-follower') {
+      dispatch({ type: 'set-follower', cameraId: a.cameraId, on: true });
+      dispatch({ type: 'toast', text: `«${camName(a.cameraId)}» теперь ведомая: сверяется по другим камерам с допуском и их не сдвигает. Нажмите «Синхронизировать».` });
+    }
     if (a.kind === 'show-clip') {
       const p = placements.find((x) => x.clipId === a.clipId);
       dispatch({ type: 'tab', tab: 'sync' });
@@ -34,6 +38,7 @@ export function ErrorsPage() {
     if (a.kind === 'open-faq') return 'Как исправить';
     if (a.kind === 'show-clip') return 'Показать на таймлинии';
     if (a.kind === 'exclude-clips') return 'Убрать с таймлинии';
+    if (a.kind === 'make-follower') return `Сделать «${camName(a.cameraId)}» ведомой`;
     return `Сдвинуть на ${formatShift(a.seconds, fps).replace(/:00$/, '')}`;
   };
 
