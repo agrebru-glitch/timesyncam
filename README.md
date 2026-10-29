@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-Setup-0.3.1.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-Setup-0.3.2.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-0.3.1-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-0.3.2-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-0.3.1-mac-x64.dmg">Mac с процессором Intel</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-0.3.1-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-0.3.2-mac-x64.dmg">Mac с процессором Intel</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-0.3.2-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 

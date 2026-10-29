@@ -46,7 +46,7 @@ export interface State {
   tools: { ffprobe: boolean; ffmpeg: boolean } | null;
   syncMode: SyncMode;
   syncMenuOpen: boolean;
-  audioRun: { done: number; total: number } | null; // идёт сверка по звуку
+  audioRun: { done: number; total: number; frac: number } | null; // идёт сверка по звуку; frac — доля работы, только растёт
   audio: AudioSyncResult | null;
   controlFrames: Record<string, ControlFrame>; // по клипу — где отмечен контрольный кадр
   qrResults: Record<string, QrResult | null>; // прочитанные экраны: ключ «клип@секунда»
@@ -260,9 +260,10 @@ export function reducer(state: State, a: Action): State {
     case 'sync-mode':
       return { ...state, syncMode: a.mode };
     case 'audio-start':
-      return { ...state, audioRun: { done: 0, total: 0 }, audio: null };
+      return { ...state, audioRun: { done: 0, total: 0, frac: 0 }, audio: null };
     case 'audio-progress':
-      return { ...state, audioRun: { done: a.done, total: a.total } };
+      // Оценка оставшейся работы уточняется по ходу; полоса на кнопке назад не откатывается.
+      return { ...state, audioRun: { done: a.done, total: a.total, frac: Math.max(state.audioRun?.frac ?? 0, a.total ? Math.min(1, a.done / a.total) : 0) } };
     case 'audio-done':
       return { ...state, audioRun: null, audio: a.result };
     case 'set-control':

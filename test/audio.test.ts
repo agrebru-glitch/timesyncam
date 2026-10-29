@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { combine, correlate, ENV_RATE, findInside, peakDb, refineByAudio, SILENCE_DB, waveformPeaks } from '../src/core/audioSync.ts';
+import { combine, correlate, ENV_RATE, findInside, peakDb, pickWideShift, refineByAudio, SILENCE_DB, waveformPeaks } from '../src/core/audioSync.ts';
 import type { AudioAnchor, AudioFetch } from '../src/core/audioSync.ts';
 import { bandFeatures, FEAT_SR, FINE_SR, gccPhat, pickChannel } from '../src/core/audioFeatures.ts';
 import type { ClipMeta, Placement } from '../src/core/types.ts';
 import { runSync } from '../src/core/sync.ts';
 import { camera, clip, T16 } from './fixtures.ts';
+import { seekArgs } from '../src/main/audio.ts';
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -317,4 +318,43 @@ test('Ведомая камера: сверяется по остальным, �
   const off = (camId: string) => final.placements.filter((p) => p.cameraId === camId).map((p) => p.start - truth.get(p.clipId)!);
   const refOff = off(byId.get('A')!.status === 'reference' ? 'A' : 'B')[0];
   for (const camId of ['A', 'B', 'Рекордер']) for (const e of off(camId)) assert.ok(Math.abs(e - refOff) < 0.002, `${camId}: ${e - refOff}`);
+});
+
+test('Широкий поиск: случайное слабое совпадение не перебивает сильное', () => {
+  // Конец записи уверенно совпал с камерой, середина — случайно и слабо с другим клипом (как MP3 рекордера на демо).
+  assert.deepEqual(pickWideShift([{ shift: -12000000, score: 0.87, ratio: 3.01 }, { shift: -11999170, score: 0.4, ratio: 2.36 }]), { shift: -12000000, probes: 1 });
+  // Два почти одинаково сильных, но разных сдвига — не угадываем.
+  assert.equal(pickWideShift([{ shift: 100, score: 0.8, ratio: 2.5 }, { shift: 400, score: 0.72, ratio: 2.4 }]), null);
+  // Соперник сам сильный — тоже не угадываем.
+  assert.equal(pickWideShift([{ shift: 100, score: 0.9, ratio: 4 }, { shift: 400, score: 0.5, ratio: 3.2 }]), null);
+  // Две пробы дали один сдвиг — это сильнее одиночного соперника.
+  assert.deepEqual(pickWideShift([{ shift: 100, score: 0.6, ratio: 2.1 }, { shift: 100.05, score: 0.55, ratio: 2.2 }, { shift: 400, score: 0.9, ratio: 3.5 }])?.probes, 2);
+  // Одно слабое совпадение — мало.
+  assert.equal(pickWideShift([{ shift: 100, score: 0.5, ratio: 2.1 }]), null);
+});
+
+test('Запись с датой копирования находится по звуку, ход работы не идёт назад', async () => {
+  const truth = new Map<string, number>();
+  const ref = clip({ start: T16, tcSeconds: (T16 + 3 * 3600) % 86400, durationSec: 300, recordedSec: 300 });
+  truth.set(ref.id, T16);
+  // Запись с телефона: настоящее начало — через 200 с после камеры, а дата файла — через 139 дней.
+  const rec = clip({ start: T16 + 139 * 86400, durationSec: 180, recordedSec: 180 });
+  Object.assign(rec, { hasVideo: false, rate: null, frames: null, width: null, height: null, name: 'rec.m4a' });
+  truth.set(rec.id, T16 + 200.0123);
+  const cams = [camera('Камера', [ref]), camera('Телефон', [rec])];
+  const coarse = runSync(cams);
+  const fractions: number[] = [];
+  const result = await refineByAudio(cams, coarse, fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true, onProgress: (d, total) => fractions.push(d / total) });
+  const final = runSync(cams, result.corrections);
+  const err = final.placements.find((p) => p.clipId === rec.id)!.start - (T16 + 200.0123) - (final.placements.find((p) => p.clipId === ref.id)!.start - T16);
+  assert.ok(Math.abs(err) < 0.001, `ошибка ${(err * 1000).toFixed(2)} мс`);
+  assert.ok(result.issues.some((i) => /найдена по звуку/.test(i.title)));
+  for (let i = 1; i < fractions.length; i++) assert.ok(fractions[i] >= fractions[i - 1] - 1e-9, `ход ${fractions.map((f) => f.toFixed(2)).join(' → ')}`);
+});
+
+test('Перемотка звука: быстрая до секунды перед местом, последняя секунда — точная', () => {
+  // Быстрая перемотка в AAC попадает на границу блока и ошибается до 20 мс — её нельзя доводить до самого места.
+  assert.deepEqual(seekArgs(60, 4), { input: ['-ss', '59.0000'], output: ['-ss', '1.0000', '-t', '4.0000'] });
+  assert.deepEqual(seekArgs(0.4, 4), { input: [], output: ['-ss', '0.4000', '-t', '4.0000'] });
+  assert.deepEqual(seekArgs(0, null), { input: [], output: [] });
 });

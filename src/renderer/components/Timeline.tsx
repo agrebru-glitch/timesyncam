@@ -502,6 +502,9 @@ export function Timeline() {
     if (vp) dispatch({ type: 'viewport', viewport: zoomAround(vp, k, size.w / 2) });
   };
 
+  const tracksBottom = rows.length ? rows[rows.length - 1].y + rows[rows.length - 1].h : RULER_H;
+  const hintBelow = size.h - tracksBottom >= 44;
+
   return (
     <div className="timeline">
       <div className="tl-heads">
@@ -620,7 +623,8 @@ export function Timeline() {
           </div>
         )}
         {extent && !synced && !state.cameras.some((c) => c.scanning) && (
-          <div className="tl-hint" style={{ top: 'auto', bottom: 12, transform: 'translateX(-50%)', color: 'var(--text-2)' }}>
+          // Под дорожками есть место — подсказка там; нет — плашкой со своим фоном, чтобы не сливаться с клипами.
+          <div className={`tl-hint ${hintBelow ? 'below' : 'pill'}`} style={hintBelow ? { top: tracksBottom + (size.h - tracksBottom) / 2 } : undefined}>
             Клипы лежат подряд, по порядку съёмки. Отметьте контрольные кадры и нажмите «Синхронизировать»
           </div>
         )}

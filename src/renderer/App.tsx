@@ -367,7 +367,7 @@ export function App() {
   const progress = state.qrRun
     ? state.qrRun.done / Math.max(1, state.qrRun.total)
     : state.audioRun
-      ? state.audioRun.total ? state.audioRun.done / state.audioRun.total : 0
+      ? state.audioRun.frac
       : scanning && scanTotal ? scanDone / scanTotal : 0;
   const counts = { error: 0, warning: 0, info: 0 };
   for (const i of issues) counts[i.severity] += 1;
@@ -419,7 +419,7 @@ export function App() {
                   : state.qrRun
                     ? `Читаю экран синхронизации ${state.qrRun.done} из ${state.qrRun.total}`
                   : state.audioRun
-                    ? `Сверяю звук${state.audioRun.total ? ` ${state.audioRun.done} из ${state.audioRun.total}` : '…'}`
+                    ? `Сверяю звук${state.audioRun.total ? ` ${Math.round(state.audioRun.frac * 100)} %` : '…'}`
                     : 'Синхронизировать'}
               </span>
             </button>

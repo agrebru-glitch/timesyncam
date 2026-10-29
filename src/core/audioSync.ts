@@ -12,6 +12,8 @@ export const AUDIO_SAMPLE_RATE = 8000; // для волны на таймлин�
 const MIN_OVERLAP = 6; // секунд общего звука, меньше — не сравниваем
 const MAX_WINDOW = 40; // секунд звука в одной точке
 const PROBE_LEN = 12; // секунд звука в одной пробе широкого поиска: общий звук бывает совсем коротким
+const WIDE_PROBES = 6; // больше проб на длинный клип: общий с камерами звук может быть в любом его месте
+const RIVAL_SCORE = 0.75; // другой сдвиг мешает, только если его совпадение почти такое же сильное
 const ACCEPT_SCORE = 0.45;
 const ACCEPT_RATIO = 1.5;
 const STRONG_SCORE = 0.6; // настолько уверенное совпадение может сменить поправку без подтверждения
@@ -82,6 +84,32 @@ export function correlate(target: Features, ref: Features, refOffset: number, ma
 
 // Поиск куска target во всей записи ref: target[0] совпадает с ref[offset]. Для случая, когда часы камеры
 // сбиты на минуты или часы и рядом по времени общего звука нет.
+export interface WideHit { shift: number; score: number; ratio: number }
+
+// Решение широкого поиска. Один и тот же сдвиг от нескольких проб — не случайность; одно сильное совпадение
+// тоже годится. Мешает только соперник: другой сдвиг, который подтверждён не хуже или совпал почти так же сильно.
+// Случайное слабое совпадение где-то ещё сильное не перебивает.
+export function pickWideShift(hits: WideHit[]): { shift: number; probes: number } | null {
+  const groupOf = (list: WideHit[]) => {
+    let best: WideHit[] = [];
+    for (const h of list) {
+      const group = list.filter((x) => Math.abs(x.shift - h.shift) <= 0.2);
+      if (group.length > best.length || (group.length === best.length && group.reduce((s, x) => s + x.score, 0) > best.reduce((s, x) => s + x.score, 0))) best = group;
+    }
+    return best;
+  };
+  const best = groupOf(hits);
+  if (!best.length) return null;
+  const top = best.reduce((a, b) => (b.score > a.score ? b : a));
+  const rival = groupOf(hits.filter((x) => !best.includes(x)));
+  if (rival.length >= best.length) {
+    const rTop = rival.reduce((a, b) => (b.score > a.score ? b : a));
+    if (isStrong(rTop) || rTop.score >= top.score * RIVAL_SCORE) return null;
+  }
+  const confident = best.length >= 2 || isStrong(top);
+  return confident ? { shift: median(best.map((x) => x.shift)), probes: best.length } : null;
+}
+
 export function findInside(target: Features, ref: Features): (Match & { offset: number }) | null {
   if (target.frames < MIN_OVERLAP * ENV_RATE || ref.frames < MIN_OVERLAP * ENV_RATE) return null;
   const minOverlap = Math.max(MIN_OVERLAP * ENV_RATE, Math.ceil(Math.min(target.frames, ref.frames) * 0.6));
@@ -458,8 +486,18 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     return byRecorder.length && byRecorder.length * 2 >= ok.length ? [{ kind: 'make-follower', cameraId: byRecorder[0].refCameraId }] : [];
   };
 
-  const totalEstimate = () => plans.reduce((n, p) => n + p.pairs.length + p.segments.length, 0);
+  // Ход работы: сколько сверок сделано и сколько примерно осталось у каждой камеры. Оставшееся оцениваем
+  // заранее по всем камерам, а не только по начатым, — иначе полоса на кнопке доходит до конца
+  // после каждой камеры и откатывается назад.
   let done = 0;
+  const left = new Map<string, number>();
+  const sizeOf = (p: { pairs: Pair[]; segments: Pair[][] }) => p.pairs.length + p.segments.reduce((n, s) => n + s.length, 0);
+  const report = () => opts.onProgress?.(done, done + [...left.values()].reduce((n, x) => n + x, 0));
+  const tick = (camId: string) => {
+    done++;
+    left.set(camId, Math.max(0, (left.get(camId) ?? 0) - 1));
+    report();
+  };
   const searchFrames = Math.round(opts.searchSec * ENV_RATE);
 
   // Тишина в звуке камеры: считаем, сколько кусков пришли пустыми, а сколько со звуком.
@@ -491,8 +529,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     ]);
     const tFeat = listen(pair.target.cameraId, tPiece);
     const rFeat = listen(pair.ref.cameraId, rPiece);
-    done++;
-    opts.onProgress?.(done, Math.max(done, totalEstimate()));
+    tick(pair.target.cameraId);
     if (!tFeat || !rFeat || tFeat.frames < MIN_OVERLAP * ENV_RATE * 0.8) return null;
     const refOffset = Math.round((pair.ws - rs0) * ENV_RATE);
     const m = correlate(tFeat, rFeat, refOffset, searchFrames);
@@ -565,8 +602,19 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   if (absolute.length > 1) {
     for (const id of absolute.slice(1)) plans.push(planFor(id, [absolute[0]], true));
   }
+  for (const p of plans) left.set(p.camId, sizeOf(p));
+  // Камеры в очереди: сверка со всеми остальными — верхняя оценка; камере без общего времени понадобится широкий поиск.
+  // Широкий поиск — пробы и повторная сверка на найденном месте.
+  const wideBudget = (camId: string) => {
+    const clips = placementsOf(camId).length;
+    const replan = isRecorder(camId) ? clips * RECORDER_CHECKS * RECORDER_TRIES : sourceOf.get(camId) === 'clock' ? clips : opts.maxAnchors;
+    return Math.min(4, clips) * WIDE_PROBES + replan;
+  };
+  for (const id of queue) left.set(id, sizeOf(planFor(id, all.filter((x) => x !== id), false)) || wideBudget(id));
+  report();
   for (const p of plans) {
     const anchors = await measurePlan(p);
+    left.set(p.camId, 0);
     const ok = anchors.filter((a) => a.accepted);
     for (const a of ok) a.role = 'confirm';
     const corr = ok.length ? median(ok.map((a) => a.correction)) : null;
@@ -597,11 +645,12 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
       const dur = t.end - t.start;
       const probeLen = Math.min(PROBE_LEN, dur - 1);
       if (probeLen < MIN_OVERLAP * 1.5) continue;
-      const starts = dur - probeLen < 4 ? [(dur - probeLen) / 2] : [0.5, (dur - probeLen) / 2, dur - probeLen - 0.5];
+      // Пробы по всему клипу: в начале, в конце и между ними — у длинной записи до шести.
+      const count = dur - probeLen < 4 ? 1 : Math.min(WIDE_PROBES, Math.max(3, Math.ceil(dur / 45)));
+      const starts = count === 1 ? [(dur - probeLen) / 2] : Array.from({ length: count }, (_, i) => 0.5 + (i * (dur - probeLen - 1)) / (count - 1));
       for (const probeStart of starts) {
         const env = listen(camId, await audio.features(clipById.get(t.clipId)!, probeStart, probeLen));
-        done++;
-        opts.onProgress?.(done, Math.max(done, totalEstimate() + targets.length * 3));
+        tick(camId);
         if (env) probes.push({ t, start: probeStart, env });
       }
     }
@@ -609,24 +658,15 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     const refEnvs = await pool(refs, conc, async (r) => listen(r.cameraId, await audio.features(clipById.get(r.clipId)!, 0, r.end - r.start)));
     // Все уверенные совпадения пробы с клипами других камер. Если один и тот же сдвиг дают разные пробы
     // или разные камеры — это не случайность.
-    const hits: { shift: number; score: number; ratio: number; key: string }[] = [];
-    probes.forEach(({ t, start: probeStart, env: probe }, pi) => {
+    const hits: WideHit[] = [];
+    probes.forEach(({ t, start: probeStart, env: probe }) => {
       refs.forEach((r, i) => {
         const env = refEnvs[i];
         const m = env ? findInside(probe, env) : null;
-        if (m && isAccepted(m)) hits.push({ shift: startOf(r) + m.offset / ENV_RATE - (t.start + probeStart), score: m.score, ratio: m.ratio, key: `${pi}|${r.clipId}` });
+        if (m && isAccepted(m)) hits.push({ shift: startOf(r) + m.offset / ENV_RATE - (t.start + probeStart), score: m.score, ratio: m.ratio });
       });
     });
-    if (!hits.length) return null;
-    let bestGroup: typeof hits = [];
-    for (const h of hits) {
-      const group = hits.filter((x) => Math.abs(x.shift - h.shift) <= 0.2);
-      if (group.length > bestGroup.length || (group.length === bestGroup.length && group.reduce((s, x) => s + x.score, 0) > bestGroup.reduce((s, x) => s + x.score, 0))) bestGroup = group;
-    }
-    const others = hits.filter((x) => !bestGroup.includes(x));
-    const competing = others.length > 0 && others.length >= bestGroup.length;
-    const confident = !competing && (bestGroup.length >= 2 || isStrong(bestGroup[0]));
-    return confident ? { shift: median(bestGroup.map((x) => x.shift)), probes: bestGroup.length } : null;
+    return pickWideShift(hits);
   };
 
   // Остальные камеры — по очереди, начиная с той, у которой больше общего звука с уже выровненными.
@@ -648,19 +688,26 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     const enabled = opts.isEnabled(camId);
     let plan = planFor(camId, fixed, false);
     plans.push(plan);
+    left.set(camId, sizeOf(plan));
     let anchors = await measurePlan(plan);
+    left.set(camId, 0);
     let wide: { shift: number; probes: number } | null = null;
     // Широкий поиск не нужен камере, которую уже поставил контрольный кадр.
     const hasControl = placementsOf(camId).some((p) => pre[p.clipId] !== undefined);
     if (enabled && !hasControl && !anchors.some((a) => a.accepted)) {
+      left.set(camId, wideBudget(camId));
       wide = await wideSearch(camId);
+      left.set(camId, 0);
       if (wide) {
         for (const p of allOf(camId)) corrections[p.clipId] = wide.shift;
         plan = planFor(camId, fixed, false);
         plans.push(plan);
+        left.set(camId, sizeOf(plan));
         anchors = await measurePlan(plan);
+        left.set(camId, 0);
       }
     }
+    report();
     if (plan.pairs.length + plan.segments.length === 0 && !wide) {
       results.set(camId, { cameraId: camId, status: 'no-overlap', model: null, correction: null, steps: [], anchors: [], wideShift: null });
       issues.push(issue({

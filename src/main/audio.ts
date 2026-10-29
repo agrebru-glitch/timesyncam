@@ -12,11 +12,20 @@ function toFloat32(buf: Buffer): Float32Array {
   return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + Math.floor(buf.length / 4) * 4));
 }
 
-async function decode(path: string, startSec: number, durSec: number | null, args: string[]): Promise<Float32Array | null> {
-  const seek = startSec > 0 ? ['-ss', startSec.toFixed(4)] : [];
+// Перемотка: быстрая — до секунды перед нужным местом, последняя секунда — точная, с разбором звука.
+// Быстрая перемотка в AAC (M4A, звук телефонов, GoPro, DJI) попадает на границу блока по 1024 сэмпла
+// и ошибается на 5–20 мс; точная последняя секунда это исправляет и почти ничего не стоит.
+export function seekArgs(startSec: number, durSec: number | null): { input: string[]; output: string[] } {
   const len = durSec !== null ? ['-t', durSec.toFixed(4)] : [];
+  if (startSec <= 0) return { input: [], output: len };
+  const fast = Math.max(0, startSec - 1);
+  return { input: fast > 0 ? ['-ss', fast.toFixed(4)] : [], output: ['-ss', (startSec - fast).toFixed(4), ...len] };
+}
+
+async function decode(path: string, startSec: number, durSec: number | null, args: string[]): Promise<Float32Array | null> {
+  const { input, output } = seekArgs(startSec, durSec);
   try {
-    const r = await runTool('ffmpeg', ['-v', 'error', ...seek, ...len, '-i', path, '-vn', ...args, '-f', 'f32le', 'pipe:1'], 180000);
+    const r = await runTool('ffmpeg', ['-v', 'error', ...input, '-i', path, ...output, '-vn', ...args, '-f', 'f32le', 'pipe:1'], 180000);
     if (r.code !== 0 || r.stdout.length < 4) return null;
     return toFloat32(r.stdout);
   } catch {

@@ -213,6 +213,8 @@ button, input, select { font: inherit; color: inherit; }
 .ctx-item.danger { color: var(--danger); }
 .ctx-hint { font-size: 11px; color: var(--text-3); margin-top: 1px; }
 .tl-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: var(--text-3); text-align: center; pointer-events: none; }
+.tl-hint.below { color: var(--text-2); width: max-content; max-width: 92%; }
+.tl-hint.pill { top: auto; bottom: 10px; transform: translateX(-50%); width: max-content; max-width: 92%; padding: 6px 12px; border-radius: 8px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); }
 
 /* Ошибки и FAQ */
 .page { overflow-y: auto; padding: 24px 32px; }
