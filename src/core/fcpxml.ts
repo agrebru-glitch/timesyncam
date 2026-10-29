@@ -2,7 +2,7 @@
 // В отличие от FCP7 XML, звук без видео (рекордер) ставится точно до сэмпла: клип встаёт на ближайший кадр,
 // а доля кадра срезается с его начала. Оригинальные файлы не меняются.
 import type { Camera, ClipMeta, Rate, SyncResult } from './types.ts';
-import { nominalRate, parseTc, rateValue, secondsToTcText, tcToFrameCount, wrapDay } from './timecode.ts';
+import { nominalRate, parseTc, rateValue, tcToFrameCount } from './timecode.ts';
 import type { ExportOptions } from './fcp7.ts';
 
 function esc(s: string): string {
@@ -45,16 +45,12 @@ function assetStartSamples(c: ClipMeta, sr: number): number {
 export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportOptions): string {
   const seq = opts.rate;
   const seqFps = rateValue(seq);
-  const nominal = nominalRate(seqFps);
-  const tz = result.displayTzOffsetMin;
   const clipsById = new Map<string, ClipMeta>();
   for (const cam of cameras) for (const c of cam.clips) clipsById.set(c.id, c);
 
-  // Начало таймлинии — ровная минута до первого клипа, тайм-код таймлинии = время суток.
-  const startWall = Math.floor((result.start + tz * 60) / 60) * 60;
-  const seqStartEpoch = startWall - tz * 60;
-  const tcStartFrames = Math.round(wrapDay(startWall) * nominal);
-  const seqTcText = secondsToTcText(wrapDay(startWall), seqFps);
+  // Таймлиния начинается с 00:00:00:00 — с первого клипа съёмки, остальные стоят от него на своих местах.
+  // С тайм-кодом времени суток клипы оказывались за много часов от начала, и DaVinci зависал на импорте.
+  const seqStartEpoch = result.start;
 
   const formats = new Map<string, string>();
   const formatXml: string[] = [`<format id="r0" frameDuration="${frames(1, seq)}" width="${opts.width}" height="${opts.height}"/>`];
@@ -139,14 +135,13 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
       items.push({
         lane: l,
         offset,
-        xml: `<asset-clip ref="${assetOf(c)}" lane="${l}" offset="${frames(tcStartFrames + offset, seq)}" start="${start}" duration="${frames(durFrames, seq)}" name="${esc(c.name)}"${c.hasVideo ? ` format="${formatOf(c)}"` : ''} tcFormat="NDF"/>`,
+        xml: `<asset-clip ref="${assetOf(c)}" lane="${l}" offset="${frames(offset, seq)}" start="${start}" duration="${frames(durFrames, seq)}" name="${esc(c.name)}"${c.hasVideo ? ` format="${formatOf(c)}"` : ''} tcFormat="NDF"/>`,
       });
     }
   }
   items.sort((a, b) => a.offset - b.offset || b.lane - a.lane);
 
   const total = frames(Math.max(1, endFrame), seq);
-  const tcStart = frames(tcStartFrames, seq);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE fcpxml>
 <fcpxml version="1.10">
@@ -157,10 +152,10 @@ ${assetXml.join('\n')}
 <library>
 <event name="TimesynCam">
 <project name="${esc(opts.name)}">
-<!-- Тайм-код таймлинии = время съёмки, начало ${seqTcText} -->
-<sequence format="r0" tcStart="${tcStart}" tcFormat="NDF" duration="${total}" audioLayout="stereo" audioRate="48k">
+<!-- Таймлиния начинается с 00:00:00:00 — с первого клипа съёмки -->
+<sequence format="r0" tcStart="0s" tcFormat="NDF" duration="${total}" audioLayout="stereo" audioRate="48k">
 <spine>
-<gap name="${esc(opts.name)}" offset="${tcStart}" start="${tcStart}" duration="${total}">
+<gap name="${esc(opts.name)}" offset="0s" start="0s" duration="${total}">
 ${items.map((i) => i.xml).join('\n')}
 </gap>
 </spine>

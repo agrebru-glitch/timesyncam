@@ -107,7 +107,7 @@ export function ExportDialog() {
         </div>
         <div className="note">
           Оригинальные файлы не меняются — в XML только ссылки на них и их места на таймлинии. Каждая камера — на своей дорожке,
-          тайм-код таймлинии показывает время съёмки ({rateValue({ num: Number(rateKey.split('/')[0]), den: Number(rateKey.split('/')[1]) }).toFixed(3).replace(/\.?0+$/, '')} к/с).
+          таймлиния начинается с 00:00:00:00 — с первого клипа съёмки ({rateValue({ num: Number(rateKey.split('/')[0]), den: Number(rateKey.split('/')[1]) }).toFixed(3).replace(/\.?0+$/, '')} к/с).
           {errors > 0 && <><br /><b style={{ color: 'var(--danger)' }}>Есть ошибки ({errors}):</b> накладывающиеся клипы уйдут на дополнительную дорожку камеры.</>}
           {format === 'fcpxml'
             ? <><br />Видео встаёт на кадр, звук без видео — точно до сэмпла, как его нашла синхронизация.<br />Resolve: File → Import → Timeline.</>

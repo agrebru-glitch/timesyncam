@@ -1,7 +1,7 @@
 // Экспорт таймлинии в Final Cut Pro 7 XML (xmeml) — его открывают Premiere Pro и DaVinci Resolve.
 // Оригинальные файлы не меняются: в XML только ссылки на них и позиции на таймлинии.
 import type { Camera, ClipMeta, Placement, Rate, SyncResult } from './types.ts';
-import { isNtscRate, nominalRate, parseTc, rateValue, tcToFrameCount, wrapDay, secondsToTcText } from './timecode.ts';
+import { isNtscRate, nominalRate, parseTc, rateValue, tcToFrameCount, secondsToTcText } from './timecode.ts';
 
 export interface ExportOptions {
   name: string;
@@ -96,17 +96,12 @@ interface TrackItem {
 
 export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: ExportOptions): string {
   const seqFps = rateValue(opts.rate);
-  const nominal = nominalRate(seqFps);
-  const tz = result.displayTzOffsetMin;
   const clipsById = new Map<string, ClipMeta>();
   for (const cam of cameras) for (const c of cam.clips) clipsById.set(c.id, c);
 
-  // Начало таймлинии — ровная минута до первого клипа, тайм-код таймлинии = время суток.
-  const firstWall = result.start + tz * 60;
-  const startWall = Math.floor(firstWall / 60) * 60;
-  const seqStartEpoch = startWall - tz * 60;
-  const seqTcFrame = Math.round(wrapDay(startWall) * nominal);
-  const seqTcText = secondsToTcText(wrapDay(startWall), seqFps);
+  // Таймлиния начинается с 00:00:00:00 — с первого клипа съёмки, остальные стоят от него на своих местах.
+  // С тайм-кодом времени суток клипы оказывались за много часов от начала, и DaVinci зависал на импорте.
+  const seqStartEpoch = result.start;
   const toFrame = (epoch: number) => Math.round((epoch - seqStartEpoch) * seqFps);
 
   const videoTracks: { cameraName: string; items: TrackItem[] }[] = [];
@@ -208,7 +203,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
 <name>${esc(opts.name)}</name>
 <duration>${endFrame}</duration>
 ${rateXml(opts.rate)}
-<timecode>${rateXml(opts.rate)}<string>${seqTcText}</string><frame>${seqTcFrame}</frame><displayformat>NDF</displayformat></timecode>
+<timecode>${rateXml(opts.rate)}<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>
 <media>
 <video>
 <format><samplecharacteristics>${rateXml(opts.rate)}<width>${opts.width}</width><height>${opts.height}</height><pixelaspectratio>square</pixelaspectratio></samplecharacteristics></format>

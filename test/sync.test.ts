@@ -124,7 +124,7 @@ test('Ручной сдвиг камеры двигает все её клипы
   assert.ok(Math.abs(r.placements[0].start - (T16 - 1.04)) < 1e-9);
 });
 
-test('Экспорт XML: дорожка на камеру, тайм-код таймлинии = время суток, путь с кириллицей', () => {
+test('Экспорт XML: дорожка на камеру, таймлиния с 00:00:00:00 и первым клипом в начале, путь с кириллицей', () => {
   const clips = freeRunClips([T16 + 181.08, T16 + 213.84]);
   clips[0].path = 'D:\\Съёмка 27_10\\C9151.MP4';
   clips[0].name = 'C9151.MP4';
@@ -133,12 +133,13 @@ test('Экспорт XML: дорожка на камеру, тайм-код та
   const rate = defaultTimelineRate([cam]);
   assert.deepEqual(rate, { num: 25, den: 1 });
   const xml = buildFcp7Xml([cam], r, { name: 'Тест & проверка', rate, width: 3840, height: 2160 });
-  assert.match(xml, /<string>16:03:00:00<\/string>/);
+  assert.match(xml, /<sequence[\s\S]*?<timecode>[\s\S]*?<string>00:00:00:00<\/string><frame>0<\/frame>/);
   assert.match(xml, /file:\/\/localhost\/D:\/%D0%A1%D1%8A%D1%91%D0%BC%D0%BA%D0%B0%2027_10\/C9151\.MP4/);
   assert.match(xml, /Тест &amp; проверка/);
   assert.equal((xml.match(/<track>/g) ?? []).length, 3); // видео + 2 канала звука
   const starts = [...xml.matchAll(/<start>(\d+)<\/start>/g)].map((m) => Number(m[1]));
-  assert.equal(starts[0], Math.round((r.placements[0].start - (T16 + 180)) * 25));
+  assert.equal(starts[0], 0);
+  assert.equal(starts[1], Math.round((r.placements[1].start - r.placements[0].start) * 25));
 });
 
 test('До синхронизации клипы лежат кучкой: подряд по порядку съёмки, все камеры с нуля', () => {
