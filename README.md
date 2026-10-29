@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-Setup-0.3.2.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-Setup-0.3.3.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-0.3.2-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-0.3.3-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-0.3.2-mac-x64.dmg">Mac с процессором Intel</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.2/TimesynCam-0.3.2-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-0.3.3-mac-x64.dmg">Mac с процессором Intel</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.3/TimesynCam-0.3.3-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 
@@ -54,6 +54,7 @@ TimesynCam делает эту работу за вас. Перетащите п
 - **Экспорт для Resolve и Premiere Pro.** XML-таймлиния: каждая камера на своей дорожке, тайм-код таймлинии — время суток. Для Resolve есть FCPXML — в нём звук рекордера встаёт точно до сэмпла.
 - **Оригиналы не трогаются.** Программа только читает файлы. В XML — ссылки на клипы и их места на таймлинии.
 - **Справка по настройке камер** прямо в программе.
+- **Сообщает о новой версии.** При запуске программа проверяет на GitHub, не вышла ли новая версия, и показывает окошко со ссылкой на скачивание. Больше ничего в интернет не отправляется.
 
 ## Скачать
 

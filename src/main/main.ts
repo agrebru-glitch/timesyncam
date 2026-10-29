@@ -7,6 +7,7 @@ import { AUDIO_EXT, scanFolder, VIDEO_EXT } from './scan.ts';
 import { grabFrame, toolsAvailable } from './ffmpeg.ts';
 import { audioFeatures, audioSamples, audioWaveform } from './audio.ts';
 import { scanQr } from './qr.ts';
+import { checkForUpdate } from './update.ts';
 
 // Встроенный плеер получает доступ только к файлам, которые программа сама нашла при сканировании.
 const allowedMedia = new Set<string>();
@@ -180,12 +181,18 @@ ipcMain.handle('shell:reveal', (_e, path: string) => shell.showItemInFolder(path
 const LINKS: Record<string, string> = {
   support: 'https://pay.cloudtips.ru/p/17376eab',
   github: 'https://github.com/agrebru-glitch/timesyncam',
+  release: 'https://github.com/agrebru-glitch/timesyncam/releases/latest',
 };
 ipcMain.handle('shell:open-link', (_e, name: string) => {
   const url = LINKS[name];
   if (url) void shell.openExternal(url);
 });
 ipcMain.handle('app:tools', () => toolsAvailable());
+
+// Новая версия: проверка один раз за запуск, в фоне. Без установки (разработка) и в проверке сборки (SYNC_AUTOLOAD) не идёт.
+// SYNC_UPDATE_FROM=0.3.1 включает её с подменённой своей версией — чтобы посмотреть окошко о новой версии.
+let updateCheck: Promise<{ version: string } | null> = Promise.resolve(null);
+ipcMain.handle('app:update', () => updateCheck);
 
 // Если программу запустили из терминала и закрыли его, запись в консоль падает с EPIPE —
 // это не повод показывать пользователю окно с ошибкой.
@@ -259,6 +266,8 @@ app.whenReady().then(() => {
     if (!app.isPackaged) app.dock?.setIcon(join(__dirname, '../icon.png'));
   }
   registerMediaProtocol();
+  const from = process.env.SYNC_UPDATE_FROM;
+  if (from || (app.isPackaged && !process.env.SYNC_AUTOLOAD)) updateCheck = checkForUpdate(from ?? app.getVersion());
   createWindow();
 });
 

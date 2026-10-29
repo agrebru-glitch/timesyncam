@@ -44,6 +44,7 @@ export interface State {
   exportOpen: boolean;
   toasts: Toast[];
   tools: { ffprobe: boolean; ffmpeg: boolean } | null;
+  update: { version: string } | null; // вышла новая версия — показываем окошко со ссылкой
   syncMode: SyncMode;
   syncMenuOpen: boolean;
   audioRun: { done: number; total: number; frac: number } | null; // идёт сверка по звуку; frac — доля работы, только растёт
@@ -93,6 +94,7 @@ export const initialState: State = {
   exportOpen: false,
   toasts: [],
   tools: null,
+  update: null,
   syncMode: 'audio',
   syncMenuOpen: false,
   audioRun: null,
@@ -131,6 +133,7 @@ export type Action =
   | { type: 'toast'; text: string; revealPath?: string }
   | { type: 'toast-dismiss'; id: number }
   | { type: 'tools'; tools: { ffprobe: boolean; ffmpeg: boolean } }
+  | { type: 'update'; update: { version: string } | null }
   | { type: 'sync-menu'; open: boolean }
   | { type: 'sync-mode'; mode: SyncMode }
   | { type: 'audio-start' }
@@ -255,6 +258,8 @@ export function reducer(state: State, a: Action): State {
       return { ...state, toasts: state.toasts.filter((t) => t.id !== a.id) };
     case 'tools':
       return { ...state, tools: a.tools };
+    case 'update':
+      return { ...state, update: a.update };
     case 'sync-menu':
       return { ...state, syncMenuOpen: a.open };
     case 'sync-mode':

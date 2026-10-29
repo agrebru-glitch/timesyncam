@@ -256,6 +256,7 @@ export function App() {
   useEffect(() => {
     const off = api.onScanProgress((p) => dispatch({ type: 'scan-progress', cameraId: p.scanId, done: p.done, total: p.total }));
     void api.tools().then((tools) => dispatch({ type: 'tools', tools }));
+    void api.checkUpdate().then((update) => update && dispatch({ type: 'update', update }));
     // Автозагрузка папок из переменных окружения — для проверки сборки без ручных действий.
     api.onAutoload(async ({ folders, sync, tab, at, menu, view, control, mode, qr, preview }) => {
       if (preview === '0') dispatch({ type: 'preview', on: false });
@@ -443,6 +444,7 @@ export function App() {
         </footer>
         {state.exportOpen && <ExportDialog />}
         {state.qrScreenOpen && <QrScreen />}
+        {state.update && <UpdatePopup version={state.update.version} />}
 
         <div className="toasts">
           {state.toasts.map((t) => (
@@ -465,6 +467,34 @@ function Toast({ id, text, revealPath }: { id: number; text: string; revealPath?
       <span style={{ flex: 1 }}>{text}</span>
       {revealPath && <button className="btn small" onClick={() => void api.reveal(revealPath)}>Показать в папке</button>}
       <button className="btn small ghost" aria-label="Закрыть" onClick={() => dispatch({ type: 'toast-dismiss', id })}><IconX /></button>
+    </div>
+  );
+}
+
+// Вышла новая версия: окошко под верхней панелью справа. Щелчок открывает страницу релиза в браузере,
+// крестик прячет окошко до следующего запуска.
+function UpdatePopup({ version }: { version: string }) {
+  const { dispatch } = useApp();
+  return (
+    <div className="update-pop" role="status" onClick={() => void api.openLink('release')} title="Откроется страница релиза в браузере">
+      <span className="update-pop-icon"><IconExport /></span>
+      <div className="update-pop-body">
+        <b>Вышла TimesynCam {version}</b>
+        <span>Скачайте новую версию со страницы релиза — установщик для Windows или .dmg для Mac.</span>
+        <div className="update-pop-actions">
+          <button className="btn small primary">Скачать</button>
+        </div>
+      </div>
+      <button
+        className="btn small ghost update-pop-close"
+        aria-label="Закрыть"
+        onClick={(e) => {
+          e.stopPropagation();
+          dispatch({ type: 'update', update: null });
+        }}
+      >
+        <IconX />
+      </button>
     </div>
   );
 }

@@ -268,6 +268,17 @@ button, input, select { font: inherit; color: inherit; }
 .control-hint-body b { color: var(--text); font-size: 13.5px; }
 .control-hint-actions { display: flex; gap: 6px; margin-top: 4px; }
 .control-hint-close { margin: -6px -4px 0 0; }
+/* Вышла новая версия: окошко выезжает под верхней панелью справа, щелчок — страница релиза. */
+.update-pop { position: fixed; top: 56px; right: 12px; z-index: 32; width: 360px; max-width: calc(100% - 24px); display: flex; gap: 12px; align-items: flex-start; padding: 14px 12px 14px 14px; cursor: pointer; background: linear-gradient(135deg, rgba(60, 207, 126, 0.12), rgba(60, 207, 126, 0.02) 60%), var(--surface-3); border: 1px solid rgba(60, 207, 126, 0.55); border-radius: 12px; box-shadow: 0 0 0 1px rgba(60, 207, 126, 0.12), 0 0 20px rgba(60, 207, 126, 0.18), 0 12px 34px rgba(0,0,0,0.5); animation: update-in 0.3s ease-out; }
+.update-pop:hover { border-color: rgba(60, 207, 126, 0.85); }
+.update-pop-icon { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--success); color: #062712; }
+.update-pop-icon svg { width: 22px; height: 22px; }
+.update-pop-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.update-pop-body b { color: var(--text); font-size: 13.5px; }
+.update-pop-actions { display: flex; gap: 6px; margin-top: 4px; }
+.update-pop-close { margin: -6px -4px 0 0; }
+@keyframes update-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .update-pop { animation: none; } }
 @keyframes hint-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 @keyframes hint-glow {
   0%, 100% { box-shadow: 0 0 0 1px rgba(255, 214, 10, 0.12), 0 0 18px rgba(255, 214, 10, 0.16), 0 12px 34px rgba(0,0,0,0.5); }
