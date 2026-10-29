@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AUDIO_SAMPLE_RATE, combine, correlate, envelope, ENV_RATE, findInside, peakDb, refineByAudio } from '../src/core/audioSync.ts';
+import { AUDIO_SAMPLE_RATE, combine, correlate, envelope, ENV_RATE, findInside, peakDb, refineByAudio, waveformPeaks } from '../src/core/audioSync.ts';
 import type { AudioAnchor, AudioPiece } from '../src/core/audioSync.ts';
 import type { ClipMeta, Placement } from '../src/core/types.ts';
 import { runSync } from '../src/core/sync.ts';
@@ -57,6 +57,16 @@ test('Поиск по всей записи находит кусок через
   const m = findInside(probe, ref)!;
   assert.ok(Math.abs(m.offset / ENV_RATE - 431.25) < 0.015, `смещение ${m.offset / ENV_RATE}`);
   assert.ok(m.score > 0.5 && m.ratio > 2);
+});
+
+test('Волна для таймлинии: 100 точек в секунду, тихий и громкий звук видны оба', () => {
+  const quiet = waveformPeaks(record(T16, 2, 0.06, 5), SR);
+  const loud = waveformPeaks(record(T16, 2, 0.9, 6), SR);
+  assert.equal(quiet.length, 200);
+  const max = (a: Uint8Array) => a.reduce((m, v) => Math.max(m, v), 0);
+  assert.ok(max(quiet) > 120, `тихий пик ${max(quiet)}`);
+  assert.ok(max(loud) > max(quiet));
+  assert.equal(max(waveformPeaks(new Float32Array(SR), SR)), 0);
 });
 
 test('Тишина в звуке распознаётся по пику', () => {

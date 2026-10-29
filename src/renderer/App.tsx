@@ -10,6 +10,7 @@ import { api } from './api.ts';
 import { canExport, initialState, isScanning, needsSync, newCamera, reducer } from './state.ts';
 import type { Action, State, SyncMode } from './state.ts';
 import { SyncMenu } from './components/SyncMenu.tsx';
+import { requestWaveforms } from './waveforms.ts';
 import { IconExport, IconLock, IconSync, IconX } from './icons.tsx';
 import { CameraPanel } from './components/CameraPanel.tsx';
 import { Viewer } from './components/Viewer.tsx';
@@ -112,6 +113,7 @@ export function App() {
         });
       }
       dispatch({ type: 'scan-done', cameraId: targetId, clips: res.clips, issues: scanIssues });
+      requestWaveforms(res.clips);
     }
   }, []);
 
@@ -171,7 +173,7 @@ export function App() {
     const off = api.onScanProgress((p) => dispatch({ type: 'scan-progress', cameraId: p.scanId, done: p.done, total: p.total }));
     void api.tools().then((tools) => dispatch({ type: 'tools', tools }));
     // Автозагрузка папок из переменных окружения — для проверки сборки без ручных действий.
-    api.onAutoload(async ({ folders, sync, tab, at, menu }) => {
+    api.onAutoload(async ({ folders, sync, tab, at, menu, view }) => {
       const first = stateRef.current.cameras[0];
       for (let i = 0; i < folders.length; i++) {
         await addFolders(i === 0 && first.clips.length === 0 ? first.id : null, [folders[i]]);
@@ -188,6 +190,20 @@ export function App() {
           const dayStart = Math.floor((s.start + tzSec) / 86400) * 86400 - tzSec;
           dispatch({ type: 'playhead', at: dayStart + Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) });
         }, 150);
+      }
+      const v = view ? /^(\d{1,2}):(\d{2}):(\d{2})-(\d{1,2}):(\d{2}):(\d{2})$/.exec(view) : null;
+      if (v) {
+        // Масштаб таймлинии для проверки: применяется после сверки по звуку.
+        const apply = () => {
+          const s = stateRef.current;
+          if (!s.sync || s.audioRun) return setTimeout(apply, 300);
+          const tzSec = s.sync.displayTzOffsetMin * 60;
+          const dayStart = Math.floor((s.sync.start + tzSec) / 86400) * 86400 - tzSec;
+          const a = dayStart + Number(v[1]) * 3600 + Number(v[2]) * 60 + Number(v[3]);
+          const b = dayStart + Number(v[4]) * 3600 + Number(v[5]) * 60 + Number(v[6]);
+          dispatch({ type: 'viewport', viewport: { start: a, secPerPx: (b - a) / 1280 } });
+        };
+        setTimeout(apply, 500);
       }
     });
     return off;

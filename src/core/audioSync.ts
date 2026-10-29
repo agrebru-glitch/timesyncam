@@ -190,6 +190,28 @@ export interface AudioPiece {
 
 export const SILENCE_DB = -70;
 
+// Волна для таймлинии: пик каждых 10 мс в логарифмической шкале, 0…255.
+// Логарифм нужен, чтобы тихий микрофон камеры и громкий рекордер выглядели сравнимо.
+export const WAVE_RATE = 100;
+const WAVE_FLOOR_DB = -54;
+
+export function waveformPeaks(samples: Float32Array, sampleRate: number): Uint8Array {
+  const hop = Math.round(sampleRate / WAVE_RATE);
+  const n = Math.ceil(samples.length / hop);
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    let peak = 0;
+    const end = Math.min(samples.length, (i + 1) * hop);
+    for (let k = i * hop; k < end; k++) {
+      const v = Math.abs(samples[k]);
+      if (v > peak) peak = v;
+    }
+    const db = peak > 0 ? 20 * Math.log10(peak) : -200;
+    out[i] = Math.round(Math.max(0, Math.min(1, (db - WAVE_FLOOR_DB) / -WAVE_FLOOR_DB)) * 255);
+  }
+  return out;
+}
+
 export function peakDb(samples: Float32Array): number {
   let peak = 0;
   for (let i = 0; i < samples.length; i++) {

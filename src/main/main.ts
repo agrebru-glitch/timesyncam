@@ -5,7 +5,7 @@ import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { scanFolder } from './scan.ts';
 import { grabFrame, toolsAvailable } from './ffmpeg.ts';
-import { audioEnvelope } from './audio.ts';
+import { audioEnvelope, audioWaveform } from './audio.ts';
 
 // Встроенный плеер получает доступ только к файлам, которые программа сама нашла при сканировании.
 const allowedMedia = new Set<string>();
@@ -79,12 +79,22 @@ function createWindow(): void {
         tab: process.env.SYNC_TAB,
         at: process.env.SYNC_PLAYHEAD,
         menu: process.env.SYNC_MENU === '1',
+        view: process.env.SYNC_VIEW,
       });
     }
     const shot = process.env.SYNC_SHOT;
     if (shot) {
       const delay = Number(process.env.SYNC_SHOT_DELAY ?? 4000);
       setTimeout(async () => {
+        // Для проверки меню: правый щелчок в заданной точке окна перед снимком.
+        const rc = /^(\d+),(\d+)$/.exec(process.env.SYNC_RCLICK ?? '');
+        if (rc) {
+          const x = Number(rc[1]);
+          const y = Number(rc[2]);
+          win!.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'right', clickCount: 1 });
+          win!.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'right', clickCount: 1 });
+          await new Promise((r) => setTimeout(r, 600));
+        }
         const img = await win!.webContents.capturePage();
         await writeFile(shot, img.toPNG());
         app.quit();
@@ -115,6 +125,11 @@ ipcMain.handle('media:grab', async (_e, path: string, seconds: number) => {
 ipcMain.handle('audio:envelope', async (_e, path: string, startSec: number, durSec: number) => {
   if (!allowedMedia.has(path)) return null;
   return audioEnvelope(path, startSec, durSec);
+});
+
+ipcMain.handle('audio:waveform', async (_e, path: string) => {
+  if (!allowedMedia.has(path)) return null;
+  return audioWaveform(path);
 });
 
 ipcMain.handle('export:save', async (_e, defaultName: string, content: string) => {

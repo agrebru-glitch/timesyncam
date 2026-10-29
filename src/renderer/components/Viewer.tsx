@@ -3,6 +3,8 @@ import type { Camera, ClipMeta, Placement } from '../../core/types.ts';
 import { formatDate, formatDurationHuman, formatTimecodeAt } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
 import { api, cameraColor, mediaUrl } from '../api.ts';
+import { getWaveform, useWaveformVersion } from '../waveforms.ts';
+import { WAVE_RATE } from '../../core/audioSync.ts';
 import { IconFrameBack, IconFrameFwd, IconNext, IconPause, IconPlay, IconPrev } from '../icons.tsx';
 
 interface Hit {
@@ -22,6 +24,64 @@ function clipAt(cam: Camera, placements: Placement[], t: number | null): { hit: 
     if (p.start > t && (!next || p.start < next.start)) next = p;
   }
   return { hit: null, next };
+}
+
+const AUDIO_WINDOW = 6; // секунд звука по обе стороны от курсора
+
+// Камера только со звуком (рекордер): вместо видео — полупрозрачная волна вокруг курсора.
+function AudioTile({ cam, index, hit, next }: { cam: Camera; index: number; hit: Hit | null; next: Placement | null }) {
+  const { state } = useApp();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const waveVersion = useWaveformVersion();
+  const wave = hit ? getWaveform(hit.clip.id) : undefined;
+  const local = hit && state.playhead !== null ? state.playhead - hit.placement.start : 0;
+
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth;
+    const h = cv.clientHeight;
+    cv.width = Math.floor(w * dpr);
+    cv.height = Math.floor(h * dpr);
+    const g = cv.getContext('2d')!;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    if (!wave) return;
+    const mid = h / 2;
+    const amp = h * 0.38;
+    const secPerPx = (AUDIO_WINDOW * 2) / w;
+    g.fillStyle = cameraColor(index);
+    g.globalAlpha = 0.45;
+    for (let px = 0; px < w; px++) {
+      const t0 = local - AUDIO_WINDOW + px * secPerPx;
+      const i0 = Math.floor(t0 * WAVE_RATE);
+      const i1 = Math.max(i0 + 1, Math.ceil((t0 + secPerPx) * WAVE_RATE));
+      let peak = 0;
+      for (let i = Math.max(0, i0); i < Math.min(wave.length, i1); i++) if (wave[i] > peak) peak = wave[i];
+      if (peak < 4) continue;
+      const a = Math.max(0.5, (peak / 255) * amp);
+      g.fillRect(px, mid - a, 1, a * 2);
+    }
+    g.globalAlpha = 1;
+    g.fillStyle = '#ff5f57';
+    g.fillRect(Math.round(w / 2), 0, 1.5, h);
+  }, [wave, local, index, waveVersion]);
+
+  return (
+    <>
+      <canvas ref={canvasRef} className="tile-wave" />
+      <div className="tile-audio-note">
+        <span className="tile-audio-title">Только звук</span>
+        {!hit && (
+          <span>
+            {next && state.playhead !== null ? `Не писал в этот момент. Следующая запись через ${formatDurationHuman(next.start - state.playhead)}` : 'Не писал в этот момент'}
+          </span>
+        )}
+        {hit && !wave && <span>Строю волну…</span>}
+      </div>
+    </>
+  );
 }
 
 function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean }) {
@@ -66,6 +126,7 @@ function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean })
   }, [hit?.clip.id]);
 
   const flag = !hit || !hit.clip.hasVideo ? null : source ? (hit.clip.proxyPath ? 'прокси' : 'оригинал') : 'стоп-кадр';
+  const audioOnly = cam.clips.length > 0 && cam.clips.every((c) => !c.hasVideo);
 
   return (
     <div
@@ -84,8 +145,9 @@ function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean })
         />
       )}
       {!source && hit && hit.clip.hasVideo && still && <img src={still} alt="" />}
-      {hit && !hit.clip.hasVideo && <div className="tile-note">Только звук · {hit.clip.name}</div>}
-      {!hit && (
+      {audioOnly && <AudioTile cam={cam} index={index} hit={hit} next={next} />}
+      {!audioOnly && hit && !hit.clip.hasVideo && <div className="tile-note">Только звук · {hit.clip.name}</div>}
+      {!audioOnly && !hit && (
         <div className="tile-note">
           {cam.clips.length === 0
             ? 'Добавьте папку этой камеры'

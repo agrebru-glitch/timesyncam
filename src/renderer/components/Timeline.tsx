@@ -5,10 +5,29 @@ import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
 import { IconPlus } from '../icons.tsx';
 import type { Viewport } from '../state.ts';
+import { getWaveform, useWaveformVersion } from '../waveforms.ts';
+import { WAVE_RATE } from '../../core/audioSync.ts';
 
 const RULER_H = 30;
 const ROW_H = 52;
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
+const WAVES_KEY = 'timesyncam.showWaves';
+
+// Уровни огрублённой волны: на каждом следующем — максимум из двух соседних точек.
+const pyramids = new WeakMap<Uint8Array, Uint8Array[]>();
+function pyramid(w: Uint8Array): Uint8Array[] {
+  let p = pyramids.get(w);
+  if (p) return p;
+  p = [w];
+  while (p[p.length - 1].length > 64) {
+    const prev = p[p.length - 1];
+    const next = new Uint8Array(Math.ceil(prev.length / 2));
+    for (let i = 0; i < next.length; i++) next[i] = Math.max(prev[2 * i], prev[2 * i + 1] ?? 0);
+    p.push(next);
+  }
+  pyramids.set(w, p);
+  return p;
+}
 
 export function Timeline() {
   const { state, dispatch, placements, synced, issues, addFolders } = useApp();
@@ -16,6 +35,15 @@ export function Timeline() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 800, h: 240 });
   const [dropRow, setDropRow] = useState<number | 'new' | null>(null);
+  const [showWaves, setShowWaves] = useState(() => {
+    try {
+      return localStorage.getItem(WAVES_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const waveVersion = useWaveformVersion();
+  const [menu, setMenu] = useState<{ x: number; y: number; clipId: string; cameraId: string } | null>(null);
   const tz = state.sync?.displayTzOffsetMin ?? -new Date().getTimezoneOffset();
 
   const lanesByCam = useMemo(() => {
@@ -143,6 +171,33 @@ export function Timeline() {
         g.roundRect(x0, y0, w, h, Math.min(4, w / 2));
         g.fill();
         g.globalAlpha = 1;
+
+        // Волна звука внутри клипа: одинаковые всплески у разных камер стоят на одной вертикали.
+        const wave = showWaves ? getWaveform(p.clipId) : undefined;
+        if (wave && w > 3) {
+          const levels = pyramid(wave);
+          const perPx = vp.secPerPx * WAVE_RATE;
+          const level = Math.max(0, Math.min(levels.length - 1, Math.floor(Math.log2(Math.max(1, perPx)))));
+          const data = levels[level];
+          const scale = WAVE_RATE / 2 ** level;
+          const top = y0 + 16;
+          const mid = top + (h - 18) / 2;
+          const amp = (h - 18) / 2;
+          g.fillStyle = synced || isSpeed ? 'rgba(0,0,0,0.42)' : 'rgba(255,255,255,0.4)';
+          const pxFrom = Math.max(0, Math.floor(x0));
+          const pxTo = Math.min(size.w, Math.ceil(x0 + w));
+          for (let px = pxFrom; px < pxTo; px++) {
+            const local0 = vp.start + px * vp.secPerPx - p.start;
+            const i0 = Math.max(0, Math.floor(local0 * scale));
+            const i1 = Math.min(data.length, Math.max(i0 + 1, Math.ceil((local0 + vp.secPerPx) * scale)));
+            let peak = 0;
+            for (let i = i0; i < i1; i++) if (data[i] > peak) peak = data[i];
+            if (peak < 4) continue;
+            const a = Math.max(0.5, (peak / 255) * amp);
+            g.fillRect(px, mid - a, 1, a * 2);
+          }
+        }
+
         if (errorClips.has(p.clipId) && !isSpeed) {
           g.strokeStyle = '#ff5f57';
           g.lineWidth = 2;
@@ -204,7 +259,7 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, vp, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, errorClips, speedClips, tz]);
+  }, [size, vp, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, errorClips, speedClips, tz, showWaves, waveVersion]);
 
   // Мышь: щелчок ставит курсор и выделяет клип, по линейке можно водить.
   const timeAt = (clientX: number) => {
@@ -222,8 +277,56 @@ export function Timeline() {
     return placements.find((p) => p.cameraId === row.cam.id && p.lane === lane && p.start - slack <= t && t <= p.end + slack) ?? null;
   };
 
+  const removeClip = (cameraId: string, clipId: string) => {
+    const name = state.cameras.find((c) => c.id === cameraId)?.clips.find((c) => c.id === clipId)?.name ?? 'Клип';
+    dispatch({ type: 'exclude-clips', cameraId, clipIds: [clipId] });
+    dispatch({ type: 'toast', text: `${name} удалён с таймлинии. Файл на диске не тронут — вернуть можно в карточке камеры.` });
+  };
+
+  // Правая кнопка по клипу — меню клипа.
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const hit = clipUnder(e.clientX, e.clientY);
+    if (!hit) {
+      setMenu(null);
+      return;
+    }
+    const rect = wrapRef.current!.getBoundingClientRect();
+    dispatch({ type: 'select-clip', clipId: hit.clipId });
+    setMenu({ x: Math.min(e.clientX - rect.left, rect.width - 230), y: Math.min(e.clientY - rect.top, rect.height - 96), clipId: hit.clipId, cameraId: hit.cameraId });
+  };
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('blur', close);
+    };
+  }, [menu]);
+
+  // Delete — удалить выделенный клип с таймлинии.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' || state.tab !== 'sync' || !state.selectedClipId) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'SELECT') return;
+      const p = placements.find((x) => x.clipId === state.selectedClipId);
+      if (p) removeClip(p.cameraId, p.clipId);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   const onMouseDown = (e: React.MouseEvent) => {
-    if (!vp) return;
+    if (!vp || e.button !== 0) return;
     const hit = clipUnder(e.clientX, e.clientY);
     dispatch({ type: 'select-clip', clipId: hit?.clipId ?? null });
     if (hit) dispatch({ type: 'view-mode', mode: state.viewMode, cameraId: hit.cameraId });
@@ -287,9 +390,24 @@ export function Timeline() {
     <div className="timeline">
       <div className="tl-heads">
         <div className="tl-ruler-head">
-          <button className="btn small ghost" title="Показать всю съёмку" onClick={() => { const f = fitViewport(); if (f) dispatch({ type: 'viewport', viewport: f }); }}>Вся съёмка</button>
+          <button className="btn small ghost" title="Показать всю съёмку" onClick={() => { const f = fitViewport(); if (f) dispatch({ type: 'viewport', viewport: f }); }}>Всё</button>
           <button className="btn small ghost" aria-label="Отдалить" onClick={() => zoom(1.6)}>−</button>
           <button className="btn small ghost" aria-label="Приблизить" onClick={() => zoom(1 / 1.6)}>+</button>
+          <button
+            className={`btn small ghost ${showWaves ? 'on' : ''}`}
+            title={showWaves ? 'Скрыть волну звука на клипах' : 'Показать волну звука на клипах'}
+            aria-pressed={showWaves}
+            onClick={() => {
+              setShowWaves(!showWaves);
+              try {
+                localStorage.setItem(WAVES_KEY, showWaves ? '0' : '1');
+              } catch {
+                // запоминать необязательно
+              }
+            }}
+          >
+            Волна
+          </button>
         </div>
         {rows.map((r) => (
           <div
@@ -328,7 +446,23 @@ export function Timeline() {
         onDragLeave={() => setDropRow(null)}
         onDrop={(e) => onDrop(e, rowAtY(e.clientY))}
       >
-        <canvas ref={canvasRef} onMouseDown={onMouseDown} />
+        <canvas ref={canvasRef} onMouseDown={onMouseDown} onContextMenu={onContextMenu} />
+        {menu && (() => {
+          const clip = state.cameras.find((c) => c.id === menu.cameraId)?.clips.find((c) => c.id === menu.clipId);
+          if (!clip) return null;
+          return (
+            <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="ctx-title">{clip.name}</div>
+              <button role="menuitem" className="ctx-item danger" onClick={() => { removeClip(menu.cameraId, menu.clipId); setMenu(null); }}>
+                Удалить с таймлинии
+                <span className="ctx-hint">Del · файл на диске останется</span>
+              </button>
+              <button role="menuitem" className="ctx-item" onClick={() => { void api.reveal(clip.path); setMenu(null); }}>
+                Показать файл в папке
+              </button>
+            </div>
+          );
+        })()}
         {!extent && (
           <div className="tl-hint">
             Перетащите папку с клипами камеры на дорожку.<br />Каждая камера — на свою дорожку.

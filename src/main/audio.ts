@@ -1,10 +1,29 @@
 // Звук для сверки камер: ffmpeg вынимает кусок звука в 8 кГц моно, ядро превращает его в огибающую атак.
-import { AUDIO_SAMPLE_RATE, envelope, peakDb } from '../core/audioSync.ts';
+import { AUDIO_SAMPLE_RATE, envelope, peakDb, waveformPeaks } from '../core/audioSync.ts';
 import type { AudioPiece } from '../core/audioSync.ts';
 import { runTool } from './ffmpeg.ts';
 
 const cache = new Map<string, AudioPiece>();
 const CACHE_LIMIT = 400;
+
+const waves = new Map<string, Uint8Array>();
+
+// Волна всего клипа для таймлинии. Считается один раз на клип и хранится, пока программа открыта.
+export async function audioWaveform(path: string): Promise<Uint8Array | null> {
+  const hit = waves.get(path);
+  if (hit) return hit;
+  try {
+    const r = await runTool('ffmpeg', ['-v', 'error', '-i', path, '-vn', '-ac', '1', '-ar', String(AUDIO_SAMPLE_RATE), '-f', 'f32le', 'pipe:1'], 180000);
+    if (r.code !== 0 || r.stdout.length < 4) return null;
+    const buf = r.stdout;
+    const samples = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + Math.floor(buf.length / 4) * 4));
+    const peaks = waveformPeaks(samples, AUDIO_SAMPLE_RATE);
+    waves.set(path, peaks);
+    return peaks;
+  } catch {
+    return null;
+  }
+}
 
 export async function audioEnvelope(path: string, startSec: number, durSec: number): Promise<AudioPiece | null> {
   const start = Math.max(0, startSec);
