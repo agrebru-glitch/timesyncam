@@ -2,7 +2,7 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [семантические](https://semver.org/lang/ru/).
 
-## [0.2.0] — не выпущено
+## [0.2.0] — 2026-10-29
 
 ### Добавлено
 
@@ -41,4 +41,5 @@
 - Установщик и архив для Windows 10 и 11 с FFmpeg (LGPL) внутри.
 - Демо-съёмка для проверки без своих клипов (`npm run demo`).
 
+[0.2.0]: https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.2.0
 [0.1.0]: https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.1.0
