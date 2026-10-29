@@ -57,6 +57,7 @@ export interface State {
   qrRun: { done: number; total: number } | null;
   previewOn: boolean;
   qrScreenOpen: boolean;
+  controlHint: number | null; // подсказка «отметьте контрольный кадр»: номер показа, null — скрыта
 }
 
 let camSeq = 0;
@@ -105,6 +106,7 @@ export const initialState: State = {
   qrRun: null,
   previewOn: true,
   qrScreenOpen: false,
+  controlHint: null,
 };
 
 export type Action =
@@ -142,7 +144,8 @@ export type Action =
   | { type: 'qr-result'; key: string; result: QrResult | null }
   | { type: 'qr-done'; control: Record<string, ControlInfo> | null; issues: Issue[]; pre: Record<string, number>; fixed: string[] }
   | { type: 'preview'; on: boolean }
-  | { type: 'qr-screen'; open: boolean };
+  | { type: 'qr-screen'; open: boolean }
+  | { type: 'control-hint-close' };
 
 let toastSeq = 0;
 
@@ -175,16 +178,23 @@ export function reducer(state: State, a: Action): State {
     case 'scan-progress':
       // Сообщение о ходе чтения может прийти уже после конца чтения — тогда его не учитываем.
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => (c.scanning ? { ...c, scanning: { done: a.done, total: a.total } } : c)) };
-    case 'scan-done':
+    case 'scan-done': {
+      const cameras = mapCamera(state, a.cameraId, (c) => {
+        const known = new Set(c.clips.map((x) => x.path));
+        return { ...c, clips: [...c.clips, ...a.clips.filter((x) => !known.has(x.path))], scanning: null };
+      });
+      // Появилась вторая (третья…) камера с клипами — напоминаем про контрольный кадр.
+      const wasEmpty = !state.cameras.find((c) => c.id === a.cameraId)?.clips.length;
+      const nowFilled = !!cameras.find((c) => c.id === a.cameraId)?.clips.length;
+      const secondCamera = wasEmpty && nowFilled && cameras.filter((c) => c.clips.length).length >= 2;
       return {
         ...state,
-        cameras: mapCamera(state, a.cameraId, (c) => {
-          const known = new Set(c.clips.map((x) => x.path));
-          return { ...c, clips: [...c.clips, ...a.clips.filter((x) => !known.has(x.path))], scanning: null };
-        }),
+        cameras,
         scanIssues: [...state.scanIssues, ...a.issues],
         version: state.version + 1,
+        controlHint: secondCamera ? (state.controlHint ?? 0) + 1 : state.controlHint,
       };
+    }
     case 'set-trust':
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, timecodeTrust: a.trust })), version: state.version + 1 };
     case 'shift-camera':
@@ -255,7 +265,7 @@ export function reducer(state: State, a: Action): State {
     case 'audio-done':
       return { ...state, audioRun: null, audio: a.result };
     case 'set-control':
-      return { ...state, controlFrames: { ...state.controlFrames, [a.frame.clipId]: a.frame }, version: state.version + 1 };
+      return { ...state, controlFrames: { ...state.controlFrames, [a.frame.clipId]: a.frame }, version: state.version + 1, controlHint: null };
     case 'clear-control': {
       const next = { ...state.controlFrames };
       delete next[a.clipId];
@@ -273,6 +283,8 @@ export function reducer(state: State, a: Action): State {
       return { ...state, previewOn: a.on };
     case 'qr-screen':
       return { ...state, qrScreenOpen: a.open };
+    case 'control-hint-close':
+      return { ...state, controlHint: null };
     case 'set-audio-assist':
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, audioAssist: a.on })), version: state.version + 1 };
   }

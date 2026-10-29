@@ -30,7 +30,7 @@ const AUDIO_WINDOW = 6; // секунд звука по обе стороны о
 
 // Камера только со звуком (рекордер): вместо видео — полупрозрачная волна вокруг курсора.
 function AudioTile({ cam, index, hit, next }: { cam: Camera; index: number; hit: Hit | null; next: Placement | null }) {
-  const { state } = useApp();
+  const { state, synced } = useApp();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const waveVersion = useWaveformVersion();
   const wave = hit ? getWaveform(hit.clip.id) : undefined;
@@ -75,7 +75,9 @@ function AudioTile({ cam, index, hit, next }: { cam: Camera; index: number; hit:
         <span className="tile-audio-title">Только звук</span>
         {!hit && (
           <span>
-            {next && state.playhead !== null ? `Не писал в этот момент. Следующая запись через ${formatDurationHuman(next.start - state.playhead)}` : 'Не писал в этот момент'}
+            {!synced
+              ? next ? 'Между записями' : 'Записи рекордера закончились'
+              : next && state.playhead !== null ? `Не писал в этот момент. Следующая запись через ${formatDurationHuman(next.start - state.playhead)}` : 'Не писал в этот момент'}
           </span>
         )}
         {hit && !wave && <span>Строю волну…</span>}
@@ -85,7 +87,7 @@ function AudioTile({ cam, index, hit, next }: { cam: Camera; index: number; hit:
 }
 
 function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean }) {
-  const { state, dispatch, placements } = useApp();
+  const { state, dispatch, placements, synced } = useApp();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [still, setStill] = useState<string | null>(null);
   const { hit, next } = clipAt(cam, placements, state.playhead);
@@ -151,6 +153,8 @@ function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean })
         <div className="tile-note">
           {cam.clips.length === 0
             ? 'Добавьте папку этой камеры'
+            : !synced
+              ? next ? 'Между клипами' : 'Клипы этой камеры закончились'
             : next && state.playhead !== null
               ? `Камера не снимала. Следующий клип через ${formatDurationHuman(next.start - state.playhead)}`
               : 'Камера не снимала в этот момент'}
@@ -167,7 +171,7 @@ function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean })
 }
 
 export function Viewer() {
-  const { state, dispatch, placements, fps } = useApp();
+  const { state, dispatch, placements, synced, fps } = useApp();
   const tz = state.sync?.displayTzOffsetMin ?? -new Date().getTimezoneOffset();
   const cams = state.cameras;
   const single = state.viewMode === 'single' || cams.length === 1;
@@ -193,7 +197,8 @@ export function Viewer() {
   const step = (dir: 1 | -1) => {
     if (state.playhead === null) return;
     dispatch({ type: 'play', playing: false });
-    dispatch({ type: 'playhead', at: state.playhead + dir / fps });
+    const at = state.playhead + dir / fps;
+    dispatch({ type: 'playhead', at: starts.length ? Math.min(Math.max(at, starts[0]), Math.max(...placements.map((p) => p.end))) : at });
   };
 
   return (
@@ -216,8 +221,9 @@ export function Viewer() {
         <span className="spacer" />
         {state.playhead !== null && (
           <>
-            <span className="tc-date">{formatDate(state.playhead, tz)}</span>
-            <span className="tc-big">{formatTimecodeAt(state.playhead, tz, fps)}</span>
+            {/* До синхронизации времени суток ещё нет — показываем место в кучке клипов. */}
+            <span className="tc-date">{synced ? formatDate(state.playhead, tz) : 'до синхронизации'}</span>
+            <span className="tc-big">{formatTimecodeAt(state.playhead, synced ? tz : 0, fps)}</span>
           </>
         )}
       </div>

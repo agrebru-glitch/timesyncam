@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runSync } from '../src/core/sync.ts';
+import { pilePlacements, runSync } from '../src/core/sync.ts';
 import { buildFcp7Xml, defaultTimelineRate } from '../src/core/fcp7.ts';
 import { camera, clip, T16 } from './fixtures.ts';
 
@@ -116,4 +116,36 @@ test('Экспорт XML: дорожка на камеру, тайм-код та
   assert.equal((xml.match(/<track>/g) ?? []).length, 3); // видео + 2 канала звука
   const starts = [...xml.matchAll(/<start>(\d+)<\/start>/g)].map((m) => Number(m[1]));
   assert.equal(starts[0], Math.round((r.placements[0].start - (T16 + 180)) * 25));
+});
+
+test('До синхронизации клипы лежат кучкой: подряд по порядку съёмки, все камеры с нуля', () => {
+  // Часы второй камеры сбиты на сутки, третий клип первой камеры снят раньше остальных, у одного клипа нет часов.
+  const a = camera('A', [
+    clip({ start: T16 + 600, durationSec: 30 }),
+    clip({ start: T16 + 3600, durationSec: 20 }),
+    clip({ start: T16, durationSec: 10 }),
+    clip({ durationSec: 5 }),
+  ]);
+  const b = camera('B', [clip({ start: T16 - 86400, durationSec: 40 }), clip({ start: T16 - 86400 + 7200, durationSec: 15 })], { manualShiftSec: 3600 });
+  const p = pilePlacements([a, b]);
+  const of = (cam: string) => p.filter((x) => x.cameraId === cam);
+
+  // Порядок по часам, клип без часов — последним.
+  assert.deepEqual(of('A').map((x) => x.clipId), [a.clips[2].id, a.clips[0].id, a.clips[1].id, a.clips[3].id]);
+  // Обе камеры начинаются с нуля, ни часы, ни ручной сдвиг кучку не двигают.
+  assert.equal(of('A')[0].start, 0);
+  assert.equal(of('B')[0].start, 0);
+  // Подряд с одинаковым небольшим зазором, длительность клипа сохраняется.
+  const gaps = of('A').slice(1).map((x, i) => x.start - of('A')[i].end);
+  assert.ok(gaps.every((g) => g === gaps[0] && g >= 1 && g < 5), `зазоры ${gaps}`);
+  assert.ok(of('A').every((x, i) => x.end - x.start === [10, 30, 20, 5][i]));
+  // Вся кучка — меньше двух минут, хотя по часам клипы разнесены на сутки.
+  assert.ok(Math.max(...p.map((x) => x.end)) < 120);
+});
+
+test('Кучка не показывает клипы, убранные с таймлинии', () => {
+  const a = camera('A', [clip({ start: T16 }), clip({ start: T16 + 100 }), clip({ start: T16 + 200 })]);
+  a.excludedClipIds = [a.clips[1].id];
+  const p = pilePlacements([a]);
+  assert.deepEqual(p.map((x) => x.clipId), [a.clips[0].id, a.clips[2].id]);
 });

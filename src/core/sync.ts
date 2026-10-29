@@ -369,14 +369,25 @@ export function runSync(cameras: Camera[], corrections: Record<string, number> =
   return { placements, cameras: syncs, issues, start, end, displayTzOffsetMin: tz };
 }
 
-// Предварительная раскладка до синхронизации — просто по часам камер.
-export function previewPlacements(cameras: Camera[]): Placement[] {
+// Раскладка до синхронизации — «кучкой»: клипы каждой камеры лежат подряд, по порядку съёмки,
+// и все камеры начинаются с нуля. Часы камер могут быть сбиты на часы и сутки — так клипы не разлетаются,
+// и контрольные кадры удобно отмечать. Настоящие места клипы получают по кнопке «Синхронизировать».
+export function pilePlacements(cameras: Camera[]): Placement[] {
+  const piles = cameras.map((cam) => {
+    // Порядок съёмки — по часам камеры; клипы без часов — в конце, по имени файла.
+    const clips = activeClips(cam).map((c, i) => ({ c, i }));
+    clips.sort((a, b) => (a.c.clock?.epochSec ?? Infinity) - (b.c.clock?.epochSec ?? Infinity) || a.i - b.i);
+    return { cam, clips: clips.map((x) => x.c) };
+  });
+  // Зазор между клипами — заметный при любом масштабе: около 1/300 самой длинной кучки, не меньше секунды.
+  const longest = Math.max(0, ...piles.map((p) => p.clips.reduce((sum, c) => sum + c.durationSec, 0)));
+  const gap = Math.max(1, longest / 300);
   const out: Placement[] = [];
-  for (const cam of cameras) {
-    for (const c of activeClips(cam)) {
-      if (!c.clock) continue;
-      const start = c.clock.epochSec + cam.manualShiftSec;
-      out.push({ clipId: c.id, cameraId: cam.id, start, end: start + c.durationSec, method: 'clock', lane: 0 });
+  for (const { cam, clips } of piles) {
+    let t = 0;
+    for (const c of clips) {
+      out.push({ clipId: c.id, cameraId: cam.id, start: t, end: t + c.durationSec, method: 'clock', lane: 0 });
+      t += c.durationSec + gap;
     }
   }
   return out;

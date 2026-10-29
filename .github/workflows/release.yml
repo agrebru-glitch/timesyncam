@@ -4,8 +4,9 @@ name: Релиз
 # и прикладывает сборки к релизу на GitHub.
 #
 # - Метка вида v0.4.0 — сборка и релиз. Метка с дефисом (v0.4.0-rc.1) — черновик релиза.
-# - Запуск вручную (Actions → Релиз → Run workflow) пересобирает сборки из выбранной ветки
-#   и кладёт их в уже существующий релиз — например, чтобы добавить новую платформу.
+# - Запуск вручную (Actions → Релиз → Run workflow) собирает выбранную ветку: новую версию выпускает
+#   с меткой на собранном коммите, а в уже существующий релиз докладывает сборки (например, новую платформу).
+#   Метка должна совпадать с версией в package.json.
 # - В pull request, который меняет сборку, — только сборка и проверка, без релиза.
 # - Текст релиза берётся из .github/release-notes/<метка>.md, если такой файл есть.
 on:
@@ -188,15 +189,25 @@ jobs:
           sha256sum -- *.exe *.zip *.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Метка совпадает с версией
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "${TAG#v}" != "$version" ] && [[ "${TAG#v}" != "$version"-* ]]; then
+            echo "Метка $TAG не совпадает с версией $version в package.json"
+            exit 1
+          fi
+
       - name: Приложить к релизу
         run: |
           notes=".github/release-notes/$TAG.md"
           if ! gh release view "$TAG" > /dev/null 2>&1; then
             draft=$([[ "$TAG" == *-* ]] && echo --draft || true)
+            # Метку, отправленную из git, проверяем; при ручном запуске создаём её на собранном коммите.
+            where=$([ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && echo "--target $GITHUB_SHA" || echo --verify-tag)
             if [ -f "$notes" ]; then
-              gh release create "$TAG" $draft --verify-tag --title "TimesynCam ${TAG#v}" --notes-file "$notes"
+              gh release create "$TAG" $draft $where --title "TimesynCam ${TAG#v}" --notes-file "$notes"
             else
-              gh release create "$TAG" $draft --verify-tag --title "TimesynCam ${TAG#v}" --notes "Сборки для Windows и macOS. Что нового — в CHANGELOG.md."
+              gh release create "$TAG" $draft $where --title "TimesynCam ${TAG#v}" --notes "Сборки для Windows и macOS. Что нового — в CHANGELOG.md."
             fi
           elif [ -f "$notes" ]; then
             gh release edit "$TAG" --notes-file "$notes"

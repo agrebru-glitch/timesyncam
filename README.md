@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-Setup-0.3.0.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-Setup-0.3.1.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-0.3.0-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-0.3.1-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-0.3.0-mac-x64.dmg">Mac с процессором Intel</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.0/TimesynCam-0.3.0-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-0.3.1-mac-x64.dmg">Mac с процессором Intel</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.3.1/TimesynCam-0.3.1-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 
@@ -78,7 +78,7 @@ FFmpeg уже внутри, отдельно ставить ничего не н
 
 ## Как пользоваться
 
-1. **Добавьте камеры.** Перетащите папку с клипами камеры на дорожку «Камера 1». Для следующей камеры — на «Добавить камеру». Двойной щелчок по имени камеры — переименовать.
+1. **Добавьте камеры.** Перетащите папку с клипами камеры на дорожку «Камера 1». Для следующей камеры — на «Добавить камеру». Двойной щелчок по имени камеры — переименовать. До синхронизации клипы каждой камеры лежат кучкой — подряд, по порядку съёмки, — так клип с экраном синхронизации легко найти и отметить контрольным кадром.
 2. **Нажмите «Синхронизировать»** и выберите **«Тайм-код + звук»** (по умолчанию), **«Только тайм-код»** или **«Контрольный кадр + тайм-код + звук»**, если камеры снимали экран синхронизации (правая кнопка по клипу → «Выбрать контрольным кадром»). Кнопка подсвечивается, когда появились новые клипы. Программа разложит клипы по времени, сверит по звуку и расскажет в карточке каждой камеры, откуда она взяла время и что поправил звук.
 3. **Загляните во вкладку «Ошибки».** Там клипы S&Q, наложения и подсказки — у каждой строки есть кнопка, которая это исправит.
 4. **Проверьте стыковку по хлопку.** В мультивью поставьте курсор на хлопок, стрелками ← → найдите кадр. Если камера расходится — сдвиньте её кнопками «−1 к» / «+1 к» в карточке.
