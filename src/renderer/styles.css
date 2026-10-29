@@ -198,7 +198,8 @@ button, input, select { font: inherit; color: inherit; }
 .tl-head.drop { background: var(--accent-soft); }
 .tl-head .t { font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .tl-head .s { color: var(--text-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tl-add { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--text-2); cursor: pointer; border-bottom: 1px solid var(--border); }
+.tl-add { height: 44px; display: flex; align-items: center; gap: 5px; padding: 0 8px; color: var(--text-2); cursor: pointer; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 12px; letter-spacing: -0.1px; }
+.tl-add .icon { width: 14px; height: 14px; }
 .tl-add:hover { color: var(--text); background: var(--hover); }
 .tl-canvas-wrap { position: relative; min-width: 0; overflow: hidden; }
 .tl-canvas-wrap canvas { position: absolute; inset: 0; }

@@ -48,6 +48,7 @@ export function Timeline() {
   });
   const waveVersion = useWaveformVersion();
   const [menu, setMenu] = useState<{ x: number; y: number; clipId: string; cameraId: string; localSec: number } | null>(null);
+  const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; cameraId: string } | null>(null);
   const tz = state.sync?.displayTzOffsetMin ?? -new Date().getTimezoneOffset();
 
   const lanesByCam = useMemo(() => {
@@ -395,8 +396,11 @@ export function Timeline() {
   };
 
   useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
+    if (!menu && !trackMenu) return;
+    const close = () => {
+      setMenu(null);
+      setTrackMenu(null);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close();
     };
@@ -408,7 +412,18 @@ export function Timeline() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('blur', close);
     };
-  }, [menu]);
+  }, [menu, trackMenu]);
+
+  const setFollower = (cameraId: string, on: boolean) => {
+    const name = state.cameras.find((c) => c.id === cameraId)?.name ?? 'Камера';
+    dispatch({ type: 'set-follower', cameraId, on });
+    dispatch({
+      type: 'toast',
+      text: on
+        ? `«${name}» теперь ведомая: сверяется по другим камерам с допуском и их не сдвигает. Нажмите «Синхронизировать».`
+        : `«${name}» снова ведущая: по её звуку сверяются и другие камеры. Нажмите «Синхронизировать».`,
+    });
+  };
 
   // Delete — удалить выделенный клип с таймлинии. На клавиатуре Mac эта клавиша приходит как Backspace.
   useEffect(() => {
@@ -516,6 +531,12 @@ export function Timeline() {
             className={`tl-head ${dropRow === r.index ? 'drop' : ''}`}
             style={{ height: r.h }}
             onClick={() => dispatch({ type: 'view-mode', mode: state.viewMode, cameraId: r.cam.id })}
+            onContextMenu={(e) => {
+              // Меню дорожки: ведомая или ведущая. Меню стоит у курсора и не выходит за окно.
+              e.preventDefault();
+              setMenu(null);
+              setTrackMenu({ x: Math.min(e.clientX, window.innerWidth - 300), y: Math.min(e.clientY, window.innerHeight - 140), cameraId: r.cam.id });
+            }}
             onDragOver={(e) => { e.preventDefault(); setDropRow(r.index); }}
             onDragLeave={() => setDropRow(null)}
             onDrop={(e) => onDrop(e, r.index)}
@@ -525,8 +546,8 @@ export function Timeline() {
               {r.cam.scanning
                 ? `Читаю ${r.cam.scanning.done} из ${r.cam.scanning.total || '…'}`
                 : r.cam.clips.length
-                  ? pluralRu(r.cam.clips.length, 'клип', 'клипа', 'клипов')
-                  : 'Перетащите папку сюда'}
+                  ? `${pluralRu(r.cam.clips.length, 'клип', 'клипа', 'клипов')}${r.cam.follower ? ' · ведомая' : ''}`
+                  : 'Перетащите папку или файлы'}
             </span>
           </div>
         ))}
@@ -537,7 +558,7 @@ export function Timeline() {
           onDragLeave={() => setDropRow(null)}
           onDrop={(e) => onDrop(e, 'new')}
         >
-          <IconPlus /> Добавить камеру
+          <IconPlus /> Добавить камеру/рекордер
         </div>
       </div>
       <div
@@ -548,6 +569,26 @@ export function Timeline() {
         onDrop={(e) => onDrop(e, rowAtY(e.clientY))}
       >
         <canvas ref={canvasRef} onMouseDown={onMouseDown} onContextMenu={onContextMenu} />
+        {trackMenu && (() => {
+          const cam = state.cameras.find((c) => c.id === trackMenu.cameraId);
+          if (!cam) return null;
+          return (
+            <div className="ctx-menu" style={{ position: 'fixed', left: trackMenu.x, top: trackMenu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
+              <div className="ctx-title">{cam.name}</div>
+              {cam.follower ? (
+                <button role="menuitem" className="ctx-item" onClick={() => { setFollower(cam.id, false); setTrackMenu(null); }}>
+                  Сделать дорожку ведущей
+                  <span className="ctx-hint">по её звуку снова сверяются другие камеры</span>
+                </button>
+              ) : (
+                <button role="menuitem" className="ctx-item" onClick={() => { setFollower(cam.id, true); setTrackMenu(null); }}>
+                  Сделать дорожку ведомой
+                  <span className="ctx-hint">встанет по другим камерам с допуском и не сдвинет их</span>
+                </button>
+              )}
+            </div>
+          );
+        })()}
         {menu && (() => {
           const clip = state.cameras.find((c) => c.id === menu.cameraId)?.clips.find((c) => c.id === menu.clipId);
           if (!clip) return null;
@@ -575,7 +616,7 @@ export function Timeline() {
         })()}
         {!extent && (
           <div className="tl-hint">
-            Перетащите папку с клипами камеры на дорожку.<br />Каждая камера — на свою дорожку.
+            Перетащите папку или файлы камеры либо рекордера на дорожку.<br />Каждая камера и рекордер — на свою дорожку.
           </div>
         )}
         {extent && !synced && !state.cameras.some((c) => c.scanning) && (

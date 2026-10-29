@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
-import { scanFolder } from './scan.ts';
+import { AUDIO_EXT, scanFolder, VIDEO_EXT } from './scan.ts';
 import { grabFrame, toolsAvailable } from './ffmpeg.ts';
 import { audioFeatures, audioSamples, audioWaveform } from './audio.ts';
 import { scanQr } from './qr.ts';
@@ -111,6 +111,19 @@ function createWindow(): void {
 
 ipcMain.handle('dialog:pick-folder', async () => {
   const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'multiSelections'], title: 'Папка с клипами камеры' });
+  return r.canceled ? null : r.filePaths;
+});
+
+// Отдельные файлы камеры или рекордера — на Windows диалог не умеет выбирать сразу и папки, и файлы.
+ipcMain.handle('dialog:pick-files', async () => {
+  const r = await dialog.showOpenDialog(win!, {
+    properties: ['openFile', 'multiSelections'],
+    title: 'Файлы камеры или рекордера',
+    filters: [
+      { name: 'Видео и звук', extensions: [...VIDEO_EXT, ...AUDIO_EXT].map((e) => e.slice(1)) },
+      { name: 'Все файлы', extensions: ['*'] },
+    ],
+  });
   return r.canceled ? null : r.filePaths;
 });
 

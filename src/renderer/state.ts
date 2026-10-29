@@ -137,6 +137,7 @@ export type Action =
   | { type: 'audio-progress'; done: number; total: number }
   | { type: 'audio-done'; result: AudioSyncResult | null }
   | { type: 'set-audio-assist'; cameraId: string; on: boolean }
+  | { type: 'set-follower'; cameraId: string; on: boolean }
   | { type: 'set-control'; frame: ControlFrame }
   | { type: 'clear-control'; clipId: string }
   | { type: 'qr-start'; total: number }
@@ -287,6 +288,8 @@ export function reducer(state: State, a: Action): State {
       return { ...state, controlHint: null };
     case 'set-audio-assist':
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, audioAssist: a.on })), version: state.version + 1 };
+    case 'set-follower':
+      return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, follower: a.on })), version: state.version + 1 };
   }
 }
 

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Camera, CameraSync, TimecodeTrust } from '../../core/types.ts';
 import type { State } from '../state.ts';
 import type { AudioCameraResult } from '../../core/audioSync.ts';
-import { formatSigned } from '../../core/audioSync.ts';
+import { checkLimit, formatSigned } from '../../core/audioSync.ts';
 import { formatClockTime, formatDate, formatDurationHuman, formatFps, formatShift, formatSize, parseShift, pluralRu, resolutionLabel } from '../../core/format.ts';
 import { rateValue } from '../../core/timecode.ts';
 import { useApp } from '../App.tsx';
@@ -75,13 +75,16 @@ function audioText(au: AudioCameraResult | undefined, cam: Camera, running: bool
     case 'reference':
       return { title: 'Опорная для сверки', sub: 'По её звуку выравниваются остальные камеры' };
     case 'checked':
-      return au.correction !== null && Math.abs(au.correction) > 0.06
+      return au.correction !== null && Math.abs(au.correction) > checkLimit(au.anchors)
         ? { title: `Расходится по звуку на ${formatSigned(au.correction)}`, sub: 'Тайм-код точный, раскладка не менялась. Возможно, камеры стояли далеко друг от друга.', tone: 'warn' }
         : { title: 'Звук совпал с тайм-кодом', tone: 'ok' };
     case 'confirmed':
       return { title: 'Звук подтвердил раскладку', sub: `Точек сверки: ${clips}, расхождение меньше кадра`, tone: 'ok' };
     case 'applied': {
       const wide = au.wideShift != null ? `Найдена по звуку: часы сбиты на ${formatDurationHuman(Math.abs(au.wideShift))}. ` : '';
+      if (au.model === 'per-clip' && cam.clips.length > 0 && cam.clips.every((c) => !c.hasVideo)) {
+        return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}. Каждая запись встала по своей середине — штатный ход часов рекордера учтён`, tone: 'ok' };
+      }
       if (au.model === 'per-clip') return { title: 'Поправлена по звуку', sub: `${wide}Своя поправка у клипов с общим звуком (${clips}), остальным — по ближайшей точке`, tone: 'ok' };
       if (au.model === 'per-anchor') return { title: `Поправка менялась по ходу съёмки: ${au.steps.length} шага`, sub: `${wide}В начале ${formatSigned(au.steps[0].correction)}, в конце ${formatSigned(au.steps[au.steps.length - 1].correction)}`, tone: 'ok' };
       return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}`, tone: 'ok' };
@@ -178,10 +181,15 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             <button className="btn small ghost" aria-label="Убрать камеру" onClick={() => dispatch({ type: 'remove-camera', cameraId: cam.id })}><IconX /></button>
           )}
         </div>
-        <p style={{ margin: '4px 0 10px' }}>Перетащите сюда папку с клипами этой камеры</p>
-        <button className="btn small" onClick={async () => { const f = await api.pickFolders(); if (f) void addFolders(cam.id, f); }}>
-          <IconFolder /> Выбрать папку
-        </button>
+        <p style={{ margin: '4px 0 10px' }}>Перетащите сюда папку или файлы этой камеры или рекордера</p>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button className="btn small" onClick={async () => { const f = await api.pickFolders(); if (f) void addFolders(cam.id, f); }}>
+            <IconFolder /> Выбрать папку
+          </button>
+          <button className="btn small" onClick={async () => { const f = await api.pickFiles(); if (f) void addFolders(cam.id, f); }}>
+            Выбрать файлы
+          </button>
+        </div>
       </div>
     );
   }
@@ -267,6 +275,18 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
                 <dd style={{ color: at.tone === 'warn' ? 'var(--warning)' : at.tone === 'ok' ? 'var(--success)' : undefined }}>
                   {at.title}
                   {at.sub && <span className="sub">{at.sub}</span>}
+                </dd>
+              </>
+            )}
+            {cam.follower && (
+              <>
+                <dt>Дорожка</dt>
+                <dd>
+                  Ведомая
+                  <span className="sub">
+                    Встаёт по звуку других камер с допуском и их не сдвигает.{' '}
+                    <button className="btn small ghost" style={{ height: 20, padding: '0 6px' }} onClick={(e) => { e.stopPropagation(); dispatch({ type: 'set-follower', cameraId: cam.id, on: false }); }}>Сделать ведущей</button>
+                  </span>
                 </dd>
               </>
             )}

@@ -6,8 +6,13 @@ import { parseSonyXml } from '../core/sonyXml.ts';
 import type { ClipMeta } from '../core/types.ts';
 import { probe } from './ffmpeg.ts';
 
-const VIDEO_EXT = new Set(['.mp4', '.mov', '.mxf', '.mts', '.m2ts', '.m4v', '.avi', '.mkv', '.3gp', '.mpg', '.insv']);
-const AUDIO_EXT = new Set(['.wav', '.bwf']);
+export const VIDEO_EXT = new Set(['.mp4', '.mov', '.mxf', '.mts', '.m2ts', '.m4v', '.avi', '.mkv', '.3gp', '.mpg', '.insv']);
+// Звук рекордеров, телефонов и диктофонов — всё, что читает FFmpeg: WAV/BWF и длинные RF64/W64, M4A (AAC, ALAC),
+// MP3/MP2, AAC, FLAC, AIFF, CAF (iPhone), OGG/Opus, WMA, AC3/E-AC3, DTS, AMR (телефоны), WavPack, APE, MKA.
+export const AUDIO_EXT = new Set([
+  '.wav', '.bwf', '.rf64', '.w64', '.m4a', '.mp3', '.mp2', '.aac', '.flac', '.alac', '.aif', '.aiff', '.aifc', '.caf',
+  '.ogg', '.oga', '.opus', '.wma', '.ac3', '.eac3', '.dts', '.amr', '.3ga', '.wv', '.ape', '.mka',
+]);
 const PROXY_EXT = new Set(['.lrv', '.lrf']);
 const NEEDS_SDK_EXT = new Set(['.braw', '.r3d', '.crm', '.ari', '.arx', '.nev']);
 const PROXY_DIRS = /^(proxy|proxies|sub|прокси)$/i;
@@ -19,6 +24,7 @@ export interface ScanResult {
   clips: ClipMeta[];
   needsSdk: string[];
   unreadable: string[];
+  isFile: boolean; // добавили отдельный файл, а не папку
 }
 
 interface Found {
@@ -41,15 +47,20 @@ async function walk(dir: string, depth: number, inProxyDir: boolean, out: Found[
       }
       continue;
     }
-    if (!e.isFile() || e.name.startsWith('._')) continue;
-    const ext = extname(e.name).toLowerCase();
-    if (NEEDS_SDK_EXT.has(ext)) {
-      needsSdk.push(full);
-    } else if (PROXY_EXT.has(ext)) {
-      out.push({ path: full, isProxy: true });
-    } else if (VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext)) {
-      out.push({ path: full, isProxy: inProxyDir });
-    }
+    if (e.isFile()) addFile(full, inProxyDir, out, needsSdk);
+  }
+}
+
+function addFile(full: string, inProxyDir: boolean, out: Found[], needsSdk: string[]): void {
+  const name = basename(full);
+  if (name.startsWith('._')) return; // служебные файлы macOS на картах exFAT
+  const ext = extname(name).toLowerCase();
+  if (NEEDS_SDK_EXT.has(ext)) {
+    needsSdk.push(full);
+  } else if (PROXY_EXT.has(ext)) {
+    out.push({ path: full, isProxy: true });
+  } else if (VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext)) {
+    out.push({ path: full, isProxy: inProxyDir });
   }
 }
 
@@ -78,10 +89,13 @@ async function findSonyXml(path: string, siblings: Map<string, string[]>): Promi
   return hit ? join(dir, hit) : null;
 }
 
+// Папка камеры или отдельный файл: на дорожку можно перетащить и то и другое.
 export async function scanFolder(folder: string, onProgress: (done: number, total: number) => void): Promise<ScanResult> {
   const found: Found[] = [];
   const needsSdk: string[] = [];
-  await walk(folder, 0, false, found, needsSdk);
+  const isFile = (await stat(folder).catch(() => null))?.isFile() ?? false;
+  if (isFile) addFile(folder, false, found, needsSdk);
+  else await walk(folder, 0, false, found, needsSdk);
 
   const proxies = new Map<string, string>();
   for (const f of found) if (f.isProxy) proxies.set(proxyKey(f.path), f.path);
@@ -133,5 +147,5 @@ export async function scanFolder(folder: string, onProgress: (done: number, tota
   }
   await Promise.all(Array.from({ length: PROBE_CONCURRENCY }, worker));
   clips.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  return { clips, needsSdk, unreadable };
+  return { clips, needsSdk, unreadable, isFile };
 }

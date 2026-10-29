@@ -124,8 +124,10 @@ export function App() {
         scanIssueSeq += 1;
         scanIssues.push({
           id: `s${scanIssueSeq}`, severity: 'warning', cameraId: targetId,
-          title: `«${camName}»: в папке не нашлось видео и звука`,
-          details: folder,
+          title: res.isFile
+            ? `«${camName}»: ${folder.split(/[\\/]/).pop()} — не видео и не звук`
+            : `«${camName}»: в папке не нашлось видео и звука`,
+          details: res.isFile ? `${folder}. Программа читает видео MP4, MOV, MXF, MTS, AVI, MKV и звук WAV, M4A, MP3, AAC, FLAC, AIFF, OGG, Opus, WMA и другие.` : folder,
           actions: [],
         });
       }
@@ -221,6 +223,7 @@ export function App() {
         searchSec: 10,
         maxAnchors: 8,
         isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
+        followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)),
         onProgress: (done, total) => dispatch({ type: 'audio-progress', done, total }),
         pre,
         fixed,

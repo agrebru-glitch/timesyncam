@@ -17,15 +17,17 @@ export function pluralRu(n: number, one: string, few: string, many: string): str
 export function formatDurationHuman(sec: number): string {
   const s = Math.abs(sec);
   if (s < 1) return `${s.toFixed(1).replace('.', ',')} с`;
-  if (s < 60) return `${Math.round(s)} с`;
-  const totalMin = Math.floor(s / 60);
-  if (s < 3600) {
-    const rest = Math.round(s - totalMin * 60);
-    return rest ? `${totalMin} мин ${rest} с` : `${totalMin} мин`;
+  // Сначала округляем, потом делим на части — иначе выйдет «2 ч 60 мин».
+  const totalSec = Math.round(s);
+  if (totalSec < 60) return `${totalSec} с`;
+  if (totalSec < 3600) {
+    const rest = totalSec % 60;
+    return rest ? `${Math.floor(totalSec / 60)} мин ${rest} с` : `${Math.floor(totalSec / 60)} мин`;
   }
   if (s < 86400 * 2) {
-    const h = Math.floor(s / 3600);
-    const m = Math.round((s - h * 3600) / 60);
+    const totalMin = Math.round(s / 60);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
     return m ? `${h} ч ${m} мин` : `${h} ч`;
   }
   return `${Math.round(s / 86400)} дн`;

@@ -201,3 +201,120 @@ test('Камера с тишиной в звуке: прямое предупр�
   assert.equal(audio.corrections[b.id], undefined);
   assert.ok(audio.issues.some((i) => /тишина/.test(i.title)));
 });
+
+// Рекордер: длинная запись на своём кварце. Точки вдоль записи расходятся на десятые доли секунды за час — это штатно.
+const recAnchor = (clipId: string, at: number, correction: number, score = 0.8): AudioAnchor => ({ ...anchor(clipId, at, correction, score), drift: true });
+
+test('Рекордер: ход часов за длинную запись — в пределах погрешности, точки не отбрасываются', () => {
+  const placements = [{ ...pl('rec', 0), end: 3600 }];
+  // За час часы рекордера ушли на 0,15 с.
+  const anchors = [recAnchor('rec', 300, 1.0), recAnchor('rec', 1200, 1.04), recAnchor('rec', 2100, 1.09), recAnchor('rec', 3000, 1.15)];
+  const r = combine('B', anchors, 'timecode-and-clock', placements, true, 180, true);
+  assert.equal(r.result.model, 'per-clip');
+  assert.ok(anchors.every((a) => a.role === 'confirm'), anchors.map((a) => a.role).join());
+  // Запись встаёт по середине расхождения.
+  assert.ok(r.corrections.rec > 1.0 && r.corrections.rec < 1.15, `поправка ${r.corrections.rec}`);
+  assert.ok(!r.issues.some((i) => i.severity !== 'info'), 'никаких ошибок и предупреждений');
+  assert.ok(!r.issues.some((i) => /отброшены|менялась/.test(i.title)));
+  assert.ok(r.issues.some((i) => /в пределах погрешности/.test(i.title)));
+});
+
+test('Рекордер: настоящий скачок (ложное совпадение) допуском не прикрывается', () => {
+  const placements = [{ ...pl('rec', 0), end: 3600 }];
+  const anchors = [recAnchor('rec', 300, 1.0), recAnchor('rec', 1200, 1.02), recAnchor('rec', 2100, 2.3, 0.5), recAnchor('rec', 3000, 1.05)];
+  const r = combine('B', anchors, 'timecode-and-clock', placements, true, 180, true);
+  assert.equal(anchors[2].role, 'ignored');
+  assert.ok(Math.abs(r.corrections.rec - 1.02) < 0.03, `поправка ${r.corrections.rec}`);
+});
+
+test('Камера, сверенная по рекордеру: ход его часов не считается сменой поправки', () => {
+  const placements = [pl('c1', 0), pl('c2', 1200), pl('c3', 2400), pl('c4', 3500)];
+  const anchors = [recAnchor('c1', 5, 0.5), recAnchor('c2', 1205, 0.56), recAnchor('c3', 2405, 0.62), recAnchor('c4', 3505, 0.67)];
+  const r = combine('B', anchors, 'timecode-and-clock', placements, true, 180);
+  assert.equal(r.result.model, 'single');
+  assert.ok(!r.issues.length, r.issues.map((i) => i.title).join('; '));
+  // Без рекордера такой же уход — уже смена поправки: так и было.
+  const video = [anchor('c1', 5, 0.5), anchor('c2', 1205, 0.56), anchor('c3', 2405, 0.72), anchor('c4', 3505, 0.73)];
+  assert.equal(combine('B', video, 'timecode-and-clock', placements, true, 180).result.model, 'per-anchor');
+});
+
+test('Рекордер: часовая запись с уходом часов и тишиной в начале — сверка идёт дальше и цепляется', async () => {
+  const truth = new Map<string, number>();
+  const ref = clip({ start: T16, tcSeconds: (T16 + 3 * 3600) % 86400, durationSec: 3500, recordedSec: 3500 });
+  truth.set(ref.id, T16);
+  // Рекордер включили на 5 с позже, часы сбиты на 1,3 с, кварц спешит на 40 мкс в секунду.
+  const rec = clip({ start: Math.floor(T16 + 5 + 1.3), durationSec: 3400, recordedSec: 3400, hasVideo: false, rate: null, width: 0, height: 0, codecLabel: 'WAV 24-bit' });
+  truth.set(rec.id, T16 + 5);
+  const RATE = 1 + 40e-6;
+  const MUTE = 200; // первые 200 секунд рекордер писал тишину
+  const base = fakeAudio(truth);
+  const real = (c: ClipMeta, local: number) => (c.id === rec.id ? local * RATE : local);
+  const audio: AudioFetch = {
+    features: async (c, start, dur) => {
+      if (c.id === rec.id && start + dur <= MUTE) return { feat: bandFeatures(new Float32Array(Math.round(dur * FEAT_SR)), FEAT_SR).feat, peakDb: -200, channel: 0 };
+      return base.features(c, real(c, start), dur);
+    },
+    samples: (c, start, dur, ch) => base.samples(c, real(c, start), dur, ch),
+  };
+  const cams = [camera('A', [ref]), camera('Рекордер', [rec])];
+  const coarse = runSync(cams);
+  let calls = 0;
+  const result = await refineByAudio(cams, coarse, audio, { searchSec: 10, maxAnchors: 6, isEnabled: () => true, onProgress: (d) => { calls = d; } });
+  const cam = result.cameras[1];
+  const ok = cam.anchors.filter((x) => x.accepted);
+  // Четыре отрезка — четыре точки, в первом сверка прошла мимо тишины и зацепилась дальше.
+  assert.equal(ok.length, 4, `точек ${ok.length}`);
+  assert.ok(ok[0].at > T16 + MUTE, `первая точка на ${ok[0].at - T16} с`);
+  assert.ok(calls <= 4 * 3, `проверок ${calls}`);
+  assert.ok(ok.every((x) => x.role === 'confirm' && x.fine));
+  assert.equal(cam.status, 'applied');
+  // Запись встала по середине расхождения: ошибка меньше 0,1 с, ни ошибок, ни предупреждений по рекордеру.
+  const final = runSync(cams, result.corrections);
+  const err = final.placements.find((p) => p.clipId === rec.id)!.start - (T16 + 5) - (final.placements.find((p) => p.clipId === ref.id)!.start - T16);
+  assert.ok(Math.abs(err) < 0.1, `ошибка ${err}`);
+  assert.ok(!result.issues.some((i) => i.cameraId === cam.cameraId && i.severity !== 'info'), result.issues.map((i) => i.title).join('; '));
+  if (process.env.DEBUG_AUDIO) console.log({ calls, err, at: ok.map((x) => Math.round(x.at - T16)), corr: ok.map((x) => x.correction.toFixed(4)), issues: result.issues.map((i) => i.title) });
+});
+
+test('Рекордеру хватает одного видеофайла с хорошим совпадением', async () => {
+  const truth = new Map<string, number>();
+  // Видео — один клип на 50 с посреди получасовой записи рекордера. Часы рекордера сбиты на 2,4 с.
+  const video = clip({ start: T16 + 600, tcSeconds: (T16 + 600 + 3 * 3600) % 86400, durationSec: 50, recordedSec: 50 });
+  truth.set(video.id, T16 + 600);
+  const rec = clip({ start: Math.floor(T16 + 2.4), durationSec: 1800, recordedSec: 1800, hasVideo: false, rate: null, width: 0, height: 0, codecLabel: 'WAV 24-bit' });
+  truth.set(rec.id, T16);
+  const cams = [camera('A', [video]), camera('Рекордер', [rec])];
+  const coarse = runSync(cams);
+  const result = await refineByAudio(cams, coarse, fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
+  assert.equal(result.cameras[1].status, 'applied');
+  assert.equal(result.cameras[1].anchors.filter((a) => a.accepted).length, 1);
+  const final = runSync(cams, result.corrections);
+  const err = final.placements.find((p) => p.clipId === rec.id)!.start - T16 - (final.placements.find((p) => p.clipId === video.id)!.start - (T16 + 600));
+  assert.ok(Math.abs(err) < 0.001, `ошибка ${err}`);
+  assert.ok(!result.issues.some((i) => i.severity !== 'info'), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Ведомая камера: сверяется по остальным, но опорой не становится и других не двигает', async () => {
+  const truth = new Map<string, number>();
+  const mk = (realStart: number, dur: number, clockError: number, opts: Partial<ClipMeta> = {}) => {
+    const c = clip({ start: Math.floor(realStart + clockError), durationSec: dur, recordedSec: dur, ...opts });
+    truth.set(c.id, realStart);
+    return c;
+  };
+  // Без тайм-кода у всех; больше всего общего звука у рекордера, но он ведомый.
+  const a = camera('A', [mk(T16 + 10, 120, 0.3), mk(T16 + 400, 120, 0.3)]);
+  const b = camera('B', [mk(T16 + 40, 120, -1.7), mk(T16 + 430, 120, -1.7)]);
+  const rec = camera('Рекордер', [mk(T16, 700, 1.2, { hasVideo: false, rate: null, width: 0, height: 0 })], { follower: true });
+  const cams = [a, b, rec];
+  const coarse = runSync(cams);
+  const result = await refineByAudio(cams, coarse, fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true, followers: new Set(['Рекордер']) });
+  const byId = new Map(result.cameras.map((c) => [c.cameraId, c]));
+  assert.notEqual(byId.get('Рекордер')!.status, 'reference');
+  // Ни одна камера не сверялась по ведомой.
+  assert.ok(result.cameras.filter((c) => c.cameraId !== 'Рекордер').every((c) => c.anchors.every((x) => x.refCameraId !== 'Рекордер')));
+  // А сама ведомая встала по остальным.
+  const final = runSync(cams, result.corrections);
+  const off = (camId: string) => final.placements.filter((p) => p.cameraId === camId).map((p) => p.start - truth.get(p.clipId)!);
+  const refOff = off(byId.get('A')!.status === 'reference' ? 'A' : 'B')[0];
+  for (const camId of ['A', 'B', 'Рекордер']) for (const e of off(camId)) assert.ok(Math.abs(e - refOff) < 0.002, `${camId}: ${e - refOff}`);
+});
