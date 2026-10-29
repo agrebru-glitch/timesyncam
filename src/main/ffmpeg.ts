@@ -4,11 +4,13 @@ import { join } from 'node:path';
 import type { FfprobeResult } from '../core/clipMeta.ts';
 
 // ffprobe/ffmpeg: сначала рядом с программой (bin), потом в PATH.
+// Программа, запущенная на Mac из Finder, не видит PATH терминала — поэтому папки Homebrew проверяем сами.
 function resolveTool(name: 'ffprobe' | 'ffmpeg'): string {
   const exe = process.platform === 'win32' ? `${name}.exe` : name;
   const candidates = [
     process.resourcesPath ? join(process.resourcesPath, 'bin', exe) : '',
     join(process.cwd(), 'bin', exe),
+    ...(process.platform === 'darwin' ? [`/opt/homebrew/bin/${exe}`, `/usr/local/bin/${exe}`] : []),
   ].filter(Boolean);
   for (const c of candidates) if (existsSync(c)) return c;
   return exe;

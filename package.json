@@ -19,6 +19,7 @@
     "build": "node scripts/build.mjs",
     "start": "node scripts/build.mjs && electron .",
     "dist": "node scripts/build.mjs && electron-builder --win --publish never",
+    "dist:mac": "node scripts/build.mjs && electron-builder --mac --publish never",
     "demo": "node scripts/make-demo.mjs",
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -62,7 +63,9 @@
         "to": "bin",
         "filter": [
           "*.exe",
-          "*.dll"
+          "*.dll",
+          "ffmpeg",
+          "ffprobe"
         ]
       },
       {
@@ -106,6 +109,27 @@
       "language": "1049",
       "shortcutName": "TimesynCam",
       "artifactName": "TimesynCam-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.video",
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "12.0",
+      "artifactName": "TimesynCam-${version}-mac-${arch}.${ext}",
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "TimesynCam читает клипы камер из папок, которые вы добавляете.",
+        "NSDocumentsFolderUsageDescription": "TimesynCam читает клипы камер из папок, которые вы добавляете.",
+        "NSDownloadsFolderUsageDescription": "TimesynCam читает клипы камер из папок, которые вы добавляете.",
+        "NSRemovableVolumesUsageDescription": "TimesynCam читает клипы прямо с карт памяти и внешних дисков.",
+        "NSNetworkVolumesUsageDescription": "TimesynCam читает клипы с сетевых дисков."
+      }
+    },
+    "dmg": {
+      "title": "TimesynCam ${version}"
     },
     "publish": null
   }

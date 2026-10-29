@@ -6,6 +6,7 @@ import { api, cameraColor } from '../api.ts';
 import { IconPlus } from '../icons.tsx';
 import type { Viewport } from '../state.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
+import { isMac } from '../platform.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
 
 const RULER_H = 30;
@@ -129,7 +130,7 @@ export function Timeline() {
     // Линейка: время суток.
     const step = STEPS.find((s) => s / vp.secPerPx >= 90) ?? 21600;
     const minor = step / 5;
-    g.font = '11px "Cascadia Mono", Consolas, monospace';
+    g.font = '11px "Cascadia Mono", ui-monospace, Menlo, Consolas, monospace';
     g.textBaseline = 'middle';
     const wallStart = Math.floor((t0 + tz * 60) / minor) * minor - tz * 60;
     for (let t = wallStart; t <= t1; t += minor) {
@@ -155,7 +156,7 @@ export function Timeline() {
       arr.push(p);
       byCam.set(p.cameraId, arr);
     }
-    g.font = '11px "Segoe UI Variable Text", "Segoe UI", sans-serif';
+    g.font = '11px "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif';
     for (const r of rows) {
       const list = byCam.get(r.cam.id) ?? [];
       const color = cameraColor(r.index);
@@ -351,12 +352,13 @@ export function Timeline() {
     };
   }, [menu]);
 
-  // Delete — удалить выделенный клип с таймлинии.
+  // Delete — удалить выделенный клип с таймлинии. На клавиатуре Mac эта клавиша приходит как Backspace.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete' || state.tab !== 'sync' || !state.selectedClipId) return;
+      const del = e.key === 'Delete' || (isMac && e.key === 'Backspace');
+      if (!del || state.tab !== 'sync' || !state.selectedClipId) return;
       const tag = (e.target as HTMLElement).tagName;
-      if (tag === 'INPUT' || tag === 'SELECT') return;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
       const p = placements.find((x) => x.clipId === state.selectedClipId);
       if (p) removeClip(p.cameraId, p.clipId);
     };

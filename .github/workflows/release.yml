@@ -1,17 +1,37 @@
 name: Релиз
 
-# Запускается при отправке метки вида v0.2.0: собирает установщик и архив с FFmpeg (LGPL)
-# и прикладывает их к релизу на GitHub.
+# Собирает программу для Windows и macOS (Apple Silicon и Intel) с FFmpeg под LGPL
+# и прикладывает сборки к релизу на GitHub.
+#
+# - Метка вида v0.4.0 — сборка и релиз. Метка с дефисом (v0.4.0-rc.1) — черновик релиза.
+# - Запуск вручную (Actions → Релиз → Run workflow) пересобирает сборки из выбранной ветки
+#   и кладёт их в уже существующий релиз — например, чтобы добавить новую платформу.
+# - В pull request, который меняет сборку, — только сборка и проверка, без релиза.
+# - Текст релиза берётся из .github/release-notes/<метка>.md, если такой файл есть.
 on:
   push:
     tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-ffmpeg-mac.sh
+      - package.json
+      - package-lock.json
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Релиз, в который положить сборки (например, v0.3.0)'
+        required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   windows:
-    name: Сборка для Windows
+    name: Windows x64
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -41,17 +61,144 @@ jobs:
 
       - run: npm run dist
 
-      - name: Контрольные суммы
-        shell: pwsh
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-x64
+          path: |
+            release/TimesynCam-Setup-*.exe
+            release/TimesynCam-*-win-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      FFMPEG_VERSION: n9.0.2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # FFmpeg собирается из исходников (для macOS нет готовой LGPL-сборки без сторонних библиотек)
+      # и кэшируется: пересборка — только при смене версии или скрипта.
+      - name: Кэш FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/ffmpeg
+            bin/ffprobe
+            build/licenses/FFmpeg-LGPL-2.1.txt
+          key: ffmpeg-macos-${{ matrix.arch }}-${{ env.FFMPEG_VERSION }}-${{ hashFiles('scripts/build-ffmpeg-mac.sh') }}
+
+      - name: FFmpeg (LGPL, из исходников)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
-          Get-ChildItem release -File | Where-Object { $_.Extension -in '.exe', '.zip' } |
-            ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content release/SHA256SUMS.txt -Encoding ascii
+          if [ "${{ matrix.arch }}" = x64 ]; then brew install nasm; fi
+          scripts/build-ffmpeg-mac.sh bin
+
+      - name: Проверка FFmpeg
+        run: |
+          # Лицензия Windows-сборки (LGPL 3) к этой сборке не относится.
+          rm -f build/licenses/FFmpeg-LGPL-3.0.txt
+          file bin/ffmpeg bin/ffprobe
+          bin/ffprobe -version | head -n 1
+          if bin/ffprobe -version | grep -qE -- '--enable-(gpl|nonfree)'; then echo 'Сборка FFmpeg не LGPL'; exit 1; fi
+          want=$([ "${{ matrix.arch }}" = arm64 ] && echo arm64 || echo x86_64)
+          for f in bin/ffmpeg bin/ffprobe; do [ "$(lipo -archs "$f")" = "$want" ] || { echo "$f: не та архитектура"; exit 1; }; done
+
+      # Короткая съёмка двух «камер» с тайм-кодом — для проверки готовой программы.
+      - name: Тестовые клипы
+        run: |
+          mkdir -p smoke/cam1 smoke/cam2
+          bin/ffmpeg -v error -f lavfi -i testsrc2=size=1280x720:rate=25 -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+            -t 6 -c:v mpeg4 -q:v 5 -c:a aac -timecode 10:00:00:00 smoke/cam1/A001.MP4
+          bin/ffmpeg -v error -f lavfi -i testsrc=size=1280x720:rate=25 -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+            -t 6 -c:v prores_ks -profile:v 0 -c:a pcm_s16le -timecode 10:00:02:00 smoke/cam2/B001.MOV
+          node scripts/scan-cli.mts smoke/cam1 smoke/cam2 --audio --xml smoke/timeline.fcpxml
+          grep -q 'A001.MP4' smoke/timeline.fcpxml && grep -q 'B001.MOV' smoke/timeline.fcpxml
+
+      - run: npm run build
+      - run: npx electron-builder --mac --${{ matrix.arch }} --publish never
+        env:
+          # В pull request electron-builder по умолчанию не подписывает. Подпись у нас ad-hoc,
+          # без сертификатов и секретов, — включаем, чтобы проверялось то же, что уйдёт в релиз.
+          CSC_FOR_PULL_REQUEST: 'true'
+
+      - name: Проверка программы
+        run: |
+          app=$(ls -d release/mac*/TimesynCam.app)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/Resources/bin/ffprobe" -version | head -n 1
+          ls "$app/Contents/Resources/licenses"
+          # Запуск готовой программы: загрузка двух камер, синхронизация, снимок окна.
+          SYNC_AUTOLOAD="$PWD/smoke/cam1|$PWD/smoke/cam2" SYNC_AUTOSYNC=1 SYNC_SHOT="$PWD/smoke/window.png" SYNC_SHOT_DELAY=15000 \
+            "$app/Contents/MacOS/TimesynCam" > smoke/app.log 2>&1 &
+          pid=$!
+          for _ in $(seq 60); do [ -f smoke/window.png ] && break; sleep 2; done
+          kill "$pid" 2>/dev/null || true
+          cat smoke/app.log
+          [ -s smoke/window.png ] || { echo 'Программа не открыла окно'; exit 1; }
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: smoke-macos-${{ matrix.arch }}
+          path: |
+            smoke/window.png
+            smoke/app.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: macos-${{ matrix.arch }}
+          path: release/TimesynCam-*-mac-*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Релиз на GitHub
+    needs: [windows, macos]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          path: out
+          pattern: '{windows,macos}-*'
+          merge-multiple: true
+
+      - name: Контрольные суммы
+        run: |
+          cd out
+          sha256sum -- *.exe *.zip *.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Приложить к релизу
-        shell: pwsh
         run: |
-          $tag = '${{ github.ref_name }}'
-          gh release view $tag 2>$null
-          if ($LASTEXITCODE -ne 0) { gh release create $tag --title "TimesynCam $($tag.TrimStart('v'))" --notes "Сборка для Windows. Что нового — в CHANGELOG.md." }
-          gh release upload $tag release/TimesynCam-Setup-*.exe release/TimesynCam-*-win-x64.zip release/SHA256SUMS.txt --clobber
+          notes=".github/release-notes/$TAG.md"
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            draft=$([[ "$TAG" == *-* ]] && echo --draft || true)
+            if [ -f "$notes" ]; then
+              gh release create "$TAG" $draft --verify-tag --title "TimesynCam ${TAG#v}" --notes-file "$notes"
+            else
+              gh release create "$TAG" $draft --verify-tag --title "TimesynCam ${TAG#v}" --notes "Сборки для Windows и macOS. Что нового — в CHANGELOG.md."
+            fi
+          elif [ -f "$notes" ]; then
+            gh release edit "$TAG" --notes-file "$notes"
+          fi
+          gh release upload "$TAG" out/* --clobber

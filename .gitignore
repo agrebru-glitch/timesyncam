@@ -3,3 +3,4 @@ dist/
 release/
 bin/
 *.log
+ffmpeg-src/

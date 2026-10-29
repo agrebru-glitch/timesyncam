@@ -36,5 +36,5 @@ body:
   - type: input
     id: os
     attributes:
-      label: Windows
-      placeholder: "Windows 11 24H2"
+      label: Система
+      placeholder: "Windows 11 24H2 или macOS 15.5 (Apple M2)"
