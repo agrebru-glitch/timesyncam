@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import type { Dispatch } from 'react';
 import type { Issue, Placement } from '../core/types.ts';
 import { pilePlacements, runSync } from '../core/sync.ts';
-import { heardCameras, refineByAudio } from '../core/audioSync.ts';
+import { AUDIO_SEARCH_SEC, heardCameras, refineByAudio } from '../core/audioSync.ts';
 import { controlCorrections } from '../core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
 import { defaultTimelineRate } from '../core/fcp7.ts';
@@ -256,7 +256,7 @@ export function App() {
         features: (clip, start, dur) => api.audioFeatures(clip.path, start, dur),
         samples: (clip, start, dur, ch) => api.audioSamples(clip.path, start, dur, ch),
       }, {
-        searchSec: 10,
+        searchSec: AUDIO_SEARCH_SEC,
         maxAnchors: 8,
         isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
         followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)),

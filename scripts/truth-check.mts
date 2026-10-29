@@ -8,7 +8,7 @@ import { scanFolder } from '../src/main/scan.ts';
 import { audioFeatures, audioSamples } from '../src/main/audio.ts';
 import { scanQr } from '../src/main/qr.ts';
 import { runSync } from '../src/core/sync.ts';
-import { refineByAudio } from '../src/core/audioSync.ts';
+import { AUDIO_SEARCH_SEC, refineByAudio } from '../src/core/audioSync.ts';
 import { controlCorrections } from '../src/core/qrSync.ts';
 import type { QrResult, ControlFrame } from '../src/core/qrSync.ts';
 import { rateValue } from '../src/core/timecode.ts';
@@ -42,7 +42,7 @@ function errors(r: SyncResult, title: string) {
 const coarse = runSync(cameras);
 errors(coarse, 'Только тайм-код и часы');
 
-const audio = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: 10, maxAnchors: 8, isEnabled: () => true });
+const audio = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true });
 errors(runSync(cameras, audio.corrections), 'Тайм-код + звук');
 
 // Контрольные кадры — короткие клипы с экраном синхронизации.
@@ -59,5 +59,5 @@ for (const cam of cameras) {
   }
 }
 const ctl = controlCorrections(controls, coarse.placements, new Set(coarse.cameras.filter((x) => x.timeSource === 'clock').map((x) => x.cameraId)));
-const withControl = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: 10, maxAnchors: 8, isEnabled: () => true, pre: ctl.pre, fixed: ctl.fixed, controlClips: ctl.clips });
+const withControl = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true, pre: ctl.pre, fixed: ctl.fixed, controlClips: ctl.clips });
 errors(runSync(cameras, withControl.corrections), 'Контрольный кадр + тайм-код + звук');

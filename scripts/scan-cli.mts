@@ -7,7 +7,7 @@ import { scanFolder } from '../src/main/scan.ts';
 import { audioFeatures, audioSamples } from '../src/main/audio.ts';
 import { scanQr } from '../src/main/qr.ts';
 import { runSync } from '../src/core/sync.ts';
-import { heardCameras, refineByAudio } from '../src/core/audioSync.ts';
+import { AUDIO_SEARCH_SEC, heardCameras, refineByAudio } from '../src/core/audioSync.ts';
 import { controlCorrections } from '../src/core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../src/core/qrSync.ts';
 import { rateValue } from '../src/core/timecode.ts';
@@ -81,7 +81,7 @@ if (withAudio) {
     features: (clip, s, d) => audioFeatures(clip.path, s, d),
     samples: (clip, s, d, ch) => audioSamples(clip.path, s, d, ch),
   }, {
-    searchSec: 10,
+    searchSec: AUDIO_SEARCH_SEC,
     maxAnchors: 8,
     isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
     pre: control.pre,

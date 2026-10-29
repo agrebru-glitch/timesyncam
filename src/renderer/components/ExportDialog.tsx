@@ -15,11 +15,12 @@ const RESOLUTIONS = [
 
 type Format = 'fcp7' | 'fcpxml';
 const FORMAT_KEY = 'timesyncam.exportFormat';
+// По умолчанию — FCPXML для DaVinci: в нём стерео одной дорожкой. Выбор запоминается.
 function savedFormat(): Format {
   try {
-    return localStorage.getItem(FORMAT_KEY) === 'fcpxml' ? 'fcpxml' : 'fcp7';
+    return localStorage.getItem(FORMAT_KEY) === 'fcp7' ? 'fcp7' : 'fcpxml';
   } catch {
-    return 'fcp7';
+    return 'fcpxml';
   }
 }
 
@@ -99,10 +100,10 @@ export function ExportDialog() {
           </select>
         </div>
         <div className="field">
-          <label htmlFor="ex-format">Формат</label>
+          <label htmlFor="ex-format">Для какой монтажки</label>
           <select id="ex-format" value={format} onChange={(e) => setFormat(e.target.value as Format)}>
-            <option value="fcp7">XML — Premiere Pro и DaVinci Resolve</option>
-            <option value="fcpxml">FCPXML — DaVinci Resolve, звук рекордера до сэмпла</option>
+            <option value="fcpxml">DaVinci Resolve — FCPXML: стерео одной дорожкой, звук рекордера до сэмпла</option>
+            <option value="fcp7">Premiere Pro — XML (Final Cut Pro 7)</option>
           </select>
         </div>
         <div className="note">
@@ -111,7 +112,7 @@ export function ExportDialog() {
           {errors > 0 && <><br /><b style={{ color: 'var(--danger)' }}>Есть ошибки ({errors}):</b> накладывающиеся клипы уйдут на дополнительную дорожку камеры.</>}
           {format === 'fcpxml'
             ? <><br />Видео встаёт на кадр, звук без видео — точно до сэмпла, как его нашла синхронизация.<br />Resolve: File → Import → Timeline.</>
-            : <>{hasRecorder && <><br />Звук рекордера в XML встаёт с точностью до кадра. Для Resolve точнее — FCPXML.</>}<br />Resolve: File → Import → Timeline. Premiere Pro: File → Import.</>}
+            : <><br />В XML каждый канал звука — на своей дорожке: так устроен формат. Для DaVinci выбирайте FCPXML — там стерео одной дорожкой.{hasRecorder && <> Звук рекордера в XML встаёт с точностью до кадра.</>}<br />Premiere Pro: File → Import. Resolve: File → Import → Timeline.</>}
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={() => dispatch({ type: 'export-open', open: false })}>Отмена</button>

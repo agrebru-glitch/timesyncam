@@ -139,13 +139,19 @@ test('Одиночная ложная точка без подтверждени
   assert.ok(Object.values(r.corrections).every((c) => Math.abs(c - 0.5) < 1e-9));
 });
 
-test('Камера только с часами: у клипа со своей точкой — своя поправка, остальным — поправка точки перед ними', () => {
-  const placements = [pl('c1', 0), pl('c2', 100), pl('c3', 200)];
-  const r = combine('B', [anchor('c1', 5, 3.3), anchor('c3', 205, 3.1)], 'clock', placements, true, 180);
+test('Камера только с часами: у клипа со своей точкой — своя поправка, остальных подтягивают соседи до и после', () => {
+  const placements = [pl('c0', -100), pl('c1', 0), pl('c2', 100), pl('c3', 200), pl('c4', 300), pl('c5', 400), pl('c6', 500)];
+  const r = combine('B', [anchor('c1', 5, 3.3), anchor('c3', 205, 3.1), anchor('c5', 405, 4.6)], 'clock', placements, true, 180);
   assert.equal(r.result.model, 'per-clip');
   assert.equal(r.corrections.c1, 3.3);
-  assert.equal(r.corrections.c2, 3.3);
   assert.equal(r.corrections.c3, 3.1);
+  // До первого зацепившегося клипа — его поправка, после последнего — поправка последнего.
+  assert.equal(r.corrections.c0, 3.3);
+  assert.equal(r.corrections.c6, 4.6);
+  // Между двумя зацепившимися — по времени от одного к другому: так уходят часы.
+  assert.ok(Math.abs(r.corrections.c2 - 3.2) < 1e-9);
+  // Соседи расходятся на 1,5 с (часы переставляли) — берём ближайшего по времени.
+  assert.equal(r.corrections.c4, 3.1);
 });
 
 // Сквозная проверка: звук каждого клипа берётся из общего звука площадки с его настоящим временем.
@@ -357,4 +363,45 @@ test('Перемотка звука: быстрая до секунды пере
   assert.deepEqual(seekArgs(60, 4), { input: ['-ss', '59.0000'], output: ['-ss', '1.0000', '-t', '4.0000'] });
   assert.deepEqual(seekArgs(0.4, 4), { input: [], output: ['-ss', '0.4000', '-t', '4.0000'] });
   assert.deepEqual(seekArgs(0, null), { input: [], output: [] });
+});
+
+test('Камеры, которым не с кем было сверяться, находятся со второй попытки — по цепочке', async () => {
+  // Опорная R писала только начало. У A часы сбиты на 25 минут, общий звук с R у неё есть.
+  // У B и C часы показывают время рядом с R, поэтому они сверяются раньше A, но общий звук
+  // у B — только с A, а у C — только с B: R в это время уже не писала.
+  const truth = new Map<string, number>();
+  const mk = (realStart: number, dur: number, clockError: number, withTc: boolean) => {
+    const c = clip({ start: Math.floor(realStart + clockError), tcSeconds: withTc ? (realStart + 3 * 3600) % 86400 : undefined, durationSec: dur, recordedSec: dur });
+    truth.set(c.id, realStart);
+    return c;
+  };
+  const r = camera('R', [mk(T16, 300, 0, true)]);
+  const a = camera('A', [mk(T16 + 100.0131, 350, 1500, false)]);
+  const b = camera('B', [mk(T16 + 300.0077, 50, -250, false), mk(T16 + 380.0213, 30, -250, false), mk(T16 + 425.0119, 50, -250, false)]);
+  // C слышит только конец последнего клипа B: A в это время уже не писала.
+  const c = camera('C', [mk(T16 + 452.0031, 20, -400, false)]);
+  const cams = [r, a, b, c];
+  // Как в программе (featCache в src/main/audio.ts): один и тот же кусок звука не считается дважды.
+  const base = fakeAudio(truth);
+  const memo = new Map<string, ReturnType<AudioFetch['features']>>();
+  const audio: AudioFetch = {
+    features: (x, start, dur) => {
+      const key = `${x.id}|${start.toFixed(3)}|${dur.toFixed(3)}`;
+      if (!memo.has(key)) memo.set(key, base.features(x, start, dur));
+      return memo.get(key)!;
+    },
+    samples: base.samples,
+  };
+  const fractions: number[] = [];
+  const res = await refineByAudio(cams, runSync(cams), audio, { searchSec: 10, maxAnchors: 6, isEnabled: () => true, onProgress: (d, total) => fractions.push(d / total) });
+  const final = runSync(cams, res.corrections);
+  const at = (id: string) => final.placements.find((p) => p.clipId === id)!.start;
+  const refErr = at(r.clips[0].id) - T16;
+  for (const x of [...a.clips, ...b.clips, ...c.clips]) {
+    const err = at(x.id) - truth.get(x.id)! - refErr;
+    assert.ok(Math.abs(err) < 0.001, `${x.name}: ошибка ${(err * 1000).toFixed(1)} мс`);
+  }
+  assert.deepEqual(res.cameras.map((x) => x.status), ['reference', 'applied', 'applied', 'applied']);
+  assert.ok(!res.issues.some((i) => /не нашлось|не с чем/.test(i.title)), res.issues.map((i) => i.title).join('; '));
+  for (let i = 1; i < fractions.length; i++) assert.ok(fractions[i] >= fractions[i - 1] - 1e-9, `ход ${fractions.map((f) => f.toFixed(2)).join(' → ')}`);
 });

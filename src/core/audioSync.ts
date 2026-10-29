@@ -14,6 +14,10 @@ const MAX_WINDOW = 40; // секунд звука в одной точке
 const PROBE_LEN = 12; // секунд звука в одной пробе широкого поиска: общий звук бывает совсем коротким
 const WIDE_PROBES = 6; // больше проб на длинный клип: общий с камерами звук может быть в любом его месте
 const RIVAL_SCORE = 0.75; // другой сдвиг мешает, только если его совпадение почти такое же сильное
+const DETAIL_STEP = 20; // подробный поиск камеры без тайм-кода: проба каждые 20 секунд каждого клипа
+const DETAIL_PROBES = 60; // но не больше 60 проб на камеру
+// Сколько секунд вокруг места по часам и тайм-коду ищется общий звук: часы камер без тайм-кода расходятся на десятки секунд.
+export const AUDIO_SEARCH_SEC = 30;
 const ACCEPT_SCORE = 0.45;
 const ACCEPT_RATIO = 1.5;
 const STRONG_SCORE = 0.6; // настолько уверенное совпадение может сменить поправку без подтверждения
@@ -89,7 +93,8 @@ export interface WideHit { shift: number; score: number; ratio: number }
 // Решение широкого поиска. Один и тот же сдвиг от нескольких проб — не случайность; одно сильное совпадение
 // тоже годится. Мешает только соперник: другой сдвиг, который подтверждён не хуже или совпал почти так же сильно.
 // Случайное слабое совпадение где-то ещё сильное не перебивает.
-export function pickWideShift(hits: WideHit[]): { shift: number; probes: number } | null {
+// need — сколько проб должны сойтись: подробному поиску с десятками проб одного сильного совпадения мало.
+export function pickWideShift(hits: WideHit[], need = 1): { shift: number; probes: number } | null {
   const groupOf = (list: WideHit[]) => {
     let best: WideHit[] = [];
     for (const h of list) {
@@ -106,7 +111,7 @@ export function pickWideShift(hits: WideHit[]): { shift: number; probes: number 
     const rTop = rival.reduce((a, b) => (b.score > a.score ? b : a));
     if (isStrong(rTop) || rTop.score >= top.score * RIVAL_SCORE) return null;
   }
-  const confident = best.length >= 2 || isStrong(top);
+  const confident = best.length >= Math.max(2, need) || (need <= 1 && isStrong(top));
   return confident ? { shift: median(best.map((x) => x.shift)), probes: best.length } : null;
 }
 
@@ -492,7 +497,13 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   let done = 0;
   const left = new Map<string, number>();
   const sizeOf = (p: { pairs: Pair[]; segments: Pair[][] }) => p.pairs.length + p.segments.reduce((n, s) => n + s.length, 0);
-  const report = () => opts.onProgress?.(done, done + [...left.values()].reduce((n, x) => n + x, 0));
+  // Оставшееся — оценка: если подробный поиск или вторая попытка добавили работы, полоса стоит, а не откатывается.
+  let shown = 0;
+  const report = () => {
+    const total = done + [...left.values()].reduce((n, x) => n + x, 0);
+    shown = Math.max(shown, total ? done / total : 0);
+    opts.onProgress?.(done, shown > 0 ? done / shown : total);
+  };
   const tick = (camId: string) => {
     done++;
     left.set(camId, Math.max(0, (left.get(camId) ?? 0) - 1));
@@ -603,6 +614,29 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     for (const id of absolute.slice(1)) plans.push(planFor(id, [absolute[0]], true));
   }
   for (const p of plans) left.set(p.camId, sizeOf(p));
+  // Подробный (detailed) — для камеры без тайм-кода, которую обычный поиск не нашёл: пробы во всех клипах
+  // каждые 20 секунд. Хватит одного уверенно найденного клипа — по нему встанет вся камера, а дальше
+  // каждый клип уточнится по своему звуку.
+  const wideProbes = (camId: string, detailed: boolean): { t: Placement; start: number; len: number }[] => {
+    const all = [...placementsOf(camId)].sort((a, b) => (b.end - b.start) - (a.end - a.start));
+    const out: { t: Placement; start: number; len: number }[] = [];
+    for (const t of detailed ? all : all.slice(0, 4)) {
+      const dur = t.end - t.start;
+      const probeLen = Math.min(PROBE_LEN, dur - 1);
+      if (probeLen < MIN_OVERLAP * 1.5) continue;
+      // Пробы по всему клипу: в начале, в конце и между ними — у длинной записи до шести.
+      const count = dur - probeLen < 4
+        ? 1
+        : detailed
+          ? Math.max(2, Math.ceil((dur - probeLen) / DETAIL_STEP) + 1)
+          : Math.min(WIDE_PROBES, Math.max(3, Math.ceil(dur / 45)));
+      const starts = count === 1 ? [(dur - probeLen) / 2] : Array.from({ length: count }, (_, i) => 0.5 + (i * (dur - probeLen - 1)) / (count - 1));
+      for (const start of starts) out.push({ t, start, len: probeLen });
+    }
+    if (out.length <= DETAIL_PROBES) return out;
+    // Слишком много проб — берём равномерно по всей камере.
+    return Array.from({ length: DETAIL_PROBES }, (_, i) => out[Math.floor((i * out.length) / DETAIL_PROBES)]);
+  };
   // Камеры в очереди: сверка со всеми остальными — верхняя оценка; камере без общего времени понадобится широкий поиск.
   // Широкий поиск — пробы и повторная сверка на найденном месте.
   const wideBudget = (camId: string) => {
@@ -610,7 +644,14 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     const replan = isRecorder(camId) ? clips * RECORDER_CHECKS * RECORDER_TRIES : sourceOf.get(camId) === 'clock' ? clips : opts.maxAnchors;
     return Math.min(4, clips) * WIDE_PROBES + replan;
   };
-  for (const id of queue) left.set(id, sizeOf(planFor(id, all.filter((x) => x !== id), false)) || wideBudget(id));
+  const detailBudget = (camId: string) => wideProbes(camId, true).length + placementsOf(camId).length * 4;
+  // Запас на вторую попытку: камера, которой не с кем было сверяться, сверяется ещё раз, когда встанут остальные.
+  const retryKey = (id: string) => `${id}\u0000retry`;
+  const canRetry = (id: string) => opts.isEnabled(id) && !isFollower(id) && !opts.fixed?.has(id);
+  for (const id of queue) {
+    left.set(id, sizeOf(planFor(id, all.filter((x) => x !== id), false)) || wideBudget(id));
+    if (canRetry(id)) left.set(retryKey(id), sourceOf.get(id) === 'clock' && !isRecorder(id) ? detailBudget(id) : wideBudget(id));
+  }
   report();
   for (const p of plans) {
     const anchors = await measurePlan(p);
@@ -634,25 +675,17 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
 
   // Широкий поиск: часы камеры сбиты на минуты или часы, и рядом по времени общего звука нет.
   // Берём до трёх самых длинных клипов камеры и ищем их звук во всех клипах уже выровненных камер.
-  const wideSearch = async (camId: string): Promise<{ shift: number; probes: number } | null> => {
-    const targets = [...placementsOf(camId)].sort((a, b) => (b.end - b.start) - (a.end - a.start)).slice(0, 4);
+  const wideSearch = async (camId: string, detailed = false): Promise<{ shift: number; probes: number } | null> => {
     const refs = refsOf(fixed);
-    if (!targets.length || !refs.length) return null;
-    // Сначала звук самой камеры: если он пустой, искать нечего. Короткие пробы в начале, середине и конце клипа:
+    const planned = wideProbes(camId, detailed);
+    if (!planned.length || !refs.length) return null;
+    // Сначала звук самой камеры: если он пустой, искать нечего. Короткие пробы по всему клипу:
     // общий звук с другой камерой может длиться всего десяток секунд.
     const probes: { t: Placement; start: number; env: Features }[] = [];
-    for (const t of targets) {
-      const dur = t.end - t.start;
-      const probeLen = Math.min(PROBE_LEN, dur - 1);
-      if (probeLen < MIN_OVERLAP * 1.5) continue;
-      // Пробы по всему клипу: в начале, в конце и между ними — у длинной записи до шести.
-      const count = dur - probeLen < 4 ? 1 : Math.min(WIDE_PROBES, Math.max(3, Math.ceil(dur / 45)));
-      const starts = count === 1 ? [(dur - probeLen) / 2] : Array.from({ length: count }, (_, i) => 0.5 + (i * (dur - probeLen - 1)) / (count - 1));
-      for (const probeStart of starts) {
-        const env = listen(camId, await audio.features(clipById.get(t.clipId)!, probeStart, probeLen));
-        tick(camId);
-        if (env) probes.push({ t, start: probeStart, env });
-      }
+    for (const { t, start: probeStart, len } of planned) {
+      const env = listen(camId, await audio.features(clipById.get(t.clipId)!, probeStart, len));
+      tick(camId);
+      if (env) probes.push({ t, start: probeStart, env });
     }
     if (!probes.length) return null;
     const refEnvs = await pool(refs, conc, async (r) => listen(r.cameraId, await audio.features(clipById.get(r.clipId)!, 0, r.end - r.start)));
@@ -666,7 +699,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
         if (m && isAccepted(m)) hits.push({ shift: startOf(r) + m.offset / ENV_RATE - (t.start + probeStart), score: m.score, ratio: m.ratio });
       });
     });
-    return pickWideShift(hits);
+    return pickWideShift(hits, detailed ? 2 : 1);
   };
 
   // Остальные камеры — по очереди, начиная с той, у которой больше общего звука с уже выровненными.
@@ -676,14 +709,42 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     const o = overlapWith(id, fixed);
     return (isFollower(id) ? 0 : 1e12) + (o > 0 ? (sourceOf.get(id) === 'clock' ? 1 : 2) : 0) * 1e9 + o;
   };
-  while (queue.length) {
-    queue.sort((a, b) => rank(b) - rank(a));
-    const camId = queue.shift()!;
+  // Клипы камеры без тайм-кода, которые не зацепились за звук: ещё по нескольким местам — в начале, в середине
+  // и в конце общей части — и с двумя камерами, с которыми у клипа больше всего общего времени.
+  const detailPairs = (camId: string, anchors: AudioAnchor[]): Pair[] => {
+    const hit = new Set(anchors.filter((a) => a.accepted).map((a) => a.clipId));
+    const refList = refsOf(fixed);
+    const out: Pair[] = [];
+    for (const t of placementsOf(camId)) {
+      if (hit.has(t.clipId)) continue;
+      const ts = startOf(t);
+      const te = ts + (t.end - t.start);
+      const overlaps = refList
+        .map((r) => ({ r, os: Math.max(ts, startOf(r)), oe: Math.min(te, startOf(r) + (r.end - r.start)) }))
+        .filter((o) => o.oe - o.os >= MIN_OVERLAP)
+        .sort((a, b) => (b.oe - b.os) - (a.oe - a.os))
+        .slice(0, 2);
+      for (const { r, os, oe } of overlaps) {
+        const len = Math.min(MAX_WINDOW, oe - os);
+        const starts = oe - os >= len * 1.5 ? [os, (os + oe - len) / 2, oe - len] : [(os + oe - len) / 2];
+        for (const ws of starts) out.push({ target: t, ref: r, ws, we: ws + len });
+      }
+    }
+    return out;
+  };
+
+  // Камеры, поставленные одним совпадением широкого поиска, которое звук рядом не подтвердил: место — догадка,
+  // такие камеры сверяются ещё раз, когда встанут остальные.
+  const tentative = new Set<string>();
+
+  // Сверка одной камеры по уже выровненным: точки рядом по времени, а если их нет — поиск по всей записи.
+  const alignCamera = async (camId: string): Promise<void> => {
+    tentative.delete(camId);
     // Ведомая с контрольным кадром стоит по экрану — он точнее звука; образцом для других она всё равно не служит.
     if (opts.fixed?.has(camId)) {
       results.set(camId, { cameraId: camId, status: 'disabled', model: null, correction: null, steps: [], anchors: [] });
       fixed.push(camId);
-      continue;
+      return;
     }
     const enabled = opts.isEnabled(camId);
     let plan = planFor(camId, fixed, false);
@@ -707,6 +768,39 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
         left.set(camId, 0);
       }
     }
+    // Камера без тайм-кода: у каждого клипа своя ошибка часов, поэтому ищем подробнее. Сначала — хоть один
+    // клип по всей записи; потом клипы, которые не зацепились, — ещё по нескольким местам. Найденные клипы
+    // подтягивают соседей (см. combine).
+    if (enabled && !hasControl && sourceOf.get(camId) === 'clock' && !isRecorder(camId)) {
+      if (!wide && !anchors.some((a) => a.accepted)) {
+        left.set(camId, detailBudget(camId));
+        const deep = await wideSearch(camId, true);
+        left.set(camId, 0);
+        if (deep) {
+          // Сдвиг оставляем, только если на новом месте хоть один клип зацепился за звук рядом.
+          for (const p of allOf(camId)) corrections[p.clipId] = deep.shift;
+          const deepPlan = planFor(camId, fixed, false);
+          left.set(camId, sizeOf(deepPlan));
+          const deepAnchors = await measurePlan(deepPlan);
+          left.set(camId, 0);
+          if (deepAnchors.some((a) => a.accepted)) {
+            wide = deep;
+            plan = deepPlan;
+            plans.push(deepPlan);
+            anchors = deepAnchors;
+          } else {
+            for (const p of allOf(camId)) delete corrections[p.clipId];
+          }
+        }
+      }
+      if (anchors.some((a) => a.accepted)) {
+        const extra = detailPairs(camId, anchors);
+        left.set(camId, extra.length);
+        const more = await pool(extra, conc, measure);
+        left.set(camId, 0);
+        anchors = [...anchors, ...more.filter((a): a is AudioAnchor => !!a)];
+      }
+    }
     report();
     if (plan.pairs.length + plan.segments.length === 0 && !wide) {
       results.set(camId, { cameraId: camId, status: 'no-overlap', model: null, correction: null, steps: [], anchors: [], wideShift: null });
@@ -719,12 +813,13 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
       }));
       markUntrusted(camId, [], false);
       fixed.push(camId);
-      continue;
+      return;
     }
     const res = combine(camId, anchors, sourceOf.get(camId) ?? 'clock', allOf(camId), enabled, coarse.displayTzOffsetMin, isRecorder(camId));
     res.result.wideShift = wide?.shift ?? null;
     if (wide && res.result.status === 'no-match') {
       // Точки рядом не подтвердили, но широкий поиск был уверенным — оставляем общий сдвиг камеры.
+      if (wide.probes < 2) tentative.add(camId);
       for (const p of allOf(camId)) res.corrections[p.clipId] = wide.shift;
       res.result.status = 'applied';
       res.result.model = 'single';
@@ -753,7 +848,76 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     })));
     markUntrusted(camId, anchors, enabled);
     fixed.push(camId);
+  
+  };
+
+  const failed = (id: string) => {
+    const st = results.get(id)?.status;
+    return (st === 'no-match' || st === 'no-overlap' || tentative.has(id)) && canRetry(id);
+  };
+  // Сколько других камер уже стояло на своих местах, когда камера сверялась в последний раз.
+  const standing = (except: string) => fixed.filter((id) => id !== except && !failed(id)).length;
+  const lastTry = new Map<string, number>();
+  while (queue.length) {
+    queue.sort((a, b) => rank(b) - rank(a));
+    const camId = queue.shift()!;
+    lastTry.set(camId, standing(camId));
+    await alignCamera(camId);
+    if (!failed(camId)) {
+      left.set(retryKey(camId), 0);
+      report();
+    }
   }
+
+  // Вторая попытка — для каждой камеры, которую звук не поставил. Её могли сверять, когда камер, с которыми
+  // у неё общий звук, ещё не было на местах: широкий поиск сравнивает только с уже выровненными.
+  // Пробуем ещё раз, пока встают новые камеры: вставшая камера может дать опору следующей.
+  // Если найдётся, каждый её клип поправится по своим точкам.
+  const dropIssues = (camId: string) => {
+    for (let i = issues.length - 1; i >= 0; i--) if (issues[i].cameraId === camId) issues.splice(i, 1);
+  };
+  const retryOne = async (camId: string) => {
+    // Первая попытка — на случай, если вторая не найдёт лучше.
+    const first = {
+      result: results.get(camId)!,
+      tentative: tentative.has(camId),
+      corrections: allOf(camId).map((p) => [p.clipId, corrections[p.clipId]] as const),
+      issues: issues.filter((i) => i.cameraId === camId),
+      untrusted: allOf(camId).filter((p) => untrusted.has(p.clipId)).map((p) => p.clipId),
+    };
+    fixed.splice(fixed.indexOf(camId), 1);
+    dropIssues(camId);
+    for (const p of allOf(camId)) {
+      untrusted.delete(p.clipId);
+      delete corrections[p.clipId];
+    }
+    restorePre(camId);
+    // Запас на вторую попытку держим, пока она идёт: так полоса не добегает до конца раньше времени.
+    await alignCamera(camId);
+    if (failed(camId)) {
+      results.set(camId, first.result);
+      if (first.tentative) tentative.add(camId);
+      for (const [id, c] of first.corrections) {
+        if (c === undefined) delete corrections[id];
+        else corrections[id] = c;
+      }
+      dropIssues(camId);
+      issues.push(...first.issues);
+      for (const p of allOf(camId)) untrusted.delete(p.clipId);
+      for (const id of first.untrusted) untrusted.add(id);
+    }
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const camId of lastTry.keys()) {
+      if (!failed(camId) || standing(camId) <= lastTry.get(camId)!) continue;
+      lastTry.set(camId, standing(camId));
+      await retryOne(camId);
+      if (!failed(camId)) changed = true;
+    }
+  }
+  for (const camId of lastTry.keys()) left.set(retryKey(camId), 0);
+  report();
 
   // Камера, у которой звук пустой: говорим прямо, почему по звуку её не сверить.
   let silentIssues = issues;
@@ -800,7 +964,10 @@ export function combine(camId: string, anchors: AudioAnchor[], source: TimeSourc
         severity: 'warning',
         cameraId: camId,
         title: '«{cam}»: по звуку совпадения не нашлось',
-        details: 'Общий звук с другими камерами есть, но уверенно сопоставить его не получилось — тихо, шумно или микрофон выключен. Камера осталась по тайм-коду и часам. Проверьте по хлопку.',
+        details: source === 'clock' && !recorder
+          // Без тайм-кода паузы между клипами есть только в часах камеры, а они пишут время с точностью до секунды.
+          ? 'Общий звук с другими камерами есть, но уверенно сопоставить его не получилось — тихо, шумно или микрофон выключен. Клипы этой камеры стоят по её часам, каждый с точностью около секунды, поэтому с другими камерами они могут расходиться по-разному. Сдвиньте камеру примерно по хлопку в её карточке и нажмите «Синхронизировать» ещё раз — программа поправит по звуку каждый клип.'
+          : 'Общий звук с другими камерами есть, но уверенно сопоставить его не получилось — тихо, шумно или микрофон выключен. Камера осталась по тайм-коду и часам. Проверьте по хлопку.',
         actions: [{ kind: 'open-faq', anchor: 'manual-sync' }],
       });
     }
@@ -850,9 +1017,8 @@ export function combine(camId: string, anchors: AudioAnchor[], source: TimeSourc
         own.set(clipId, weightedMedian(group));
       }
     }
-    const first = sortedPlacements.find((p) => own.has(p.clipId));
-    let current = first ? own.get(first.clipId)! : m;
-    out.result.correction = current;
+    const anchored = sortedPlacements.filter((p) => own.has(p.clipId));
+    out.result.correction = anchored.length ? own.get(anchored[0].clipId)! : m;
     if (recorder && driftMax > DRIFT_NOTE) {
       out.issues.push({
         severity: 'info',
@@ -862,9 +1028,25 @@ export function combine(camId: string, anchors: AudioAnchor[], source: TimeSourc
         actions: [],
       });
     }
+    // Клип без своих точек подтягивают зацепившиеся соседи: между двумя такими клипами поправка идёт по времени
+    // от одного к другому — так уходят часы; до первого и после последнего — как у ближайшего. Если соседи
+    // расходятся больше чем на секунду (часы переставляли), берём того, кто ближе по времени.
     for (const p of sortedPlacements) {
-      if (own.has(p.clipId)) current = own.get(p.clipId)!;
-      out.corrections[p.clipId] = current;
+      if (own.has(p.clipId)) {
+        out.corrections[p.clipId] = own.get(p.clipId)!;
+        continue;
+      }
+      const before = anchored.filter((x) => x.start <= p.start).at(-1);
+      const after = anchored.find((x) => x.start > p.start);
+      const cb = before ? own.get(before.clipId)! : null;
+      const ca = after ? own.get(after.clipId)! : null;
+      if (before && after && cb !== null && ca !== null && Math.abs(ca - cb) <= 1) {
+        out.corrections[p.clipId] = cb + ((ca - cb) * (p.start - before.start)) / (after.start - before.start);
+      } else if (before && after && cb !== null && ca !== null) {
+        out.corrections[p.clipId] = p.start - before.start <= after.start - p.start ? cb : ca;
+      } else {
+        out.corrections[p.clipId] = cb ?? ca ?? m;
+      }
     }
     out.result.model = 'per-clip';
   } else {
