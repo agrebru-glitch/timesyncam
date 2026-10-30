@@ -105,6 +105,7 @@ export interface Placement {
   end: number;
   method: 'timecode' | 'timecode-and-clock' | 'clock';
   lane: number; // 0 — основная дорожка камеры, 1+ — если клипы накладываются
+  timeCameraId?: string; // клип другой камеры, попавший на эту дорожку: время ему задаёт та камера (и сверка по звуку — с ней)
 }
 
 export interface CameraSync {

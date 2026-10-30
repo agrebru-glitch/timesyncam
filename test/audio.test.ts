@@ -405,3 +405,48 @@ test('Камеры, которым не с кем было сверяться, �
   assert.ok(!res.issues.some((i) => /не нашлось|не с чем/.test(i.title)), res.issues.map((i) => i.title).join('; '));
   for (let i = 1; i < fractions.length; i++) assert.ok(fractions[i] >= fractions[i - 1] - 1e-9, `ход ${fractions.map((f) => f.toFixed(2)).join(' → ')}`);
 });
+
+// Две камеры снимают одновременно; часы камеры B отстают на 2 ч 12 мин. Её клип C0003 попал в папку камеры A.
+function lostClipScene(withXml: boolean) {
+  const truth = new Map<string, number>();
+  const wallOf = (e: number) => (((e + 3 * 3600) % 86400) + 86400) % 86400;
+  const mk = (real: number, clockError: number, tcOffset: number, model: string) => {
+    const c = clip({ start: Math.floor(real + clockError), tcSeconds: (wallOf(real) + tcOffset) % 86400, durationSec: 60, recordedSec: 60 });
+    c.camera = { make: 'Sony', model };
+    truth.set(c.id, real);
+    return c;
+  };
+  const a = [0.013, 70.021, 140.007, 210.019, 280.011].map((d) => mk(T16 + d, 0, 26848, 'Sony A7 IV'));
+  const b = [5.017, 75.009, 145.023, 215.003].map((d) => mk(T16 + d, -7920, 1000, 'Sony A7 III'));
+  b[1].name = 'C0003.MP4';
+  let lost: ClipMeta;
+  if (withXml) {
+    // Файл перенесли вместе с XML: в камере B его больше нет.
+    lost = b.splice(1, 1)[0];
+  } else {
+    // Копия без XML: часы и тайм-код из самого файла, модели камеры нет; оригинал остался в B.
+    lost = { ...b[1], id: 'copy', path: 'X:/cam1/C0003.MP4', camera: {} };
+    lost.clock = { ...lost.clock!, source: 'container' };
+    lost.tc = { ...lost.tc!, source: 'container' };
+    truth.set(lost.id, truth.get(b[1].id)!);
+  }
+  return { truth, cams: [camera('A', [...a, lost]), camera('B', b)], a, b, lost };
+}
+
+for (const withXml of [false, true]) {
+  test(`Клип другой камеры в чужой папке (${withXml ? 'вместе с XML' : 'копия без XML'}) не сбивает синхронизацию`, async () => {
+    const { truth, cams, a, b, lost } = lostClipScene(withXml);
+    const res = await refineByAudio(cams, runSync(cams), fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
+    const final = runSync(cams, res.corrections);
+    const at = (id: string) => final.placements.find((p) => p.clipId === id)?.start;
+    const base = at(a[0].id)! - truth.get(a[0].id)!;
+    const placed = withXml ? [...a, ...b, lost] : [...a, ...b];
+    for (const c of placed) {
+      const err = at(c.id)! - truth.get(c.id)! - base;
+      assert.ok(Math.abs(err) < 0.001, `${c.name}: ошибка ${err.toFixed(3)} с`);
+    }
+    if (!withXml) assert.equal(at(lost.id), undefined); // копия на таймлинию не ставится
+    assert.ok(final.issues.some((i) => (withXml ? /снят камерой «B»/ : /копия клипа с дорожки «B»/).test(i.title)), final.issues.map((i) => i.title).join('; '));
+    assert.ok(!final.issues.some((i) => /сбивался/.test(i.title)));
+  });
+}

@@ -403,14 +403,16 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   const clipById = new Map<string, ClipMeta>();
   for (const cam of cameras) for (const c of cam.clips) clipById.set(c.id, c);
   const sourceOf = new Map<string, TimeSource | null>(coarse.cameras.map((c) => [c.cameraId, c.timeSource]));
-  const placementsOf = (camId: string) => coarse.placements.filter((p) => p.cameraId === camId && hasAudio(clipById.get(p.clipId)!));
+  // Клип другой камеры, попавший на чужую дорожку, сверяется вместе со своей камерой: время ему задаёт она.
+  const coarsePlacements = coarse.placements.map((p) => (p.timeCameraId ? { ...p, cameraId: p.timeCameraId } : p));
+  const placementsOf = (camId: string) => coarsePlacements.filter((p) => p.cameraId === camId && hasAudio(clipById.get(p.clipId)!));
   // Все клипы камеры, в том числе без звука: поправка камеры с тайм-кодом действует и на них.
-  const allOf = (camId: string) => coarse.placements.filter((p) => p.cameraId === camId);
+  const allOf = (camId: string) => coarsePlacements.filter((p) => p.cameraId === camId);
   // Поправки по контрольным кадрам применяются до сверки по звуку: такие камеры уже стоят точно.
   const pre = opts.pre ?? {};
   const corrections: Record<string, number> = { ...pre };
   const restorePre = (camId: string) => {
-    for (const p of coarse.placements) if (p.cameraId === camId && pre[p.clipId] !== undefined && corrections[p.clipId] === undefined) corrections[p.clipId] = pre[p.clipId];
+    for (const p of coarsePlacements) if (p.cameraId === camId && pre[p.clipId] !== undefined && corrections[p.clipId] === undefined) corrections[p.clipId] = pre[p.clipId];
   };
   const startOf = (p: Placement) => p.start + (corrections[p.clipId] ?? 0);
   // Клипы камер без тайм-кода, которые не подтвердил ни звук, ни экран: их место — догадка,

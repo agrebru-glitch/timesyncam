@@ -1,7 +1,7 @@
 {
   "name": "timesyncam",
   "productName": "TimesynCam",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": true,
   "description": "Синхронизация клипов с камер без внешнего тайм-кода и экспорт таймлинии в DaVinci Resolve и Premiere Pro",
   "author": "Andrey Grebenikov",

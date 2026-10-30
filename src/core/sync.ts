@@ -1,7 +1,7 @@
 // Синхронизация: раскладывает клипы всех камер по реальному времени съёмки.
 import type { Camera, CameraSync, ClipMeta, Issue, Placement, SyncResult, TimeSource } from './types.ts';
 import { DAY, isNtscRate, rateValue, wrapDay, wrapSigned } from './timecode.ts';
-import { formatDurationHuman, formatShift } from './format.ts';
+import { formatDurationHuman, formatShift, pluralRu } from './format.ts';
 
 const CLUSTER_TOLERANCE = 1.6; // секунды: часы камер пишут время с точностью до секунды
 const ABSOLUTE_TC_TOLERANCE = 2; // если тайм-код совпадает с часами, это реальное время
@@ -83,21 +83,74 @@ interface CameraOutcome {
   sync: CameraSync;
   placements: Placement[];
   issues: Issue[];
+  // Время клипа по часам и тайм-коду этой камеры (без ручного сдвига и поправок) — для её клипов на чужих дорожках.
+  place: (c: ClipMeta) => { start: number; method: Placement['method'] } | null;
+}
+
+// Клип с другой камеры на этой дорожке: время уже посчитано по его камере.
+interface Guest {
+  clip: ClipMeta;
+  start: number;
+  method: Placement['method'];
+  ownerId: string;
 }
 
 export function isSpeedChanged(c: ClipMeta): boolean {
   return c.captureFps !== null;
 }
 
-function activeClips(cam: Camera): ClipMeta[] {
-  if (!cam.excludedClipIds.length) return cam.clips;
+function activeClips(cam: Camera, copies?: Map<string, Duplicate>): ClipMeta[] {
+  if (!cam.excludedClipIds.length && !copies?.size) return cam.clips;
   const excluded = new Set(cam.excludedClipIds);
-  return cam.clips.filter((c) => !excluded.has(c.id));
+  return cam.clips.filter((c) => !excluded.has(c.id) && !copies?.has(copyKey(cam.id, c.id)));
 }
 
-function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, number>): CameraOutcome {
+export interface Duplicate {
+  cameraId: string;
+  clipId: string;
+  keptCameraId: string; // где лежит копия, которая берётся в синхронизацию
+  keptClipId: string;
+}
+
+const copyKey = (cameraId: string, clipId: string) => `${cameraId}|${clipId}`;
+
+// Копии одного файла: одинаковые имя, размер и длина — на разных дорожках или в двух папках одной.
+// Копия без XML на чужой дорожке приносит чужие часы и тайм-код: камера получает лишний отрезок, сверка по звуку
+// цепляется за копию, а настоящие клипы камеры остаются на месте своих часов. Поэтому в синхронизацию берётся
+// одна копия — с Sony XML, а при равенстве — с более ранней дорожки. Ключ — «камера|клип».
+export function findDuplicates(cameras: Camera[]): Map<string, Duplicate> {
+  const groups = new Map<string, { clip: ClipMeta; cameraId: string; order: number }[]>();
+  cameras.forEach((cam, ci) => {
+    const excluded = new Set(cam.excludedClipIds);
+    cam.clips.forEach((clip, i) => {
+      if (excluded.has(clip.id) || !clip.sizeBytes) return;
+      const key = `${clip.name.toUpperCase()}|${clip.sizeBytes}|${clip.durationSec.toFixed(2)}`;
+      groups.set(key, [...(groups.get(key) ?? []), { clip, cameraId: cam.id, order: ci * 1e6 + i }]);
+    });
+  });
+  const score = (c: ClipMeta) => (c.clock?.source === 'sony-xml' ? 2 : 0) + (c.tc?.source === 'sony-xml' ? 1 : 0);
+  const out = new Map<string, Duplicate>();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const keep = list.reduce((a, b) => (score(b.clip) > score(a.clip) || (score(b.clip) === score(a.clip) && b.order < a.order) ? b : a));
+    for (const x of list) {
+      if (x === keep) continue;
+      out.set(copyKey(x.cameraId, x.clip.id), { cameraId: x.cameraId, clipId: x.clip.id, keptCameraId: keep.cameraId, keptClipId: keep.clip.id });
+    }
+  }
+  return out;
+}
+
+function syncCamera(
+  cam: Camera,
+  tzMin: number,
+  corrections: Record<string, number>,
+  copies: Map<string, Duplicate>,
+  strays: Map<string, Stray>,
+  guests: Guest[],
+): CameraOutcome {
   const issues: Issue[] = [];
-  const clips = activeClips(cam);
+  const clips = activeClips(cam, copies).filter((c) => !strays.has(copyKey(cam.id, c.id)));
   const sync: CameraSync = {
     cameraId: cam.id,
     timeSource: null,
@@ -108,7 +161,7 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
     end: null,
     lanes: 0,
   };
-  if (clips.length === 0) return { sync, placements: [], issues };
+  if (clips.length === 0 && guests.length === 0) return { sync, placements: [], issues, place: () => null };
 
   // Клипы с разных камер в одной папке — частая ошибка при сбросе карт.
   const models = new Map<string, number>();
@@ -153,10 +206,11 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
   // Решаем, откуда брать время.
   let source: TimeSource = 'clock';
   const groupOf = new Map<string, Group>();
+  let groups: Group[] = [];
   let main: Group | null = null;
   if (cam.timecodeTrust !== 'ignore' && tcClips.length > 0) {
     const offsets = tcClips.map((c) => ({ id: c.id, offset: wrapSigned(wallClock(c, tzMin) - c.tc!.seconds) }));
-    const groups = clusterOffsets(offsets);
+    groups = clusterOffsets(offsets);
     main = groups[0];
     sync.timecodeVsClockSec = main.center;
     sync.recRun = isRecRun(clips);
@@ -208,30 +262,39 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
   }
   sync.timeSource = source;
 
-  // Раскладка.
-  const raw: { clip: ClipMeta; start: number; method: Placement['method'] }[] = [];
-  for (const c of clips) {
-    if (!c.clock) continue;
+  // Раскладка. Группа клипа — его отрезок тайм-кода; клип с другой дорожки (снятый этой камерой) ищет свою по расхождению.
+  const groupFor = (c: ClipMeta): Group | undefined => {
+    const known = groupOf.get(c.id);
+    if (known || !c.tc || !c.clock || !groups.length) return known;
+    const off = wrapSigned(wallClock(c, tzMin) - c.tc.seconds);
+    return groups.find((x) => Math.abs(off - x.center) <= CLUSTER_TOLERANCE);
+  };
+  const place = (c: ClipMeta): { start: number; method: Placement['method'] } | null => {
+    if (!c.clock) return null;
     let start = c.clock.epochSec;
     let method: Placement['method'] = 'clock';
-    const tcUsable = !c.captureFps || groupOf.has(c.id);
+    const g = groupFor(c);
+    const tcUsable = !c.captureFps || !!g;
     if (c.tc && tcUsable && source === 'timecode') {
       // Камера снимала и 24p, и 30p/25p: клип 24p выпал из главной группы только из-за счёта тайм-кода.
       // Если по самой метке он сходится с часами, как вся камера, — ставим по метке, иначе уедет на минуту.
       let tcSec = c.tc.seconds;
       const label = labelSeconds(c);
-      if (main && groupOf.get(c.id) !== main && Math.abs(wrapSigned(wallClock(c, tzMin) - label) - main.center) <= CLUSTER_TOLERANCE) tcSec = label;
+      if (main && g !== main && Math.abs(wrapSigned(wallClock(c, tzMin) - label) - main.center) <= CLUSTER_TOLERANCE) tcSec = label;
       start = c.clock.epochSec + wrapSigned(tcSec - wallClock(c, tzMin));
       method = 'timecode';
-    } else if (c.tc && source === 'timecode-and-clock') {
-      const g = groupOf.get(c.id);
-      if (g) {
-        start = c.clock.epochSec + wrapSigned(c.tc.seconds - wallClock(c, tzMin)) + g.center;
-        method = 'timecode-and-clock';
-      }
+    } else if (c.tc && source === 'timecode-and-clock' && g) {
+      start = c.clock.epochSec + wrapSigned(c.tc.seconds - wallClock(c, tzMin)) + g.center;
+      method = 'timecode-and-clock';
     }
-    raw.push({ clip: c, start: start + cam.manualShiftSec + (corrections[c.id] ?? 0), method });
+    return { start, method };
+  };
+  const raw: { clip: ClipMeta; start: number; method: Placement['method']; ownerId?: string }[] = [];
+  for (const c of clips) {
+    const at = place(c);
+    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + (corrections[c.id] ?? 0), method: at.method });
   }
+  for (const gst of guests) raw.push({ clip: gst.clip, start: gst.start, method: gst.method, ownerId: gst.ownerId });
 
   const untimed = clips.filter((c) => !c.clock);
   if (untimed.length > 0) {
@@ -255,7 +318,9 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
   const placements: Placement[] = [];
   for (const r of raw) {
     let start = r.start;
-    const realOverlap = lastRecordedEnd - start;
+    // Клип другой камеры на этой дорожке снят одновременно с её клипами — это не ошибка, он просто уходит на соседнюю дорожку.
+    const guest = r.ownerId !== undefined;
+    const realOverlap = guest ? 0 : lastRecordedEnd - start;
     if (realOverlap > 0.02) {
       if (r.method !== 'timecode' && realOverlap <= NUDGE_LIMIT) {
         start = lastRecordedEnd; // погрешность часов — ставим вплотную
@@ -274,11 +339,11 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
     if (lane === -1) lane = laneEnds.length;
     const end = start + r.clip.durationSec;
     laneEnds[lane] = end;
-    if (start + r.clip.recordedSec > lastRecordedEnd) {
+    if (!guest && start + r.clip.recordedSec > lastRecordedEnd) {
       lastRecordedEnd = start + r.clip.recordedSec;
       lastRecordedClip = r.clip;
     }
-    placements.push({ clipId: r.clip.id, cameraId: cam.id, start, end, method: r.method, lane });
+    placements.push({ clipId: r.clip.id, cameraId: cam.id, start, end, method: r.method, lane, ...(guest ? { timeCameraId: r.ownerId } : {}) });
   }
   sync.lanes = laneEnds.length;
   if (placements.length > 0) {
@@ -297,7 +362,90 @@ function syncCamera(cam: Camera, tzMin: number, corrections: Record<string, numb
     }));
   }
 
-  return { sync, placements, issues };
+  return { sync, placements, issues, place };
+}
+
+export interface Stray {
+  cameraId: string; // дорожка, на которой лежит файл
+  clipId: string;
+  ownerId: string; // дорожка камеры, которая его сняла
+  identity: string; // модель и серийный номер
+}
+
+const identityOf = (c: ClipMeta) => [c.camera.model, c.camera.serial].filter(Boolean).join(' · ');
+
+// Чужой клип: снят другой камерой, чем остальные клипы дорожки, — той, что лежит на другой дорожке
+// (модель и серийный номер из метаданных). Так бывает, когда файл при сбросе попал не в ту папку.
+// Клип остаётся на своей дорожке, но время ему задаёт его камера: её часы, тайм-код и поправка по звуку.
+export function findStrays(cameras: Camera[], copies: Map<string, Duplicate>): Map<string, Stray> {
+  const majorityOf = new Map<string, { key: string; count: number }>();
+  for (const cam of cameras) {
+    const counts = new Map<string, number>();
+    for (const c of activeClips(cam, copies)) {
+      const key = identityOf(c);
+      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    // Большинство должно быть явным: при равенстве не угадываем.
+    if (top.length && (top.length === 1 || top[0][1] > top[1][1])) majorityOf.set(cam.id, { key: top[0][0], count: top[0][1] });
+  }
+  const out = new Map<string, Stray>();
+  for (const cam of cameras) {
+    const own = majorityOf.get(cam.id);
+    if (!own) continue;
+    for (const c of activeClips(cam, copies)) {
+      const key = identityOf(c);
+      if (!key || key === own.key) continue;
+      const owners = cameras.filter((x) => x.id !== cam.id && majorityOf.get(x.id)?.key === key);
+      if (owners.length === 1) out.set(copyKey(cam.id, c.id), { cameraId: cam.id, clipId: c.id, ownerId: owners[0].id, identity: key });
+    }
+  }
+  return out;
+}
+
+function strayIssues(cameras: Camera[], strays: Map<string, Stray>): Issue[] {
+  const out: Issue[] = [];
+  const byPair = new Map<string, Stray[]>();
+  for (const st of strays.values()) byPair.set(`${st.cameraId}|${st.ownerId}`, [...(byPair.get(`${st.cameraId}|${st.ownerId}`) ?? []), st]);
+  for (const list of byPair.values()) {
+    const cam = cameras.find((c) => c.id === list[0].cameraId)!;
+    const owner = cameras.find((c) => c.id === list[0].ownerId)!;
+    const names = list.slice(0, 4).map((st) => cam.clips.find((c) => c.id === st.clipId)!.name).join(', ') + (list.length > 4 ? '…' : '');
+    out.push(issue({
+      severity: 'warning',
+      cameraId: cam.id,
+      clipId: list[0].clipId,
+      title: `«${cam.name}»: ${names} ${list.length === 1 ? 'снят' : 'сняты'} камерой «${owner.name}» (${list[0].identity})`,
+      details: `Файл лежит в папке «${cam.name}», но снят той же камерой, что клипы «${owner.name}». Он стоит на этой дорожке, а время ему задают часы, тайм-код и сверка по звуку «${owner.name}». Перенесите файл в её папку, чтобы в монтажке он был на её дорожке.`,
+      actions: [{ kind: 'show-clip', clipId: list[0].clipId }],
+    }));
+  }
+  return out;
+}
+
+// Одно замечание на пару «камера — дорожка, где лежит оригинал».
+function duplicateIssues(cameras: Camera[], copies: Map<string, Duplicate>): Issue[] {
+  const out: Issue[] = [];
+  const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? '';
+  const byPair = new Map<string, Duplicate[]>();
+  for (const d of copies.values()) byPair.set(`${d.cameraId}|${d.keptCameraId}`, [...(byPair.get(`${d.cameraId}|${d.keptCameraId}`) ?? []), d]);
+  for (const list of byPair.values()) {
+    const cam = cameras.find((c) => c.id === list[0].cameraId)!;
+    const names = list.slice(0, 4).map((d) => cam.clips.find((c) => c.id === d.clipId)!.name).join(', ') + (list.length > 4 ? '…' : '');
+    const same = list[0].keptCameraId === cam.id;
+    out.push(issue({
+      severity: 'warning',
+      cameraId: cam.id,
+      title: same
+        ? `«${cam.name}»: ${names} — одна и та же запись лежит в двух папках`
+        : `«${cam.name}»: ${names} — ${list.length === 1 ? 'копия клипа' : `${pluralRu(list.length, 'копия', 'копии', 'копий')} клипов`} с дорожки «${nameOf(list[0].keptCameraId)}»`,
+      details: same
+        ? 'В синхронизацию берётся одна копия. Уберите лишнюю с таймлинии — файлы на диске останутся.'
+        : `Такой же файл лежит на дорожке «${nameOf(list[0].keptCameraId)}». Копия не берётся в синхронизацию: в ней часы и тайм-код другой камеры, и она сбивает сверку. Похоже, файл попал не в ту папку — уберите его с таймлинии, файл на диске останется.`,
+      actions: [{ kind: 'exclude-clips', cameraId: cam.id, clipIds: list.map((d) => d.clipId) }],
+    }));
+  }
+  return out;
 }
 
 function overlapSec(a: CameraSync, b: CameraSync): number {
@@ -314,9 +462,25 @@ export function pickDisplayTz(cameras: Camera[]): number {
 // heardCameras — камеры, которые уже сверены по звуку: подсказка сверить их по хлопку им не нужна.
 export function runSync(cameras: Camera[], corrections: Record<string, number> = {}, heardCameras: Set<string> = new Set()): SyncResult {
   const tz = pickDisplayTz(cameras);
-  const outcomes = cameras.map((c) => syncCamera(c, tz, corrections));
+  const copies = findDuplicates(cameras);
+  const strays = findStrays(cameras, copies);
+  // Сначала каждая камера — по своим клипам. Потом дорожки с чужими клипами раскладываются ещё раз:
+  // время такого клипа считает его камера, со своим ручным сдвигом и поправками.
+  let outcomes = cameras.map((c) => syncCamera(c, tz, corrections, copies, strays, []));
+  if (strays.size) {
+    const guestsOf = new Map<string, Guest[]>();
+    for (const st of strays.values()) {
+      const owner = cameras.findIndex((c) => c.id === st.ownerId);
+      const clip = cameras.find((c) => c.id === st.cameraId)!.clips.find((c) => c.id === st.clipId)!;
+      const at = outcomes[owner].place(clip);
+      if (!at) continue;
+      const start = at.start + cameras[owner].manualShiftSec + (corrections[clip.id] ?? 0);
+      guestsOf.set(st.cameraId, [...(guestsOf.get(st.cameraId) ?? []), { clip, start, method: at.method, ownerId: st.ownerId }]);
+    }
+    outcomes = cameras.map((c, i) => (guestsOf.has(c.id) ? syncCamera(c, tz, corrections, copies, strays, guestsOf.get(c.id)!) : outcomes[i]));
+  }
   const placements = outcomes.flatMap((o) => o.placements);
-  const issues = outcomes.flatMap((o) => o.issues);
+  const issues = [...duplicateIssues(cameras, copies), ...strayIssues(cameras, strays), ...outcomes.flatMap((o) => o.issues)];
   const syncs = outcomes.map((o) => o.sync);
 
   // Проверка камер между собой: часовой пояс, другой день, нет пересечения.
@@ -386,9 +550,10 @@ export function runSync(cameras: Camera[], corrections: Record<string, number> =
 // и все камеры начинаются с нуля. Часы камер могут быть сбиты на часы и сутки — так клипы не разлетаются,
 // и контрольные кадры удобно отмечать. Настоящие места клипы получают по кнопке «Синхронизировать».
 export function pilePlacements(cameras: Camera[]): Placement[] {
+  const copies = findDuplicates(cameras);
   const piles = cameras.map((cam) => {
-    // Порядок съёмки — по часам камеры; клипы без часов — в конце, по имени файла.
-    const clips = activeClips(cam).map((c, i) => ({ c, i }));
+    // Порядок съёмки — по часам камеры; клипы без часов — в конце, по имени файла. Копии клипов не показываем.
+    const clips = activeClips(cam, copies).map((c, i) => ({ c, i }));
     clips.sort((a, b) => (a.c.clock?.epochSec ?? Infinity) - (b.c.clock?.epochSec ?? Infinity) || a.i - b.i);
     return { cam, clips: clips.map((x) => x.c) };
   });

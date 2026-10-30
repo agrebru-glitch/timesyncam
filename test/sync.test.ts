@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pilePlacements, runSync } from '../src/core/sync.ts';
+import { findDuplicates, findStrays, pilePlacements, runSync } from '../src/core/sync.ts';
 import { buildFcp7Xml, defaultTimelineRate } from '../src/core/fcp7.ts';
 import { camera, clip, T16 } from './fixtures.ts';
 
@@ -172,4 +172,43 @@ test('Кучка не показывает клипы, убранные с та�
   a.excludedClipIds = [a.clips[1].id];
   const p = pilePlacements([a]);
   assert.deepEqual(p.map((x) => x.clipId), [a.clips[0].id, a.clips[2].id]);
+});
+
+test('Копии клипа: оставляется копия с Sony XML, лишняя не ставится на таймлинию', () => {
+  const orig = clip({ start: T16 + 100, tcSeconds: 1000 });
+  orig.name = 'C0003.MP4';
+  const copy = { ...clip({ start: T16 + 100, tcSeconds: 1000 }), name: 'C0003.MP4' };
+  copy.clock = { ...copy.clock!, source: 'container' };
+  copy.tc = { ...copy.tc!, source: 'container' };
+  const same = clip({ start: T16 + 500 });
+  const twin = { ...same, id: 'twin', path: 'Y:/backup/' + same.name };
+  const other = { ...clip({ start: T16 + 900 }), name: 'C0003.MP4', sizeBytes: 5e8 }; // то же имя, другой файл
+  const cams = [camera('A', [copy, same, twin]), camera('B', [orig, other])];
+  const dups = findDuplicates(cams);
+  assert.deepEqual([...dups.values()].map((d) => `${d.cameraId}:${d.clipId}→${d.keptCameraId}:${d.keptClipId}`).sort(), [`A:${copy.id}→B:${orig.id}`, `A:twin→A:${same.id}`].sort());
+  const r = runSync(cams);
+  assert.ok(!r.placements.some((p) => p.clipId === copy.id || p.clipId === 'twin'));
+  assert.ok(r.issues.some((i) => /копия клипа с дорожки «B»/.test(i.title)));
+  assert.ok(r.issues.some((i) => /лежит в двух папках/.test(i.title)));
+  assert.equal(pilePlacements(cams).filter((p) => p.cameraId === 'A').length, 1);
+});
+
+test('Чужой клип: снят камерой другой дорожки — стоит на своей дорожке, но по часам и тайм-коду своей камеры', () => {
+  const a = freeRunClips([T16 + 10, T16 + 100, T16 + 200]);
+  const b = freeRunClips([T16 + 20, T16 + 300], 1000);
+  for (const c of b) c.camera = { make: 'Sony', model: 'Sony A7 III' };
+  // Клип камеры B попал в папку A: свои часы и тайм-код B, а у A тайм-код убегает на 7:27:28.
+  const stray = freeRunClips([T16 + 150], 1000)[0];
+  stray.camera = { make: 'Sony', model: 'Sony A7 III' };
+  const cams = [camera('A', [...a, stray]), camera('B', b, { manualShiftSec: 7 })];
+  assert.equal(findStrays(cams, findDuplicates(cams)).get(`A|${stray.id}`)?.ownerId, 'B');
+  const r = runSync(cams);
+  const p = r.placements.find((x) => x.clipId === stray.id)!;
+  assert.equal(p.cameraId, 'A');
+  assert.equal(p.timeCameraId, 'B');
+  const bFirst = r.placements.find((x) => x.clipId === b[0].id)!;
+  assert.ok(Math.abs((p.start - bFirst.start) - 130) < 0.001, `пауза ${p.start - bFirst.start}`); // и ручной сдвиг B у него тоже
+  assert.equal(r.cameras[0].timecodeJumps, 0);
+  assert.ok(r.issues.some((i) => /снят камерой «B»/.test(i.title)));
+  assert.ok(!r.issues.some((i) => /клипы с разных камер/.test(i.title)));
 });
