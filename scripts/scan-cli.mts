@@ -6,7 +6,7 @@ import { writeFile } from 'node:fs/promises';
 import { scanFolder } from '../src/main/scan.ts';
 import { audioFeatures, audioSamples } from '../src/main/audio.ts';
 import { scanQr } from '../src/main/qr.ts';
-import { runSync } from '../src/core/sync.ts';
+import { applyRelocation, planRelocation, relocationIssues, runSync } from '../src/core/sync.ts';
 import { AUDIO_SEARCH_SEC, heardCameras, refineByAudio } from '../src/core/audioSync.ts';
 import { controlCorrections } from '../src/core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../src/core/qrSync.ts';
@@ -37,6 +37,11 @@ for (const [i, folder] of folders.entries()) {
   console.log(`Камера ${i + 1}: ${res.clips.length} клипов за ${((performance.now() - t) / 1000).toFixed(1)} с, без SDK: ${res.needsSdk.length}, не прочитано: ${res.unreadable.length}`);
   cameras.push({ id: `cam${i}`, name: `Камера ${i + 1}`, folders: [folder], clips: res.clips, manualShiftSec: 0, timecodeTrust: 'auto', excludedClipIds: [], audioAssist: true, scanning: null });
 }
+
+// Как в программе: клипы — на дорожки своих камер.
+const plan = planRelocation(cameras);
+for (const i of relocationIssues(cameras, plan)) console.log(`  [перенос] ${i.title}`);
+cameras.splice(0, cameras.length, ...applyRelocation(cameras, plan));
 
 function report(r: SyncResult, title: string) {
   const tz = r.displayTzOffsetMin;

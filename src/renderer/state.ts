@@ -1,6 +1,7 @@
 import type { Camera, ClipMeta, Issue, SyncResult, TimecodeTrust } from '../core/types.ts';
 import type { AudioSyncResult } from '../core/audioSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
+import { applyRelocation, relocateFrames, type Relocation } from '../core/sync.ts';
 
 export type Tab = 'sync' | 'errors' | 'faq';
 
@@ -117,6 +118,7 @@ export type Action =
   | { type: 'rename-camera'; cameraId: string; name: string }
   | { type: 'scan-start'; cameraId: string }
   | { type: 'scan-progress'; cameraId: string; done: number; total: number }
+  | { type: 'relocate'; plan: Relocation; issues: Issue[] }
   | { type: 'scan-done'; cameraId: string; clips: ClipMeta[]; folders: string[]; issues: Issue[] }
   | { type: 'set-trust'; cameraId: string; trust: TimecodeTrust }
   | { type: 'shift-camera'; cameraId: string; deltaSec?: number; absoluteSec?: number }
@@ -178,6 +180,16 @@ export function reducer(state: State, a: Action): State {
       return {
         ...state,
         cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, scanning: { done: 0, total: 0 } })),
+      };
+    case 'relocate':
+      // Клипы разложены по дорожкам своих камер в начале синхронизации — её результат уже учитывает перенос,
+      // поэтому версия не меняется.
+      return {
+        ...state,
+        cameras: applyRelocation(state.cameras, a.plan),
+        controlFrames: relocateFrames(state.controlFrames, a.plan),
+        scanIssues: [...state.scanIssues, ...a.issues],
+        selectedClipId: a.plan.drops.find((d) => d.clipId === state.selectedClipId)?.keptClipId ?? state.selectedClipId,
       };
     case 'scan-progress':
       // Сообщение о ходе чтения может прийти уже после конца чтения — тогда его не учитываем.

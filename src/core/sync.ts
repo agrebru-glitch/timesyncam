@@ -114,7 +114,27 @@ export interface Duplicate {
 
 const copyKey = (cameraId: string, clipId: string) => `${cameraId}|${clipId}`;
 
-// Копии одного файла: одинаковые имя, размер и длина — на разных дорожках или в двух папках одной.
+// Тот же ли это файл. Одинаковое имя ничего не значит: две камеры одной модели обе пишут C0003.MP4.
+// Копия совпадает с оригиналом до байта по размеру; сверху — всё, что известно у обоих файлов: длина, частота,
+// кадр, кодек, тайм-код начала (он записан в самом MP4, есть и у копии без XML), серийный номер камеры.
+// Длина и число кадров — с допуском в кадр: у файла с XML их берём из XML, у копии без него — из самого MP4.
+function sameFile(a: ClipMeta, b: ClipMeta): boolean {
+  const known = <T>(x: T | null | undefined, y: T | null | undefined, eq: (x: T, y: T) => boolean) => x == null || y == null || eq(x, y);
+  const frameSec = a.rate ? 1 / rateValue(a.rate) : 0.04;
+  return (
+    Math.abs(a.durationSec - b.durationSec) <= frameSec * 1.5 + 0.01 &&
+    known(a.rate, b.rate, (x, y) => x.num * y.den === y.num * x.den) &&
+    known(a.frames, b.frames, (x, y) => Math.abs(x - y) <= 1) &&
+    known(a.width, b.width, (x, y) => x === y) &&
+    known(a.height, b.height, (x, y) => x === y) &&
+    known(a.codec, b.codec, (x, y) => x === y) &&
+    a.audioChannels === b.audioChannels &&
+    known(a.tc, b.tc, (x, y) => Math.abs(wrapSigned(x.seconds - y.seconds)) < 1.5 / Math.max(1, x.countRate)) &&
+    known(a.camera.serial, b.camera.serial, (x, y) => x === y)
+  );
+}
+
+// Копии одного файла — на разных дорожках или в двух папках одной.
 // Копия без XML на чужой дорожке приносит чужие часы и тайм-код: камера получает лишний отрезок, сверка по звуку
 // цепляется за копию, а настоящие клипы камеры остаются на месте своих часов. Поэтому в синхронизацию берётся
 // одна копия — с Sony XML, а при равенстве — с более ранней дорожки. Ключ — «камера|клип».
@@ -124,18 +144,24 @@ export function findDuplicates(cameras: Camera[]): Map<string, Duplicate> {
     const excluded = new Set(cam.excludedClipIds);
     cam.clips.forEach((clip, i) => {
       if (excluded.has(clip.id) || !clip.sizeBytes) return;
-      const key = `${clip.name.toUpperCase()}|${clip.sizeBytes}|${clip.durationSec.toFixed(2)}`;
+      const key = `${clip.name.toUpperCase()}|${clip.sizeBytes}`;
       groups.set(key, [...(groups.get(key) ?? []), { clip, cameraId: cam.id, order: ci * 1e6 + i }]);
     });
   });
   const score = (c: ClipMeta) => (c.clock?.source === 'sony-xml' ? 2 : 0) + (c.tc?.source === 'sony-xml' ? 1 : 0);
   const out = new Map<string, Duplicate>();
-  for (const list of groups.values()) {
-    if (list.length < 2) continue;
-    const keep = list.reduce((a, b) => (score(b.clip) > score(a.clip) || (score(b.clip) === score(a.clip) && b.order < a.order) ? b : a));
-    for (const x of list) {
-      if (x === keep) continue;
-      out.set(copyKey(x.cameraId, x.clip.id), { cameraId: x.cameraId, clipId: x.clip.id, keptCameraId: keep.cameraId, keptClipId: keep.clip.id });
+  for (const all of groups.values()) {
+    // Одинаковые имя и размер ещё делятся на разные записи, если у них расходится что-то из sameFile.
+    let rest = all;
+    while (rest.length > 1) {
+      const list = rest.filter((x) => sameFile(x.clip, rest[0].clip));
+      rest = rest.filter((x) => !list.includes(x));
+      if (list.length < 2) continue;
+      const keep = list.reduce((a, b) => (score(b.clip) > score(a.clip) || (score(b.clip) === score(a.clip) && b.order < a.order) ? b : a));
+      for (const x of list) {
+        if (x === keep) continue;
+        out.set(copyKey(x.cameraId, x.clip.id), { cameraId: x.cameraId, clipId: x.clip.id, keptCameraId: keep.cameraId, keptClipId: keep.clip.id });
+      }
     }
   }
   return out;
@@ -376,18 +402,19 @@ const identityOf = (c: ClipMeta) => [c.camera.model, c.camera.serial].filter(Boo
 
 // Чужой клип: снят другой камерой, чем остальные клипы дорожки, — той, что лежит на другой дорожке
 // (модель и серийный номер из метаданных). Так бывает, когда файл при сбросе попал не в ту папку.
-// Клип остаётся на своей дорожке, но время ему задаёт его камера: её часы, тайм-код и поправка по звуку.
+// Программа переносит такой клип на дорожку его камеры до синхронизации (planRelocation). Если он всё же остался
+// на чужой дорожке, время ему задаёт его камера: её часы, тайм-код и поправка по звуку.
 export function findStrays(cameras: Camera[], copies: Map<string, Duplicate>): Map<string, Stray> {
-  const majorityOf = new Map<string, { key: string; count: number }>();
+  const majorityOf = new Map<string, { key: string; count: number; camera: ClipMeta['camera'] }>();
   for (const cam of cameras) {
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { count: number; camera: ClipMeta['camera'] }>();
     for (const c of activeClips(cam, copies)) {
       const key = identityOf(c);
-      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (key) counts.set(key, { count: (counts.get(key)?.count ?? 0) + 1, camera: c.camera });
     }
-    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const top = [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
     // Большинство должно быть явным: при равенстве не угадываем.
-    if (top.length && (top.length === 1 || top[0][1] > top[1][1])) majorityOf.set(cam.id, { key: top[0][0], count: top[0][1] });
+    if (top.length && (top.length === 1 || top[0][1].count > top[1][1].count)) majorityOf.set(cam.id, { key: top[0][0], ...top[0][1] });
   }
   const out = new Map<string, Stray>();
   for (const cam of cameras) {
@@ -396,6 +423,8 @@ export function findStrays(cameras: Camera[], copies: Map<string, Duplicate>): M
     for (const c of activeClips(cam, copies)) {
       const key = identityOf(c);
       if (!key || key === own.key) continue;
+      // Та же модель, а серийного номера нет у одной из сторон (потерялся XML) — может быть и своя камера: не трогаем.
+      if (c.camera.model === own.camera.model && (!c.camera.serial || !own.camera.serial)) continue;
       const owners = cameras.filter((x) => x.id !== cam.id && majorityOf.get(x.id)?.key === key);
       if (owners.length === 1) out.set(copyKey(cam.id, c.id), { cameraId: cam.id, clipId: c.id, ownerId: owners[0].id, identity: key });
     }
@@ -418,6 +447,106 @@ function strayIssues(cameras: Camera[], strays: Map<string, Stray>): Issue[] {
       title: `«${cam.name}»: ${names} ${list.length === 1 ? 'снят' : 'сняты'} камерой «${owner.name}» (${list[0].identity})`,
       details: `Файл лежит в папке «${cam.name}», но снят той же камерой, что клипы «${owner.name}». Он стоит на этой дорожке, а время ему задают часы, тайм-код и сверка по звуку «${owner.name}». Перенесите файл в её папку, чтобы в монтажке он был на её дорожке.`,
       actions: [{ kind: 'show-clip', clipId: list[0].clipId }],
+    }));
+  }
+  return out;
+}
+
+export interface Relocation {
+  moves: Stray[]; // клипы другой камеры — на дорожку их камеры
+  drops: Duplicate[]; // копии файла, который уже лежит на другой дорожке или в другой папке той же камеры
+}
+
+// Распределение клипов по дорожкам камер — перед синхронизацией. Клип, снятый камерой другой дорожки, переезжает
+// на её дорожку; копия файла, который уже есть на другой дорожке, уходит туда же — то есть на таймлинии остаётся
+// один экземпляр. Файлы на диске не трогаются.
+export function planRelocation(cameras: Camera[]): Relocation {
+  const copies = findDuplicates(cameras);
+  const moves = [...findStrays(cameras, copies).values()];
+  const drops = [...copies.values()];
+  // Файл уже перенесли, а папку добавили ещё раз: он снова в своей папке и уже на дорожке своей камеры.
+  // Убираем вернувшийся экземпляр, а не переносим его заново на место того, что уже стоит.
+  for (const m of [...moves]) {
+    const back = drops.find((d) => d.cameraId === m.ownerId && d.keptCameraId === m.cameraId && d.keptClipId === m.clipId);
+    if (!back) continue;
+    moves.splice(moves.indexOf(m), 1);
+    drops.splice(drops.indexOf(back), 1, { cameraId: m.cameraId, clipId: m.clipId, keptCameraId: back.cameraId, keptClipId: back.clipId });
+  }
+  return { moves, drops };
+}
+
+export function applyRelocation(cameras: Camera[], plan: Relocation): Camera[] {
+  if (!plan.moves.length && !plan.drops.length) return cameras;
+  const drop = new Set(plan.drops.map((d) => copyKey(d.cameraId, d.clipId)));
+  const moveTo = new Map(plan.moves.map((m) => [copyKey(m.cameraId, m.clipId), m.ownerId]));
+  const incoming = new Map<string, ClipMeta[]>();
+  const kept = cameras.map((cam) => ({
+    ...cam,
+    clips: cam.clips.filter((c) => {
+      const key = copyKey(cam.id, c.id);
+      const to = moveTo.get(key);
+      if (to) incoming.set(to, [...(incoming.get(to) ?? []), c]);
+      return !drop.has(key) && !to;
+    }),
+  }));
+  return kept.map((cam) => {
+    const add = (incoming.get(cam.id) ?? []).filter((c) => !cam.clips.some((x) => x.path === c.path));
+    // Свои клипы дорожки остаются в прежнем порядке, перенесённые — в конце.
+    return add.length ? { ...cam, clips: [...cam.clips, ...add] } : cam;
+  });
+}
+
+// Отметки контрольного кадра едут вместе с клипом; отметка на убранной копии переходит на оставшийся экземпляр того же файла.
+export function relocateFrames<T extends { cameraId: string; clipId: string }>(frames: Record<string, T>, plan: Relocation): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [key, f] of Object.entries(frames)) {
+    const move = plan.moves.find((m) => m.cameraId === f.cameraId && m.clipId === f.clipId);
+    const drop = plan.drops.find((d) => d.cameraId === f.cameraId && d.clipId === f.clipId);
+    if (move) out[key] = { ...f, cameraId: move.ownerId };
+    else if (drop) {
+      // Своя отметка у оставшегося экземпляра важнее.
+      if (!frames[drop.keptClipId] || drop.keptClipId === f.clipId) out[drop.keptClipId] = { ...f, cameraId: drop.keptCameraId, clipId: drop.keptClipId };
+    }
+    else out[key] = f;
+  }
+  return out;
+}
+
+// Что и куда перенесено — одно сообщение на пару дорожек.
+export function relocationIssues(cameras: Camera[], plan: Relocation): Issue[] {
+  const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? '';
+  const clipName = (camId: string, clipId: string) => cameras.find((c) => c.id === camId)?.clips.find((c) => c.id === clipId)?.name ?? '';
+  const list = (names: string[]) => names.slice(0, 4).join(', ') + (names.length > 4 ? '…' : '');
+  const out: Issue[] = [];
+  const moves = new Map<string, Stray[]>();
+  for (const m of plan.moves) moves.set(`${m.cameraId}|${m.ownerId}`, [...(moves.get(`${m.cameraId}|${m.ownerId}`) ?? []), m]);
+  for (const group of moves.values()) {
+    const { cameraId: from, ownerId: to, identity } = group[0];
+    const one = group.length === 1;
+    out.push(issue({
+      severity: 'info',
+      cameraId: to,
+      clipId: group[0].clipId,
+      title: `${one ? 'Перенесён' : 'Перенесены'} на дорожку «${nameOf(to)}»: ${list(group.map((m) => clipName(from, m.clipId)))}`,
+      details: `${one ? 'Файл лежал' : 'Файлы лежали'} в папке «${nameOf(from)}», но ${one ? 'снят' : 'сняты'} той же камерой, что «${nameOf(to)}» (${identity}). Программа поставила ${one ? 'его' : 'их'} на её дорожку — по её часам, тайм-коду и звуку. Файлы на диске не трогались.`,
+      actions: [{ kind: 'show-clip', clipId: group[0].clipId }],
+    }));
+  }
+  const drops = new Map<string, Duplicate[]>();
+  for (const d of plan.drops) drops.set(`${d.cameraId}|${d.keptCameraId}`, [...(drops.get(`${d.cameraId}|${d.keptCameraId}`) ?? []), d]);
+  for (const group of drops.values()) {
+    const { cameraId: from, keptCameraId: kept } = group[0];
+    const names = list(group.map((d) => clipName(from, d.clipId)));
+    out.push(issue({
+      severity: 'info',
+      cameraId: from,
+      title: from === kept
+        ? `«${nameOf(from)}»: ${names} — одна и та же запись лежала в двух папках`
+        : `«${nameOf(from)}»: ${names} — копия клипа с дорожки «${nameOf(kept)}»`,
+      details: from === kept
+        ? 'На таймлинии оставлена одна копия. Файлы на диске остались.'
+        : `Такой же файл уже есть на дорожке «${nameOf(kept)}», там он и стоит — второй экземпляр с дорожки «${nameOf(from)}» убран. Файл на диске остался.`,
+      actions: [],
     }));
   }
   return out;

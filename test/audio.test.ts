@@ -4,7 +4,7 @@ import { combine, correlate, ENV_RATE, findInside, peakDb, pickWideShift, refine
 import type { AudioAnchor, AudioFetch } from '../src/core/audioSync.ts';
 import { bandFeatures, FEAT_SR, FINE_SR, gccPhat, pickChannel } from '../src/core/audioFeatures.ts';
 import type { ClipMeta, Placement } from '../src/core/types.ts';
-import { runSync } from '../src/core/sync.ts';
+import { applyRelocation, planRelocation, relocationIssues, runSync } from '../src/core/sync.ts';
 import { camera, clip, T16 } from './fixtures.ts';
 import { seekArgs } from '../src/main/audio.ts';
 
@@ -433,9 +433,13 @@ function lostClipScene(withXml: boolean) {
   return { truth, cams: [camera('A', [...a, lost]), camera('B', b)], a, b, lost };
 }
 
-for (const withXml of [false, true]) {
-  test(`Клип другой камеры в чужой папке (${withXml ? 'вместе с XML' : 'копия без XML'}) не сбивает синхронизацию`, async () => {
-    const { truth, cams, a, b, lost } = lostClipScene(withXml);
+for (const withXml of [false, true]) for (const relocate of [false, true]) {
+  const how = relocate ? ', перенос по дорожкам, как в программе' : '';
+  test(`Клип другой камеры в чужой папке (${withXml ? 'вместе с XML' : 'копия без XML'}${how}) не сбивает синхронизацию`, async () => {
+    const scene = lostClipScene(withXml);
+    const { truth, a, b, lost } = scene;
+    const plan = planRelocation(scene.cams);
+    const cams = relocate ? applyRelocation(scene.cams, plan) : scene.cams;
     const res = await refineByAudio(cams, runSync(cams), fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true });
     const final = runSync(cams, res.corrections);
     const at = (id: string) => final.placements.find((p) => p.clipId === id)?.start;
@@ -446,7 +450,9 @@ for (const withXml of [false, true]) {
       assert.ok(Math.abs(err) < 0.001, `${c.name}: ошибка ${err.toFixed(3)} с`);
     }
     if (!withXml) assert.equal(at(lost.id), undefined); // копия на таймлинию не ставится
-    assert.ok(final.issues.some((i) => (withXml ? /снят камерой «B»/ : /копия клипа с дорожки «B»/).test(i.title)), final.issues.map((i) => i.title).join('; '));
+    if (withXml) assert.equal(final.placements.find((p) => p.clipId === lost.id)!.cameraId, relocate ? 'B' : 'A');
+    const issues = relocate ? relocationIssues(scene.cams, plan) : final.issues;
+    assert.ok(issues.some((i) => (withXml ? (relocate ? /Перенесён на дорожку «B»/ : /снят камерой «B»/) : /копия клипа с дорожки «B»/).test(i.title)), issues.map((i) => i.title).join('; '));
     assert.ok(!final.issues.some((i) => /сбивался/.test(i.title)));
   });
 }

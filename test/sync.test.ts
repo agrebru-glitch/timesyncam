@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findDuplicates, findStrays, pilePlacements, runSync } from '../src/core/sync.ts';
+import { applyRelocation, findDuplicates, findStrays, pilePlacements, planRelocation, relocateFrames, relocationIssues, runSync } from '../src/core/sync.ts';
 import { buildFcp7Xml, defaultTimelineRate } from '../src/core/fcp7.ts';
 import { camera, clip, T16 } from './fixtures.ts';
 
@@ -211,4 +211,93 @@ test('Чужой клип: снят камерой другой дорожки �
   assert.equal(r.cameras[0].timecodeJumps, 0);
   assert.ok(r.issues.some((i) => /снят камерой «B»/.test(i.title)));
   assert.ok(!r.issues.some((i) => /клипы с разных камер/.test(i.title)));
+});
+
+test('Одноимённые записи разных камер — не копии, даже если размер совпал до байта', () => {
+  const named = (over: Parameters<typeof clip>[0]) => ({ ...clip(over), name: 'C0003.MP4' });
+  const a = named({ start: T16 + 100, tcSeconds: 1000, camera: { make: 'Sony', model: 'Sony A7 IV', serial: '111' } });
+  const otherTc = named({ start: T16 + 100, tcSeconds: 5000, camera: { make: 'Sony', model: 'Sony A7 IV', serial: '111' } });
+  const otherSerial = named({ start: T16 + 100, tcSeconds: 1000, camera: { make: 'Sony', model: 'Sony A7 IV', serial: '222' } });
+  const otherLength = named({ start: T16 + 100, tcSeconds: 1000, durationSec: 12, frames: 300 });
+  const otherFormat = named({ start: T16 + 100, tcSeconds: 1000, rate: { num: 50, den: 1 }, frames: 500 });
+  const cams = [camera('A', [a]), camera('B', [otherTc]), camera('C', [otherSerial]), camera('D', [otherLength]), camera('E', [otherFormat])];
+  assert.equal(findDuplicates(cams).size, 0);
+  assert.deepEqual(planRelocation(cams), { moves: [], drops: [] });
+  // Та же запись: у копии без XML длина из MP4 на кадр короче, серийного номера нет — это всё равно копия.
+  const copy = { ...a, id: 'copy', path: 'Y:/cam2/C0003.MP4', durationSec: 9.96, frames: 249, camera: { make: 'Sony', model: 'Sony A7 IV' } };
+  assert.deepEqual([...findDuplicates([camera('A', [a]), camera('B', [copy])]).keys()], ['B|copy']);
+});
+
+test('Перенос по дорожкам: клип другой камеры переезжает на её дорожку, копия уходит к оригиналу', () => {
+  const a = freeRunClips([T16 + 10, T16 + 100, T16 + 200]);
+  const b = freeRunClips([T16 + 20, T16 + 300], 1000);
+  for (const c of b) c.camera = { make: 'Sony', model: 'Sony A7 III' };
+  const stray = freeRunClips([T16 + 150], 1000)[0];
+  stray.camera = { make: 'Sony', model: 'Sony A7 III' };
+  stray.name = 'C0000.MP4';
+  const copy = { ...b[1], id: 'copy', path: 'X:/cam1/' + b[1].name };
+  copy.clock = { ...copy.clock!, source: 'container' };
+  copy.tc = { ...copy.tc!, source: 'container' };
+  const cams = [camera('A', [...a, stray, copy]), camera('B', b, { manualShiftSec: 7 })];
+  const plan = planRelocation(cams);
+  assert.deepEqual(plan.moves.map((m) => `${m.cameraId}:${m.clipId}→${m.ownerId}`), [`A:${stray.id}→B`]);
+  assert.deepEqual(plan.drops.map((d) => `${d.cameraId}:${d.clipId}→${d.keptCameraId}`), ['A:copy→B']);
+  const moved = applyRelocation(cams, plan);
+  assert.deepEqual(moved[0].clips.map((c) => c.id), a.map((c) => c.id));
+  assert.deepEqual(moved[1].clips.map((c) => c.id), [...b.map((c) => c.id), stray.id]);
+  assert.equal(moved[1].manualShiftSec, 7);
+  assert.deepEqual(planRelocation(moved), { moves: [], drops: [] }); // второй раз переносить нечего
+  // Папку A добавили ещё раз — файл снова на её дорожке: он убирается оттуда, на дорожке B остаётся как был.
+  const again = moved.map((c) => (c.id === 'A' ? { ...c, clips: [...c.clips, stray] } : c));
+  const replan = planRelocation(again);
+  assert.deepEqual(replan.moves, []);
+  assert.deepEqual(replan.drops.map((d) => `${d.cameraId}:${d.clipId}→${d.keptCameraId}:${d.keptClipId}`), [`A:${stray.id}→B:${stray.id}`]);
+  assert.deepEqual(applyRelocation(again, replan).map((c) => c.clips.map((x) => x.id)), moved.map((c) => c.clips.map((x) => x.id)));
+
+  const issues = relocationIssues(cams, plan);
+  assert.ok(issues.some((i) => i.cameraId === 'B' && /Перенесён на дорожку «B»: C0000\.MP4/.test(i.title) && /в папке «A»/.test(i.details!)));
+  assert.ok(issues.some((i) => i.cameraId === 'A' && /копия клипа с дорожки «B»/.test(i.title)));
+
+  const r = runSync(moved);
+  const p = r.placements.find((x) => x.clipId === stray.id)!;
+  assert.equal(p.cameraId, 'B');
+  assert.equal(p.timeCameraId, undefined);
+  const bFirst = r.placements.find((x) => x.clipId === b[0].id)!;
+  assert.ok(Math.abs((p.start - bFirst.start) - 130) < 0.001, `пауза ${p.start - bFirst.start}`);
+  assert.ok(!r.placements.some((x) => x.clipId === 'copy'));
+  assert.ok(!r.issues.some((i) => /снят камерой|копия клипа/.test(i.title)));
+  assert.equal(r.cameras.find((c) => c.cameraId === 'A')!.timecodeJumps, 0);
+
+  // Контрольный кадр едет вместе с клипом, а с убранной копии — на оставшийся экземпляр.
+  const frames = relocateFrames({
+    [stray.id]: { cameraId: 'A', clipId: stray.id, localSec: 2 },
+    copy: { cameraId: 'A', clipId: 'copy', localSec: 3 },
+    [a[0].id]: { cameraId: 'A', clipId: a[0].id, localSec: 1 },
+  }, plan);
+  assert.deepEqual(frames, {
+    [stray.id]: { cameraId: 'B', clipId: stray.id, localSec: 2 },
+    [b[1].id]: { cameraId: 'B', clipId: b[1].id, localSec: 3 },
+    [a[0].id]: { cameraId: 'A', clipId: a[0].id, localSec: 1 },
+  });
+});
+
+test('Клип своей камеры без XML не уезжает на дорожку другой камеры той же модели', () => {
+  const sony = (serial?: string) => ({ make: 'Sony', model: 'Sony A7 IV', ...(serial ? { serial } : {}) });
+  const a = freeRunClips([T16 + 10, T16 + 100, T16 + 200]);
+  for (const c of a) c.camera = sony('111');
+  const lost = freeRunClips([T16 + 300])[0];
+  lost.camera = sony(); // XML потерялся: модель из MP4, серийного номера нет
+  const b = freeRunClips([T16 + 20, T16 + 300], 1000);
+  for (const c of b) c.camera = sony(); // вторая A7 IV, скинутая без XML
+  const cams = [camera('A', [...a, lost]), camera('B', b)];
+  assert.equal(findStrays(cams, findDuplicates(cams)).size, 0);
+  // Клип с серийным номером другой A7 IV — переезжает, если у дорожки номер свой.
+  const strayB = freeRunClips([T16 + 400], 1000)[0];
+  strayB.camera = sony('222');
+  const b2 = freeRunClips([T16 + 30, T16 + 500], 1000);
+  for (const c of b2) c.camera = sony('222');
+  assert.deepEqual(planRelocation([camera('A', [...a, strayB]), camera('B', b2)]).moves.map((m) => m.ownerId), ['B']);
+  // А у дорожки A номеров нет вовсе — её клипы могут быть той же камерой 222: не угадываем.
+  const plainA = b.map((c) => ({ ...c, id: c.id + 'a', path: c.path + 'a' }));
+  assert.equal(planRelocation([camera('A', [...plainA, strayB]), camera('B', b2)]).moves.length, 0);
 });

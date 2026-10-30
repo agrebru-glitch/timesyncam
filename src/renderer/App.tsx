@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import type { Dispatch } from 'react';
 import type { Issue, Placement } from '../core/types.ts';
-import { pilePlacements, runSync } from '../core/sync.ts';
+import { applyRelocation, pilePlacements, planRelocation, relocateFrames, relocationIssues, runSync } from '../core/sync.ts';
 import { AUDIO_SEARCH_SEC, heardCameras, refineByAudio } from '../core/audioSync.ts';
 import { controlCorrections } from '../core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
@@ -176,7 +176,12 @@ export function App() {
         // запоминать режим необязательно
       }
     }
-    const cameras = s.cameras;
+    // Клипы — на дорожки своих камер: файл другой камеры переезжает к ней, копия файла с другой дорожки убирается.
+    const plan = planRelocation(s.cameras);
+    const relocate = plan.moves.length > 0 || plan.drops.length > 0;
+    if (relocate) dispatch({ type: 'relocate', plan, issues: relocationIssues(s.cameras, plan) });
+    const cameras = relocate ? applyRelocation(s.cameras, plan) : s.cameras;
+    const controlFrames = relocate ? relocateFrames(s.controlFrames, plan) : s.controlFrames;
     const version = s.version;
     const coarse = runSync(cameras);
     dispatch({ type: 'synced', result: coarse, fit: true });
@@ -186,7 +191,7 @@ export function App() {
     let pre: Record<string, number> = {};
     let fixed = new Set<string>();
     let controlClips = new Set<string>();
-    const frames = Object.values(s.controlFrames).filter((f) => cameras.some((c) => c.id === f.cameraId && c.clips.some((x) => x.id === f.clipId)));
+    const frames = Object.values(controlFrames).filter((f) => cameras.some((c) => c.id === f.cameraId && c.clips.some((x) => x.id === f.clipId)));
     if (chosen === 'control' && frames.length && !noFfmpeg) {
       dispatch({ type: 'qr-start', total: frames.length });
       const found: { frame: ControlFrame; result: QrResult }[] = [];
