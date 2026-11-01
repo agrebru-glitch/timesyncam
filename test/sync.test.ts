@@ -129,6 +129,7 @@ test('Экспорт XML: дорожка на камеру, таймлиния �
   const clips = freeRunClips([T16 + 181.08, T16 + 213.84]);
   clips[0].path = 'D:\\Съёмка 27_10\\C9151.MP4';
   clips[0].name = 'C9151.MP4';
+  clips[1].path = 'D:\\Съёмка 27_10\\C9152.MP4';
   const cam = camera('Камера 1', clips);
   const r = runSync([cam]);
   const rate = defaultTimelineRate([cam]);
@@ -137,12 +138,17 @@ test('Экспорт XML: дорожка на камеру, таймлиния �
   assert.match(xml, /<sequence[\s\S]*?<timecode>[\s\S]*?<string>00:00:00:00<\/string><frame>0<\/frame>/);
   assert.match(xml, /file:\/\/localhost\/D:\/%D0%A1%D1%8A%D1%91%D0%BC%D0%BA%D0%B0%2027_10\/C9151\.MP4/);
   assert.match(xml, /Тест &amp; проверка/);
-  assert.equal((xml.match(/<track[ >]/g) ?? []).length, 3); // видео + 2 канала звука
+  const seq = xml.slice(xml.indexOf('<sequence'));
+  assert.equal((seq.match(/<track[ >]/g) ?? []).length, 3); // видео + 2 канала звука
   // Два канала камеры — стереодорожка для Premiere, а не два моно.
-  assert.equal((xml.match(/premiereTrackType="Stereo"/g) ?? []).length, 2);
-  assert.match(xml, /currentExplodedTrackIndex="0"[^>]*totalExplodedTrackCount="2"/);
-  assert.match(xml, /premiereChannelType="stereo"/);
-  const starts = [...xml.matchAll(/<start>(\d+)<\/start>/g)].map((m) => Number(m[1]));
+  assert.equal((seq.match(/premiereTrackType="Stereo"/g) ?? []).length, 2);
+  assert.match(seq, /currentExplodedTrackIndex="0"[^>]*totalExplodedTrackCount="2"/);
+  assert.match(seq, /premiereChannelType="stereo"/);
+  // Корзина дорожки с мастер-клипами, как у PluralEyes; каждый файл описан один раз, секвенция ссылается на него.
+  assert.match(xml, /<project>\s*<name>Тест &amp; проверка<\/name>\s*<children>\s*<bin><name>Камера 1<\/name><children><clip id="masterclip-1"/);
+  assert.equal((xml.match(/<pathurl>/g) ?? []).length, 2);
+  assert.match(seq, /<masterclipid>masterclip-1<\/masterclipid>/);
+  const starts = [...seq.matchAll(/<start>(\d+)<\/start>/g)].map((m) => Number(m[1]));
   assert.equal(starts[0], 0);
   assert.equal(starts[1], Math.round((r.placements[1].start - r.placements[0].start) * 25));
 });
@@ -427,5 +433,16 @@ test('Камеры с датами копирования не перевеши�
   }
   // До сверки по звуку всё лежит у начала съёмки, а не через двое суток.
   assert.ok(s.end - s.start < 3 * 3600);
+});
+
+test('Корзины проекта — как папки: клипы дорожки из разных подпапок лежат во вложенных корзинах', () => {
+  // Три камеры в одной папке карты, как «Cam 33» у тестера: подпапки CLIP1 и CLIP2.
+  const clips = freeRunClips([T16, T16 + 600, T16 + 1200]);
+  clips[0].path = 'G:/Съёмка/CLIP1/C9167.MP4';
+  clips[1].path = 'G:/Съёмка/CLIP1/C9168.MP4';
+  clips[2].path = 'G:/Съёмка/CLIP2/C8908.MP4';
+  const cam = camera('Cam 33', clips);
+  const xml = buildFcp7Xml([cam], runSync([cam]), { name: 'Концерт', rate: { num: 25, den: 1 }, width: 3840, height: 2160 });
+  assert.match(xml, /<bin><name>Cam 33<\/name><children><bin><name>CLIP1<\/name><children><clip id="masterclip-1"[\s\S]*?<clip id="masterclip-2"[\s\S]*?<\/children><\/bin><bin><name>CLIP2<\/name><children><clip id="masterclip-3"/);
 });
 

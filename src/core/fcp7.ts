@@ -169,6 +169,40 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
       + `<media>${video}${audio}</media></file>`;
   };
 
+  // Корзины проекта — как папки на диске, по образцу PluralEyes: у каждой дорожки своя корзина с её клипами,
+  // клипы из разных подпапок — во вложенных корзинах. Клип описан один раз, мастер-клипом в своей корзине,
+  // секвенция ссылается на него — так в монтажке всё лежит на своих местах.
+  const masterIds = new Map<string, string>();
+  const masterXml = (clip: ClipMeta): string => {
+    const id = `masterclip-${masterIds.size + 1}`;
+    masterIds.set(clip.id, id);
+    const r = clip.hasVideo ? clipRate(clip, opts.rate) : opts.rate;
+    const dur = Math.max(1, Math.round(clip.durationSec * rateValue(r)));
+    const item = (suffix: string, extra: string) => `<clipitem id="${id}-${suffix}"><masterclipid>${id}</masterclipid><name>${esc(clip.name)}</name><duration>${dur}</duration>${rateXml(r)}<in>0</in><out>${dur}</out>${fileXml(clip)}${extra}</clipitem>`;
+    const video = clip.hasVideo ? `<video><track>${item('v', '')}</track></video>` : '';
+    const channels = Math.min(8, clip.audioChannels);
+    const audio = channels > 0
+      ? `<audio>${Array.from({ length: channels }, (_, i) => `<track>${item(`a${i + 1}`, `<sourcetrack><mediatype>audio</mediatype><trackindex>${i + 1}</trackindex></sourcetrack>`)}</track>`).join('')}</audio>`
+      : '';
+    return `<clip id="${id}" explodedTracks="TRUE"><name>${esc(clip.name)}</name><duration>${dur}</duration>${rateXml(r)}<masterclipid>${id}</masterclipid><ismasterclip>TRUE</ismasterclip><media>${video}${audio}</media></clip>`;
+  };
+  // Корзины идут раньше секвенции: файлы описаны в мастер-клипах, секвенция ссылается на них по id.
+  const folderOf = (path: string) => path.replace(/\\/g, '/').replace(/\/[^/]*$/, '');
+  const binsXml = cameras.map((cam) => {
+    const placed = cam.clips.filter((c) => result.placements.some((p) => p.clipId === c.id && p.cameraId === cam.id));
+    if (!placed.length) return '';
+    // Все клипы дорожки из одной папки — лежат прямо в её корзине; из разных — во вложенных, по имени своей папки.
+    const folders = placed.map((c) => folderOf(c.path));
+    const single = folders.every((f) => f === folders[0]);
+    const kids = new Map<string, ClipMeta[]>();
+    if (!single) placed.forEach((c, i) => {
+      const name = folders[i].split('/').pop() || folders[i];
+      kids.set(name, [...(kids.get(name) ?? []), c]);
+    });
+    const inner = single ? placed.map(masterXml).join('') : [...kids].map(([name, list]) => `<bin><name>${esc(name)}</name><children>${list.map(masterXml).join('')}</children></bin>`).join('');
+    return `<bin><name>${esc(cam.name)}</name><children>${inner}</children></bin>`;
+  }).join('\n');
+
   const clipItemXml = (it: TrackItem, mediatype: 'video' | 'audio', channel = 1, stereo = false): string => {
     const start = toFrame(it.placement.start);
     const dur = Math.max(1, Math.round(it.clip.durationSec * seqFps));
@@ -177,7 +211,8 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
       .join('');
     const source = mediatype === 'audio' ? `<sourcetrack><mediatype>audio</mediatype><trackindex>${channel}</trackindex></sourcetrack>` : '';
     const channelType = stereo && it.clip.audioChannels === 2 ? ' premiereChannelType="stereo"' : '';
-    return `<clipitem id="${it.id}"${channelType}><name>${esc(it.clip.name)}</name><enabled>TRUE</enabled><duration>${dur}</duration>${rateXml(opts.rate)}`
+    const master = masterIds.get(it.clip.id);
+    return `<clipitem id="${it.id}"${channelType}>${master ? `<masterclipid>${master}</masterclipid>` : ''}<name>${esc(it.clip.name)}</name><enabled>TRUE</enabled><duration>${dur}</duration>${rateXml(opts.rate)}`
       + `<start>${start}</start><end>${start + dur}</end><in>0</in><out>${dur}</out>${fileXml(it.clip)}${source}${links}</clipitem>`;
   };
 
@@ -203,6 +238,10 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>
 <xmeml version="4">
+<project>
+<name>${esc(opts.name)}</name>
+<children>
+${binsXml}
 <sequence id="sequence-1">
 <name>${esc(opts.name)}</name>
 <duration>${endFrame}</duration>
@@ -219,6 +258,8 @@ ${aXml}
 </audio>
 </media>
 </sequence>
+</children>
+</project>
 </xmeml>
 `;
 }

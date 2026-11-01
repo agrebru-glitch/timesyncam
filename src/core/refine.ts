@@ -29,13 +29,12 @@ import { formatDurationHuman, pluralRu } from './format.ts';
 
 const PASSES = [
   // Первый проход ловит большие сбои (скачок тайм-кода — до секунды, ложное «встык» — до 2,5 с), второй — точнее.
-  { pool: 4, search: 3, win: 30, maxWindows: 6, sigma: 0.02, consistency: 0.12 },
-  { pool: 1, search: 0.25, win: 20, maxWindows: 10, sigma: 0.006, consistency: 0.03 },
+  // В первом окна принимаются чуть легче: от ложного пика защищает согласие окон пары между собой.
+  { pool: 2, search: 3, win: 30, maxWindows: 6, sigma: 0.015, consistency: 0.12, score: 0.08, ratio: 1.25 },
+  { pool: 1, search: 0.25, win: 20, maxWindows: 10, sigma: 0.006, consistency: 0.03, score: 0.1, ratio: 1.35 },
 ];
 const STEP = 30; // секунд между окнами сверки
 const MIN_OVERLAP = 12; // секунд общего звука, меньше — пару не сравниваем
-const CLEAR_SCORE = 0.1;
-const CLEAR_RATIO = 1.35;
 const NEIGHBOUR = 0.15; // пик в пределах 150 мс от лучшего не считается соперником
 const FINE_LEN = 8; // секунд волны в точной сверке: в гулком зале нужно больше звука
 const FINE_RANGE = 0.02; // точная сверка уточняет грубую в пределах ±20 мс: шире — может перескочить на соседнее эхо зала
@@ -470,7 +469,8 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
         const ref = sliceFeatures(fd, j0, Math.round(W * R) + 2 * M);
         if (!hasAttacks(target) || !hasAttacks(ref)) continue;
         const m = narrowCorr(target, ref, M, M, R);
-        if (!m || m.score < CLEAR_SCORE || m.ratio < CLEAR_RATIO) continue;
+        // Пик у края окна поиска — не замер: настоящий может быть за краем, а этот — его склон.
+        if (!m || m.score < pass.score || m.ratio < pass.ratio || Math.abs(m.lag) > M - 1.5) continue;
         const ud = (j0 + M + m.lag) / R;
         got.push({ row: measureRow(c, d, i0 / R, ud, m.echo >= ECHO_COARSE ? 4 * pass.sigma : pass.sigma, 'meas', m.score), T, dev: ud - q / R });
       }
