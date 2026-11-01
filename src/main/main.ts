@@ -71,6 +71,8 @@ function createWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // Для снимков проверки при выключенном или заблокированном экране: окно рисуется в памяти.
+      offscreen: process.env.SYNC_OFFSCREEN === '1',
     },
   });
 

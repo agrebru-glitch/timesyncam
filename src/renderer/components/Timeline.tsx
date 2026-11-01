@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Camera, Placement } from '../../core/types.ts';
-import { rateValue } from '../../core/timecode.ts';
 import { formatClockTime, formatDate, pluralRu } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
@@ -14,6 +13,7 @@ import { WAVE_RATE } from '../../core/audioSync.ts';
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
 const ROW_H = 52;
+const ADD_H = 44; // строка «+ Камера + Звук» — всегда внизу колонки дорожек, не уезжает при прокрутке
 // Шаг крупных делений линейки: от секунды до лет — линейка не захлёбывается метками при любом масштабе.
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 2 * 86400, 7 * 86400, 30 * 86400, 91 * 86400, 365 * 86400, 5 * 365 * 86400, 25 * 365 * 86400];
 const WAVES_KEY = 'timesyncam.showWaves';
@@ -41,11 +41,10 @@ function trackInfo(cam: Camera): string {
     for (const x of xs) m.set(x, (m.get(x) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
   };
+  // Частота кадров меняется по ходу съёмки — о камере она ничего не говорит; у звука — частота дискретизации.
   const parts = [pluralRu(cam.clips.length, 'клип', 'клипа', 'клипов')];
-  const fps = most(cam.clips.filter((c) => c.hasVideo && c.rate).map((c) => Math.round(rateValue(c.rate!) * 100) / 100));
   const sr = most(cam.clips.filter((c) => c.audioSampleRate).map((c) => c.audioSampleRate!));
-  if (fps) parts.push(`${String(fps).replace('.', ',')} к/с`);
-  else if (sr) parts.push(`${String(sr / 1000).replace('.', ',')} кГц`);
+  if (sr && cam.clips.every((c) => !c.hasVideo)) parts.push(`${String(sr / 1000).replace('.', ',')} кГц`);
   const ch = most(cam.clips.map((c) => c.audioChannels)) ?? 0;
   parts.push(ch === 0 ? 'без звука' : ch === 1 ? 'моно' : ch === 2 ? 'стерео' : `${ch} кан.`);
   return parts.join(' · ');
@@ -58,6 +57,9 @@ export function Timeline() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 800, h: 240 });
+  // Дорожек больше, чем помещается, — их можно прокручивать: колёсиком над названиями или Alt + колёсико.
+  const [scrollY, setScrollY] = useState(0);
+  const headsRef = useRef<HTMLDivElement>(null);
   const [dropRow, setDropRow] = useState<number | 'new' | null>(null);
   const [showWaves, setShowWaves] = useState(() => {
     try {
@@ -80,15 +82,30 @@ export function Timeline() {
     return m;
   }, [state.cameras, state.sync, synced]);
 
+  const rowsHeight = state.cameras.reduce((s, c) => s + ROW_H * (lanesByCam.get(c.id) ?? 1), 0);
+  const viewH = Math.max(0, size.h - RULER_H - ADD_H);
+  const maxScroll = Math.max(0, rowsHeight - viewH);
+  const sy = Math.min(scrollY, maxScroll);
   const rows = useMemo(() => {
-    let y = RULER_H;
+    let y = RULER_H - sy;
     return state.cameras.map((c, i) => {
       const h = ROW_H * (lanesByCam.get(c.id) ?? 1);
       const r = { cam: c, index: i, y, h };
       y += h;
       return r;
     });
-  }, [state.cameras, lanesByCam]);
+  }, [state.cameras, lanesByCam, sy]);
+  // Колонка названий прокручивается вместе с дорожками.
+  useEffect(() => {
+    const el = headsRef.current;
+    if (el && Math.abs(el.scrollTop - sy) > 0.5) el.scrollTop = sy;
+  }, [sy]);
+  // Добавили дорожку — показываем её.
+  const camCount = useRef(state.cameras.length);
+  useEffect(() => {
+    if (state.cameras.length > camCount.current) setScrollY(Infinity);
+    camCount.current = state.cameras.length;
+  }, [state.cameras.length]);
 
   const extent = useMemo(() => {
     if (!placements.length) return null;
@@ -152,13 +169,21 @@ export function Timeline() {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, size.w, size.h);
 
-    // Полосы дорожек.
+    // Полосы дорожек — только в видимой части, между линейкой и строкой добавления.
+    const clipRows = () => {
+      g.save();
+      g.beginPath();
+      g.rect(0, RULER_H, size.w, viewH);
+      g.clip();
+    };
+    clipRows();
     rows.forEach((r) => {
       g.fillStyle = r.index % 2 ? '#1d1e22' : '#1a1b1f';
       g.fillRect(0, r.y, size.w, r.h);
       g.fillStyle = 'rgba(255,255,255,0.06)';
       g.fillRect(0, r.y + r.h - 1, size.w, 1);
     });
+    g.restore();
     g.fillStyle = '#16171a';
     g.fillRect(0, 0, size.w, RULER_H);
     g.fillStyle = 'rgba(255,255,255,0.08)';
@@ -195,6 +220,7 @@ export function Timeline() {
     }
 
     // Клипы.
+    clipRows();
     const byCam = new Map<string, Placement[]>();
     for (const p of placements) {
       if (p.end < t0 || p.start > t1) continue;
@@ -339,6 +365,8 @@ export function Timeline() {
       g.restore();
     }
 
+    g.restore();
+
     // За началом и концом съёмки — затемнение и граница.
     if (extent) {
       const xs = Math.round(x(extent.start));
@@ -365,7 +393,7 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, speedClips, tz, showWaves, waveVersion]);
+  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, speedClips, tz, showWaves, waveVersion]);
 
   // Мышь: щелчок ставит курсор и выделяет клип, по линейке можно водить.
   const timeAt = (clientX: number) => {
@@ -483,6 +511,11 @@ export function Timeline() {
     const el = canvasRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      if (e.altKey) {
+        e.preventDefault();
+        setScrollY((v) => Math.max(0, Math.min(maxScroll, Math.min(v, maxScroll) + e.deltaY)));
+        return;
+      }
       if (!vp) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
@@ -566,6 +599,7 @@ export function Timeline() {
             Волна
           </button>
         </div>
+        <div className="tl-rows" ref={headsRef} style={{ height: viewH }} onScroll={(e) => setScrollY(e.currentTarget.scrollTop)}>
         {rows.map((r) => (
           <div
             key={r.cam.id}
@@ -596,6 +630,7 @@ export function Timeline() {
             </span>
           </div>
         ))}
+        </div>
         <div
           className={`tl-add ${dropRow === 'new' ? 'drop' : ''}`}
           onDragOver={(e) => { e.stopPropagation(); onDragOver(e, 'new'); }}

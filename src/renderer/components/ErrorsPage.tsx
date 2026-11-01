@@ -71,8 +71,60 @@ export function ErrorsPage() {
     }
   };
 
+  // Замечания по важности: сначала то, что мешает точной стыковке, потом что стоит проверить, в конце — для
+  // сведения (свёрнуто). Внутри группы — по камерам в порядке дорожек.
+  const order = new Map(state.cameras.map((c, i) => [c.id, i]));
+  const byCamera = (list: typeof issues) => [...list].sort((a, b) => (order.get(a.cameraId ?? '') ?? -1) - (order.get(b.cameraId ?? '') ?? -1));
+  const groups = [
+    { key: 'error', title: 'Мешает точной стыковке', hint: 'Исправьте до экспорта — иначе часть клипов встанет не на своё место.', list: byCamera(issues.filter((i) => i.severity === 'error')), open: true },
+    { key: 'warning', title: 'Стоит проверить', hint: 'Программа решила сама, но здесь лучше взглянуть глазами — обычно хватает минуты.', list: byCamera(issues.filter((i) => i.severity === 'warning')), open: true },
+    { key: 'info', title: 'Для сведения', hint: 'Что программа заметила и учла сама. Делать ничего не нужно.', list: byCamera(issues.filter((i) => i.severity === 'info')), open: false },
+  ] as const;
+  const counts = Object.fromEntries(groups.map((g) => [g.key, g.list.length])) as Record<(typeof groups)[number]['key'], number>;
+  const summary = !hasClips
+    ? 'Добавьте папки камер на вкладке «Синхронизация» — здесь появится всё, что стоит знать о стыковке.'
+    : !synced
+      ? 'Часть проверок появится после синхронизации.'
+      : counts.error
+        ? `Есть что исправить: ${counts.error}. ${counts.warning ? `Ещё стоит проверить: ${counts.warning}.` : ''}`
+        : counts.warning
+          ? `Синхронизация готова. Стоит проверить: ${counts.warning}${counts.info ? `, для сведения: ${counts.info}` : ''}.`
+          : 'Синхронизация готова — проверять ничего не нужно.';
+
+  const issueRow = (i: (typeof issues)[number]) => (
+    <div className="issue" key={i.id}>
+      {i.severity === 'error' ? <IconError className="sev error" /> : i.severity === 'warning' ? <IconAlert className="sev warning" /> : <IconInfo className="sev info" />}
+      <span className="cam">{camName(i.cameraId)}</span>
+      <div>
+        <div className="title">{i.title}</div>
+        {i.details && <div className="details">{i.details}</div>}
+      </div>
+      <div className="acts">
+        {i.actions.map((a, k) => (
+          <button key={k} className="btn small" onClick={() => run(a)}>{label(a)}</button>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div className="page">
+      <h1>Замечания</h1>
+      <p className="lead">{summary}</p>
+      {issues.length === 0 ? (
+        <div className="empty-state">{hasClips && synced ? 'Всё в порядке: камеры синхронизированы без замечаний.' : 'Пока замечаний нет.'}</div>
+      ) : (
+        groups.filter((g) => g.list.length > 0).map((g) => (
+          <details className={`issue-group ${g.key}`} key={g.key} open={g.open}>
+            <summary>
+              <span className="group-title">{g.title}</span>
+              <span className="group-count">{g.list.length}</span>
+              <span className="group-hint">{g.hint}</span>
+            </summary>
+            <div className="issue-list">{g.list.map(issueRow)}</div>
+          </details>
+        ))
+      )}
       <div className="report-box">
         <div>
           <b>Синхронизация ошиблась?</b>
@@ -82,35 +134,6 @@ export function ErrorsPage() {
           {collecting ? `Собираю отчёт ${collecting.done} из ${collecting.total}…` : 'Сохранить расширенный отчёт'}
         </button>
       </div>
-      <h1>Ошибки и предупреждения</h1>
-      <p className="lead">
-        {!hasClips
-          ? 'Добавьте папки камер на вкладке «Синхронизация» — здесь появится всё, что мешает точной стыковке.'
-          : !synced
-            ? 'Часть проверок появится после синхронизации.'
-            : 'Красное мешает экспорту без потерь, жёлтое стоит проверить, серое — для сведения.'}
-      </p>
-      {issues.length === 0 ? (
-        <div className="empty-state">{hasClips && synced ? 'Всё в порядке: камеры синхронизированы без замечаний.' : 'Пока замечаний нет.'}</div>
-      ) : (
-        <div className="issue-list">
-          {issues.map((i) => (
-            <div className="issue" key={i.id}>
-              {i.severity === 'error' ? <IconError className="sev error" /> : i.severity === 'warning' ? <IconAlert className="sev warning" /> : <IconInfo className="sev info" />}
-              <span className="cam">{camName(i.cameraId)}</span>
-              <div>
-                <div className="title">{i.title}</div>
-                {i.details && <div className="details">{i.details}</div>}
-              </div>
-              <div className="acts">
-                {i.actions.map((a, k) => (
-                  <button key={k} className="btn small" onClick={() => run(a)}>{label(a)}</button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

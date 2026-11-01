@@ -420,8 +420,9 @@ export function App() {
       : scanning && scanTotal ? scanDone / scanTotal : 0;
   const counts = { error: 0, warning: 0, info: 0 };
   for (const i of issues) counts[i.severity] += 1;
-  const badge = counts.error ? 'danger' : counts.warning ? 'warning' : 'info';
-  const badgeCount = counts.error + counts.warning || counts.info;
+  // На вкладке — только то, что стоит открыть: исправить (красное) или проверить (жёлтое). Сведения число не показывают.
+  const badge = counts.error ? 'danger' : 'warning';
+  const badgeCount = counts.error || counts.warning;
 
   const exportTitle = scanning
     ? 'Дождитесь, пока программа дочитает клипы'
@@ -442,7 +443,7 @@ export function App() {
           <nav className="tabs">
             <button className={`tab ${state.tab === 'sync' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'sync' })}>Синхронизация</button>
             <button className={`tab ${state.tab === 'errors' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'errors' })}>
-              Ошибки {badgeCount > 0 && <span className={`badge ${badge}`}>{badgeCount}</span>}
+              Замечания {badgeCount > 0 && <span className={`badge ${badge}`}>{badgeCount}</span>}
             </button>
             <button className={`tab ${state.tab === 'faq' ? 'on' : ''}`} onClick={() => dispatch({ type: 'tab', tab: 'faq' })}>Настройка камер</button>
             <button className="tab tab-qr" onClick={() => dispatch({ type: 'qr-screen', open: true })} title="QR-код с точным временем — снимите его каждой камерой 5–10 секунд">

@@ -3,11 +3,10 @@ import type { Camera, CameraSync, TimecodeTrust } from '../../core/types.ts';
 import type { State } from '../state.ts';
 import type { AudioCameraResult } from '../../core/audioSync.ts';
 import { checkLimit, formatSigned } from '../../core/audioSync.ts';
-import { formatClockTime, formatDate, formatDurationHuman, formatFps, formatShift, formatSize, parseShift, pluralRu, resolutionLabel } from '../../core/format.ts';
-import { rateValue } from '../../core/timecode.ts';
+import { formatClockTime, formatDate, formatDurationHuman, formatShift, formatSize, pluralRu } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
-import { IconFolder, IconPlus, IconX } from '../icons.tsx';
+import { IconCamera, IconFolder, IconHeadphones, IconPlus, IconX } from '../icons.tsx';
 
 function mostCommon(values: (string | undefined | null)[]): string | undefined {
   const m = new Map<string, number>();
@@ -70,12 +69,17 @@ function controlText(state: State, cam: Camera, synced: boolean): { title: strin
   };
 }
 
+// Точность по звуку — в миллисекундах: «±0,0 с» о ней ничего не скажет.
+function accuracyText(sec: number): string {
+  return `точность ±${sec < 1 ? `${Math.max(1, Math.round(sec * 1000))} мс` : formatDurationHuman(sec)}`;
+}
+
 function audioText(au: AudioCameraResult | undefined, cam: Camera, running: boolean): { title: string; sub?: string; tone?: 'warn' | 'ok' } | null {
   if (running) return { title: 'Сверяю…' };
   if (!au) return null;
   const clips = au.anchors.filter((a) => a.role !== 'weak' && a.role !== 'ignored').length;
   // Точность по звуку — без расстояния до сцены: звук идёт около 3 мс на метр, его по звуку не видно.
-  const acc = au.accuracySec != null ? ` · точность ±${au.accuracySec < 0.001 ? '1 мс' : formatDurationHuman(au.accuracySec)}` : '';
+  const acc = au.accuracySec != null ? ` · ${accuracyText(au.accuracySec)}` : '';
   switch (au.status) {
     case 'reference':
       return { title: 'Опорная для сверки', sub: 'По её звуку выравниваются остальные камеры' };
@@ -110,25 +114,21 @@ function audioText(au: AudioCameraResult | undefined, cam: Camera, running: bool
 function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const { state, dispatch, synced, issues, fps, addFolders } = useApp();
   const [editing, setEditing] = useState(false);
-  const [shiftText, setShiftText] = useState<string | null>(null);
   const [drop, setDrop] = useState(false);
+  // Карточка коротко: имя, что за запись и как она встала. Подробности и ручные настройки — по «Подробнее».
+  const [open, setOpen] = useState(false);
   const cs = state.sync?.cameras.find((c) => c.cameraId === cam.id);
   const tz = state.sync?.displayTzOffsetMin ?? -new Date().getTimezoneOffset();
 
   const info = useMemo(() => {
     const clips = cam.clips;
     const video = clips.filter((c) => c.hasVideo);
-    const fpsList = uniq(video.map((c) => (c.rate ? formatFps(rateValue(c.rate)) : null))).sort((a, b) => parseFloat(a) - parseFloat(b));
     return {
       model: mostCommon(clips.map((c) => c.camera.model)),
-      lens: mostCommon(clips.map((c) => c.camera.lens)),
-      gamma: uniq(clips.map((c) => c.camera.gamma)).join(', '),
       count: clips.length,
       audioOnly: clips.length > 0 && video.length === 0,
       duration: clips.reduce((s, c) => s + c.durationSec, 0),
       size: clips.reduce((s, c) => s + c.sizeBytes, 0),
-      res: uniq(video.map((c) => resolutionLabel(c.width, c.height))).join(', '),
-      fps: fpsList.join(', '),
       speedActive: video.filter((c) => c.captureFps !== null && !cam.excludedClipIds.includes(c.id)).length,
       excluded: cam.excludedClipIds.length,
       codec: uniq(clips.map((c) => c.codecLabel)).slice(0, 2).join(', '),
@@ -156,19 +156,18 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const at = synced ? audioText(au, cam, !!state.audioRun) : null;
   const qt = controlText(state, cam, synced);
   const isActive = state.activeCameraId === cam.id;
+  // Одна строка итога: экран синхронизации, иначе звук (с точностью), иначе откуда время. На сколько поправлена
+  // камера — в «Подробнее»: для монтажа важно, что она встала и насколько точно.
+  const accText = au?.accuracySec != null ? accuracyText(au.accuracySec) : undefined;
+  const placedBySound = au && (au.status === 'applied' || au.status === 'confirmed');
+  const brief = qt ?? (at ? { title: placedBySound && at.tone !== 'warn' ? 'Встала по звуку' : at.title, sub: accText, tone: at.tone } : synced ? { title: ts.title, sub: undefined, tone: undefined } : null);
+  const toneColor = (tone?: 'warn' | 'ok') => (tone === 'warn' ? 'var(--warning)' : tone === 'ok' ? 'var(--success)' : undefined);
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDrop(false);
     const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
     if (paths.length) void addFolders(cam.id, paths);
-  };
-
-  const commitShift = () => {
-    if (shiftText === null) return;
-    const v = parseShift(shiftText, fps);
-    if (v !== null) dispatch({ type: 'shift-camera', cameraId: cam.id, absoluteSec: v });
-    setShiftText(null);
   };
 
   if (cam.clips.length === 0 && !cam.scanning) {
@@ -227,25 +226,43 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
       )}
       {cam.clips.length > 0 && (
         <>
+          <div className="card-summary">
+            {info.audioOnly ? <IconHeadphones className="icon" /> : <IconCamera className="icon" />}
+            <span className="what">{[info.model, pluralRu(info.count, 'клип', 'клипа', 'клипов'), formatDurationHuman(info.duration)].filter(Boolean).join(' · ')}</span>
+          </div>
+          {brief && (
+            <div className="card-line" style={{ color: toneColor(brief.tone) }}>
+              {brief.title}{brief.sub && <span className="muted"> · {brief.sub}</span>}
+            </div>
+          )}
+          {info.speedActive > 0 && <div className="card-line" style={{ color: 'var(--danger)' }}>S&Q: {pluralRu(info.speedActive, 'клип', 'клипа', 'клипов')} — помечены красным</div>}
+          {cam.follower && (
+            <div className="card-line">
+              Ведомая — встаёт по звуку других и их не сдвигает{' '}
+              <button className="btn small ghost inline" onClick={(e) => { e.stopPropagation(); dispatch({ type: 'set-follower', cameraId: cam.id, on: false }); }}>Сделать ведущей</button>
+            </div>
+          )}
+          {info.excluded > 0 && (
+            <div className="card-line">
+              Убрано с таймлинии: {pluralRu(info.excluded, 'клип', 'клипа', 'клипов')}{' '}
+              <button className="btn small ghost inline" onClick={(e) => { e.stopPropagation(); dispatch({ type: 'restore-clips', cameraId: cam.id }); }}>Вернуть</button>
+            </div>
+          )}
+          {cam.manualShiftSec !== 0 && (
+            <div className="card-line">
+              Сдвинута вручную: {formatShift(cam.manualShiftSec, fps)}{' '}
+              <button className="btn small ghost inline" onClick={(e) => { e.stopPropagation(); dispatch({ type: 'shift-camera', cameraId: cam.id, absoluteSec: 0 }); }}>Сбросить</button>
+            </div>
+          )}
+          <button className="card-more" aria-expanded={open} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
+            {open ? 'Свернуть' : 'Подробнее'}
+          </button>
+          {open && (
+          <>
           <dl className="facts">
-            <dt>Камера</dt>
-            <dd>{info.model ?? 'Неизвестная модель'}{info.lens && <span className="sub">{info.lens}</span>}</dd>
+            {/* Объектив, частота и разрешение меняются по ходу съёмки — свойством камеры они не служат, их здесь нет. */}
             <dt>Материал</dt>
             <dd className="num">{pluralRu(info.count, 'клип', 'клипа', 'клипов')} · {formatDurationHuman(info.duration)} · {formatSize(info.size)}</dd>
-            {!info.audioOnly && (
-              <>
-                <dt>Видео</dt>
-                <dd>
-                  {[info.res, info.fps, info.gamma].filter(Boolean).join(' · ')}
-                  {info.codec && <span className="sub">{info.codec}</span>}
-                  {info.speedActive > 0 && (
-                    <span className="sub" style={{ color: 'var(--danger)' }}>
-                      S&Q: {info.speedActive} — помечены красным
-                    </span>
-                  )}
-                </dd>
-              </>
-            )}
             <dt>Звук</dt>
             <dd>{info.channels ? pluralRu(info.channels, 'канал', 'канала', 'каналов') : 'нет'}{info.audioOnly && <span className="sub">{info.codec}</span>}</dd>
             {synced && cs?.start != null && cs.end != null && (
@@ -283,30 +300,6 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
                 </dd>
               </>
             )}
-            {cam.follower && (
-              <>
-                <dt>Дорожка</dt>
-                <dd>
-                  Ведомая
-                  <span className="sub">
-                    Встаёт по звуку других камер с допуском и их не сдвигает.{' '}
-                    <button className="btn small ghost" style={{ height: 20, padding: '0 6px' }} onClick={(e) => { e.stopPropagation(); dispatch({ type: 'set-follower', cameraId: cam.id, on: false }); }}>Сделать ведущей</button>
-                  </span>
-                </dd>
-              </>
-            )}
-            {info.excluded > 0 && (
-              <>
-                <dt>Убрано</dt>
-                <dd>
-                  {pluralRu(info.excluded, 'клип', 'клипа', 'клипов')} не попадут на таймлинию
-                  <span className="sub">
-                    Файлы на диске не тронуты.{' '}
-                    <button className="btn small ghost" style={{ height: 20, padding: '0 6px' }} onClick={(e) => { e.stopPropagation(); dispatch({ type: 'restore-clips', cameraId: cam.id }); }}>Вернуть</button>
-                  </span>
-                </dd>
-              </>
-            )}
           </dl>
 
           <div className="section-label">Тайм-код камеры</div>
@@ -325,24 +318,8 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             </label>
           )}
 
-          <div className="section-label">Сдвинуть все клипы камеры</div>
-          <div className="shift-row" onClick={(e) => e.stopPropagation()}>
-            <button className="btn small" title="На секунду раньше" onClick={() => dispatch({ type: 'shift-camera', cameraId: cam.id, deltaSec: -1 })}>−1 с</button>
-            <button className="btn small" title="На кадр раньше" onClick={() => dispatch({ type: 'shift-camera', cameraId: cam.id, deltaSec: -1 / fps })}>−1 к</button>
-            <input
-              className="shift-value"
-              value={shiftText ?? formatShift(cam.manualShiftSec, fps)}
-              onChange={(e) => setShiftText(e.target.value)}
-              onBlur={commitShift}
-              onKeyDown={(e) => { if (e.key === 'Enter') commitShift(); if (e.key === 'Escape') setShiftText(null); }}
-              title="Часы:минуты:секунды:кадры. Минус — раньше, плюс — позже"
-            />
-            <button className="btn small" title="На кадр позже" onClick={() => dispatch({ type: 'shift-camera', cameraId: cam.id, deltaSec: 1 / fps })}>+1 к</button>
-            <button className="btn small" title="На секунду позже" onClick={() => dispatch({ type: 'shift-camera', cameraId: cam.id, deltaSec: 1 })}>+1 с</button>
-            {cam.manualShiftSec !== 0 && (
-              <button className="btn small ghost reset" onClick={() => dispatch({ type: 'shift-camera', cameraId: cam.id, absoluteSec: 0 })}>Сбросить сдвиг</button>
-            )}
-          </div>
+          </>
+          )}
         </>
       )}
     </div>
