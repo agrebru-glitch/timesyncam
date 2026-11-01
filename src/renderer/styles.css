@@ -262,6 +262,10 @@ button, input, select { font: inherit; color: inherit; }
 .field { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: 10px; margin-bottom: 10px; }
 .field label { color: var(--text-2); }
 .field input, .field select { height: 30px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 0 8px; }
+/* Выравнивание хода часов в окне экспорта: флажок и пояснение во всю ширину. */
+.drift-option { margin: 4px 0 10px; }
+.drift-option .check { margin-top: 0; color: var(--text); font-size: 13px; }
+.drift-option .hint { margin: 4px 0 0 24px; color: var(--text-2); font-size: 12px; line-height: 1.5; }
 .note { background: var(--surface-1); border-radius: var(--radius); padding: 10px 12px; color: var(--text-2); font-size: 12px; margin: 14px 0 16px; line-height: 1.6; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .toasts { position: fixed; right: 16px; bottom: 44px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }

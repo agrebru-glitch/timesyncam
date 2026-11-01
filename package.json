@@ -53,7 +53,8 @@
       "buildResources": "build"
     },
     "asarUnpack": [
-      "dist/main/syncWorker.cjs"
+      "dist/main/syncWorker.cjs",
+      "dist/main/driftWorker.cjs"
     ],
     "files": [
       "dist/**/*",

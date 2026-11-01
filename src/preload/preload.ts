@@ -24,6 +24,14 @@ const api = {
   scanQr: (path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) =>
     ipcRenderer.invoke('qr:scan', path, localSec, fps, width, height, durationSec),
   saveExport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('export:save', defaultName, content),
+  chooseExport: (defaultName: string): Promise<string | null> => ipcRenderer.invoke('export:choose', defaultName),
+  writeExport: (path: string, content: string): Promise<string | null> => ipcRenderer.invoke('export:write', path, content),
+  renderDrift: (target: string, jobs: unknown) => ipcRenderer.invoke('drift:render', target, jobs),
+  onDriftProgress: (cb: (p: { done: number; total: number }) => void) => {
+    const listener = (_e: unknown, p: { done: number; total: number }) => cb(p);
+    ipcRenderer.on('drift:progress', listener);
+    return () => ipcRenderer.removeListener('drift:progress', listener);
+  },
   saveExtendedReport: (defaultName: string, clips: { camera: string; path: string; audioChannels: number }[], report: string): Promise<string | null> =>
     ipcRenderer.invoke('report:extended', defaultName, clips, report),
   onReportProgress: (cb: (p: { done: number; total: number }) => void) => {

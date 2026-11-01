@@ -9,6 +9,8 @@ export async function buildElectron() {
   await esbuild({ ...common, entryPoints: ['src/preload/preload.ts'], outfile: 'dist/preload/preload.cjs' });
   // Сверка по звуку — в отдельном потоке (src/main/syncWorker.ts).
   await esbuild({ ...common, entryPoints: ['src/main/syncWorker.ts'], outfile: 'dist/main/syncWorker.cjs' });
+  // Выровненные копии звука при экспорте — тоже в отдельном потоке (src/main/driftWorker.ts).
+  await esbuild({ ...common, entryPoints: ['src/main/driftWorker.ts'], outfile: 'dist/main/driftWorker.cjs' });
   // Значок окна и панели задач — тот же, что у установщика.
   await mkdir('dist', { recursive: true });
   await copyFile('build/icon.png', 'dist/icon.png');

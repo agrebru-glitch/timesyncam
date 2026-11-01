@@ -1,13 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'electron';
 import { createReadStream } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, extname, join, sep } from 'node:path';
+import { basename, dirname, extname, join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
 import { AUDIO_EXT, scanPaths, VIDEO_EXT } from './scan.ts';
 import { grabFrame, toolPath, toolsAvailable } from './ffmpeg.ts';
 import { audioWaveform } from './audio.ts';
 import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
+import type { DriftJob, DriftRendered } from '../core/driftExport.ts';
 import { scanQr } from './qr.ts';
 import { extendedReport } from './materials.ts';
 import type { MaterialClip } from './materials.ts';
@@ -257,7 +258,7 @@ ipcMain.handle('report:extended', async (event, defaultName: string, clips: Mate
   return out;
 });
 
-ipcMain.handle('export:save', async (_e, defaultName: string, content: string) => {
+async function chooseExportPath(defaultName: string): Promise<string | null> {
   const r = await dialog.showSaveDialog(win!, {
     title: 'Сохранить таймлинию',
     defaultPath: defaultName,
@@ -265,9 +266,47 @@ ipcMain.handle('export:save', async (_e, defaultName: string, content: string) =
       ? [{ name: 'FCPXML (DaVinci Resolve)', extensions: ['fcpxml'] }]
       : [{ name: 'Final Cut Pro 7 XML (Premiere Pro, DaVinci Resolve)', extensions: ['xml'] }],
   });
-  if (r.canceled || !r.filePath) return null;
-  await writeFile(r.filePath, content, 'utf8');
-  return r.filePath;
+  return r.canceled || !r.filePath ? null : r.filePath;
+}
+
+ipcMain.handle('export:save', async (_e, defaultName: string, content: string) => {
+  const path = await chooseExportPath(defaultName);
+  if (!path) return null;
+  await writeFile(path, content, 'utf8');
+  return path;
+});
+
+// Экспорт с выровненным звуком: место для XML выбирается один раз, рядом с ним — папка с копиями.
+// Писать программа может только туда, куда пользователь сам указал в окне сохранения.
+let exportTarget: string | null = null;
+ipcMain.handle('export:choose', async (_e, defaultName: string) => {
+  exportTarget = await chooseExportPath(defaultName);
+  return exportTarget;
+});
+ipcMain.handle('export:write', async (_e, path: string, content: string) => {
+  if (!exportTarget || path !== exportTarget) return null;
+  await writeFile(path, content, 'utf8');
+  return path;
+});
+ipcMain.handle('drift:render', (event, target: string, jobs: DriftJob[]) => {
+  if (!exportTarget || target !== exportTarget) return null;
+  if (jobs.some((j) => !allowedMedia.has(j.path) || j.checks.some((c) => !allowedMedia.has(c.refPath)))) return null;
+  const safe = jobs.map((j) => ({ ...j, outName: basename(j.outName).replace(/[\\/:*?"<>|]/g, '_') }));
+  const outDir = join(dirname(target), `${basename(target).replace(/\.[^.]+$/, '')} — выровненный звук`);
+  const path = join(__dirname, 'driftWorker.cjs').replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
+  const w = new Worker(path, { workerData: { tools: { ffmpeg: toolPath('ffmpeg'), ffprobe: toolPath('ffprobe') } } });
+  return new Promise<DriftRendered[] | null>((resolve) => {
+    w.on('message', (m: { type: 'progress'; done: number; total: number } | { type: 'done'; results: DriftRendered[] } | { type: 'error'; message: string }) => {
+      if (m.type === 'progress') event.sender.send('drift:progress', { done: m.done, total: m.total });
+      else {
+        resolve(m.type === 'done' ? m.results : null);
+        void w.terminate();
+      }
+    });
+    w.on('error', () => resolve(null));
+    w.on('exit', () => resolve(null));
+    w.postMessage({ outDir, jobs: safe });
+  });
 });
 
 ipcMain.handle('shell:reveal', (_e, path: string) => shell.showItemInFolder(path));

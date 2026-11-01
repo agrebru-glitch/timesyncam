@@ -1,5 +1,6 @@
 import type { ClipMeta } from '../core/types.ts';
 import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
+import type { DriftJob, DriftRendered } from '../core/driftExport.ts';
 import type { QrResult } from '../core/qrSync.ts';
 
 export interface ScanResult {
@@ -24,6 +25,11 @@ export interface Api {
   waveform(path: string): Promise<Uint8Array | null>;
   scanQr(path: string, localSec: number, fps: number, width: number, height: number, durationSec: number): Promise<{ result: QrResult | null; framesRead: number; framesWithCode: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;
+  // Экспорт с выровненным звуком: выбрать место, сделать копии рядом с ним, записать XML.
+  chooseExport(defaultName: string): Promise<string | null>;
+  writeExport(path: string, content: string): Promise<string | null>;
+  renderDrift(target: string, jobs: DriftJob[]): Promise<DriftRendered[] | null>;
+  onDriftProgress(cb: (p: { done: number; total: number }) => void): () => void;
   // Расширенный отчёт для разработчика: ZIP с отчётом, звуком клипов без видео, сведениями о файлах и системе.
   saveExtendedReport(defaultName: string, clips: { camera: string; path: string; audioChannels: number }[], report: string): Promise<string | null>;
   onReportProgress(cb: (p: { done: number; total: number }) => void): () => void;
