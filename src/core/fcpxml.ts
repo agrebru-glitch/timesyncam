@@ -101,6 +101,21 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
     return l;
   };
 
+  // Папки — ключевыми словами: DaVinci не переносит из FCPXML корзины, но по ключевым словам сам собирает
+  // смарт-корзины (Media Pool → Smart Bins → Keywords). Слово — имя дорожки (её папка), а если клипы дорожки
+  // из разных подпапок — ещё и имя подпапки.
+  const keywordsOf = new Map<string, string>();
+  for (const cam of cameras) {
+    const placed = cam.clips.filter((c) => result.placements.some((p) => p.clipId === c.id && p.cameraId === cam.id));
+    const folder = (c: ClipMeta) => c.path.replace(/\\/g, '/').replace(/\/[^/]*$/, '');
+    const single = placed.every((c) => folder(c) === folder(placed[0]));
+    for (const c of placed) keywordsOf.set(c.id, single ? cam.name : `${cam.name}, ${folder(c).split('/').pop()}`);
+  }
+  const keyword = (c: ClipMeta, start: string, duration: string) => {
+    const words = keywordsOf.get(c.id);
+    return words ? `<keyword start="${start}" duration="${duration}" value="${esc(words)}"/>` : '';
+  };
+
   const items: { lane: number; offset: number; xml: string }[] = [];
   let endFrame = 0;
   for (const cam of cameras) {
@@ -135,7 +150,7 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
       items.push({
         lane: l,
         offset,
-        xml: `<asset-clip ref="${assetOf(c)}" lane="${l}" offset="${frames(offset, seq)}" start="${start}" duration="${frames(durFrames, seq)}" name="${esc(c.name)}"${c.hasVideo ? ` format="${formatOf(c)}"` : ''} tcFormat="NDF"/>`,
+        xml: `<asset-clip ref="${assetOf(c)}" lane="${l}" offset="${frames(offset, seq)}" start="${start}" duration="${frames(durFrames, seq)}" name="${esc(c.name)}"${c.hasVideo ? ` format="${formatOf(c)}"` : ''} tcFormat="NDF">${keyword(c, start, frames(durFrames, seq))}</asset-clip>`,
       });
     }
   }
@@ -144,6 +159,17 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
   // ложится в том же порядке, что и её видео, а не по тому, какая камера включилась раньше.
   const laneOrder = (l: number) => (l < 0 ? -l : 1000 + l);
   items.sort((a, b) => laneOrder(a.lane) - laneOrder(b.lane) || a.offset - b.offset);
+
+  // Клипы события — как в браузере Final Cut: целиком, со своими ключевыми словами. Отсюда DaVinci их и берёт.
+  const browser = [...keywordsOf.keys()].map((id) => {
+    const c = clipsById.get(id)!;
+    const sr = c.audioSampleRate ?? 48000;
+    const r = c.rate ?? seq;
+    const [start, duration] = c.hasVideo
+      ? [frames(assetStartFrames(c, r), r), frames(c.frames ?? Math.round(c.durationSec * rateValue(r)), r)]
+      : [samples(assetStartSamples(c, sr), sr), samples(Math.round(c.durationSec * sr), sr)];
+    return `<asset-clip ref="${assetOf(c)}" start="${start}" duration="${duration}" name="${esc(c.name)}"${c.hasVideo ? ` format="${formatOf(c)}"` : ''} tcFormat="NDF">${keyword(c, start, duration)}</asset-clip>`;
+  });
 
   const total = frames(Math.max(1, endFrame), seq);
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -165,6 +191,7 @@ ${items.map((i) => i.xml).join('\n')}
 </spine>
 </sequence>
 </project>
+${browser.join('\n')}
 </event>
 </library>
 </fcpxml>

@@ -90,3 +90,13 @@ test('FCPXML: клипы в файле по дорожкам — рекорде�
   const order = [...xml.matchAll(/<asset-clip [^>]*lane="(-?\d+)"[^>]*name="([^"]+)"/g)].map((m) => `${m[1]} ${m[2]}`);
   assert.deepEqual(order, [`-1 ZOOM0001.WAV`, `1 ${a1.name}`, `1 ${a2.name}`, `2 ${b1.name}`]);
 });
+
+test('Папки — ключевыми словами для смарт-корзин DaVinci: у клипа в таймлинии и в событии — имя дорожки', () => {
+  const { cams, r } = scene();
+  const xml = buildFcpxml(cams, r, { name: 'Ключи', rate: { num: 25, den: 1 }, width: 3840, height: 2160 });
+  assert.match(xml, /<asset-clip [^>]*lane="[^"]+"[^>]*name="C0001\.MP4"[^>]*><keyword [^>]*value="Камера 1"\/><\/asset-clip>/);
+  // Клипы события — целиком, после проекта, со своими ключевыми словами: отсюда DaVinci собирает смарт-корзины.
+  const event = xml.slice(xml.indexOf('</project>'));
+  assert.match(event, /<asset-clip ref="[^"]+" start="[^"]+" duration="[^"]+" name="ZOOM0001\.WAV"[^>]*><keyword [^>]*value="Рекордер"\/><\/asset-clip>/);
+  assert.match(event, /name="C0001\.MP4"[^>]*><keyword [^>]*value="Камера 1"\/>/);
+});

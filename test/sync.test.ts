@@ -446,3 +446,16 @@ test('Корзины проекта — как папки: клипы дорож
   assert.match(xml, /<bin><name>Cam 33<\/name><children><bin><name>CLIP1<\/name><children><clip id="masterclip-1"[\s\S]*?<clip id="masterclip-2"[\s\S]*?<\/children><\/bin><bin><name>CLIP2<\/name><children><clip id="masterclip-3"/);
 });
 
+
+test('Две камеры в одной папке и смена карты: каждая камера на своей дорожке, наложения не считаются ошибкой', () => {
+  // Камеры пишут файлами по 535 с встык; у второй третий файл — после смены карты, тайм-код тот же Free Run.
+  const x = freeRunClips([T16, T16 + 535, T16 + 1070], 1000);
+  const y = freeRunClips([T16 + 30, T16 + 565, T16 + 2000], 20000);
+  for (const c of [...x, ...y]) Object.assign(c, { durationSec: 535, recordedSec: 535 });
+  const s = runSync([camera('Cam 33', [...x, ...y])]);
+  assert.ok(!s.issues.some((i) => /накладываются/.test(i.title)), s.issues.map((i) => i.title).join('; '));
+  const laneOf = (id: string) => s.placements.find((p) => p.clipId === id)!.lane;
+  assert.ok(x.every((c) => laneOf(c.id) === laneOf(x[0].id)));
+  assert.ok(y.every((c) => laneOf(c.id) === laneOf(y[0].id)), `${y.map((c) => laneOf(c.id))}`);
+  assert.notEqual(laneOf(x[0].id), laneOf(y[0].id));
+});

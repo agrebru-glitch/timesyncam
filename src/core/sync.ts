@@ -383,14 +383,21 @@ function syncCamera(
   // А вот замедленный клип в монтажке длиннее, чем шла запись, и может залезть на следующий:
   // такой клип просто уходит на соседнюю дорожку камеры, без предупреждений.
   raw.sort((a, b) => a.start - b.start);
+  // Отрезки тайм-кода, идущие одновременно, — разные камеры в одной папке (три камеры с одной карты, как «Cam 33»
+  // у тестера): их клипы не накладываются по ошибке, а снимают параллельно. Каждый отрезок держит свою дорожку —
+  // так камера не скачет по дорожкам, а клип после смены карты (тот же тайм-код) встаёт на дорожку своей камеры.
   const laneEnds: number[] = [];
-  let lastRecordedEnd = -Infinity;
-  let lastRecordedClip: ClipMeta | null = null;
+  const laneOfSegment = new Map<number, number>();
+  const lastBySegment = new Map<number, { end: number; clip: ClipMeta }>();
   const placements: Placement[] = [];
   for (const r of raw) {
     let start = r.start;
     // Клип другой камеры на этой дорожке снят одновременно с её клипами — это не ошибка, он просто уходит на соседнюю дорожку.
     const guest = r.ownerId !== undefined;
+    const segKey = r.segment ?? -1;
+    const last = lastBySegment.get(segKey);
+    const lastRecordedEnd = last?.end ?? -Infinity;
+    const lastRecordedClip = last?.clip ?? null;
     const realOverlap = guest ? 0 : lastRecordedEnd - start;
     if (realOverlap > 0.02) {
       if (r.method !== 'timecode' && realOverlap <= NUDGE_LIMIT) {
@@ -406,14 +413,13 @@ function syncCamera(
         }));
       }
     }
-    let lane = laneEnds.findIndex((e) => e <= start + 0.02);
+    const own = laneOfSegment.get(segKey);
+    let lane = own !== undefined && laneEnds[own] <= start + 0.02 ? own : laneEnds.findIndex((e) => e <= start + 0.02);
     if (lane === -1) lane = laneEnds.length;
+    if (!guest && r.segment !== undefined) laneOfSegment.set(segKey, lane);
     const end = start + r.clip.durationSec;
     laneEnds[lane] = end;
-    if (!guest && start + r.clip.recordedSec > lastRecordedEnd) {
-      lastRecordedEnd = start + r.clip.recordedSec;
-      lastRecordedClip = r.clip;
-    }
+    if (!guest && start + r.clip.recordedSec > lastRecordedEnd) lastBySegment.set(segKey, { end: start + r.clip.recordedSec, clip: r.clip });
     placements.push({ clipId: r.clip.id, cameraId: cam.id, start, end, method: r.method, lane, ...(r.segment !== undefined && !guest ? { segment: r.segment } : {}), ...(guest ? { timeCameraId: r.ownerId } : {}) });
   }
   sync.lanes = laneEnds.length;
