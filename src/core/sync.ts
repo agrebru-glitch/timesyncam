@@ -1,6 +1,6 @@
 // Синхронизация: раскладывает клипы всех камер по реальному времени съёмки.
 import type { Camera, CameraSync, ClipMeta, Issue, Placement, SyncResult, TimeSource } from './types.ts';
-import { DAY, isNtscRate, rateValue, wrapDay, wrapSigned } from './timecode.ts';
+import { DAY, isNtscRate, parseTc, rateValue, tcToSeconds, wrapDay, wrapSigned } from './timecode.ts';
 import { formatDate, formatDurationHuman, formatShift, pluralRu } from './format.ts';
 
 const CLUSTER_TOLERANCE = 1.6; // секунды: часы камер пишут время с точностью до секунды
@@ -53,6 +53,36 @@ function estimateOffset(values: number[]): number {
 function labelSeconds(c: ClipMeta): number {
   const ndf = c.tc!.source !== 'bwf' && !c.tc!.drop && c.rate !== null && isNtscRate(rateValue(c.rate));
   return ndf ? c.tc!.seconds / 1.001 : c.tc!.seconds;
+}
+
+// Тайм-код из контейнера MP4 не всегда несёт пометку drop frame: Sony пишет её только в XML. Без XML тайм-код
+// 29,97 DF читается как NDF и уходит от часов на 3,6 с в час — клипы одной камеры разъезжаются на секунды.
+// Поэтому для камеры пробуем оба прочтения и берём то, при котором больше клипов сходится с часами камеры
+// в пределах секунды. Поровну — то, при котором тайм-код совпадает с часами (его выставили по ним), а если
+// и тут поровну — у Sony DF (так её камеры снимают 29,97 по умолчанию), у остальных — как в файле.
+function settleDropFrame(clips: ClipMeta[], tzMin: number): (c: ClipMeta) => ClipMeta {
+  const unsure = (c: ClipMeta) => c.tc?.source === 'container' && !c.tc.drop && c.rate !== null && isNtscRate(rateValue(c.rate)) && (c.tc.countRate === 30 || c.tc.countRate === 60);
+  const asDf = (c: ClipMeta): ClipMeta => {
+    const p = unsure(c) ? parseTc(c.tc!.text) : null;
+    return p ? { ...c, tc: { ...c.tc!, drop: true, seconds: tcToSeconds({ ...p, drop: true }, c.tc!.countRate, rateValue(c.rate!)) } } : c;
+  };
+  const list = clips.filter((c) => unsure(c) && c.clock && !c.captureFps);
+  if (!list.length) return (c) => c;
+  const fit = (cs: ClipMeta[]) => {
+    const offs = cs.map((c) => wrapSigned(wallClock(c, tzMin) - c.tc!.seconds)).sort((a, b) => a - b);
+    let best = 0;
+    for (let i = 0, j = 0; i < offs.length; i++) {
+      while (offs[i] - offs[j] > 1) j++;
+      best = Math.max(best, i - j + 1);
+    }
+    return best;
+  };
+  const near = (cs: ClipMeta[]) => cs.filter((c) => Math.abs(wrapSigned(wallClock(c, tzMin) - c.tc!.seconds)) <= ABSOLUTE_TC_TOLERANCE).length;
+  const same = (c: ClipMeta) => c;
+  const dfList = list.map(asDf);
+  if (fit(dfList) !== fit(list)) return fit(dfList) > fit(list) ? asDf : same;
+  if (near(dfList) !== near(list)) return near(dfList) > near(list) ? asDf : same;
+  return list.every((c) => c.camera.make === 'Sony') ? asDf : same;
 }
 
 function isRecRun(clips: ClipMeta[]): boolean {
@@ -177,7 +207,9 @@ function syncCamera(
   dateShift = 0,
 ): CameraOutcome {
   const issues: Issue[] = [];
-  const clips = activeClips(cam, copies).filter((c) => !strays.has(copyKey(cam.id, c.id)));
+  const own = activeClips(cam, copies).filter((c) => !strays.has(copyKey(cam.id, c.id)));
+  const settle = settleDropFrame(own, tzMin);
+  const clips = own.map(settle);
   const sync: CameraSync = {
     cameraId: cam.id,
     timeSource: null,
@@ -238,10 +270,15 @@ function syncCamera(
   let main: Group | null = null;
   if (cam.timecodeTrust !== 'ignore' && tcClips.length > 0) {
     const offsets = tcClips.map((c) => ({ id: c.id, offset: wrapSigned(wallClock(c, tzMin) - c.tc!.seconds) }));
-    groups = clusterOffsets(offsets);
+    // Время только из дат файлов: при копировании они становятся временем копирования. По таким часам
+    // нельзя ни увидеть скачок тайм-кода, ни заметить Rec Run — паузы между клипами даёт сам тайм-код.
+    const fileClocks = tcClips.every((c) => c.clock!.source === 'file');
+    groups = fileClocks
+      ? [{ center: [...offsets].sort((a, b) => a.offset - b.offset)[Math.floor(offsets.length / 2)].offset, clipIds: new Set(offsets.map((o) => o.id)) }]
+      : clusterOffsets(offsets);
     main = groups[0];
     sync.timecodeVsClockSec = main.center;
-    sync.recRun = isRecRun(clips);
+    sync.recRun = !fileClocks && isRecRun(clips);
     const tooScattered = groups.length > Math.max(3, tcClips.length * 0.3);
 
     if (cam.timecodeTrust === 'absolute') {
@@ -297,7 +334,8 @@ function syncCamera(
     const off = wrapSigned(wallClock(c, tzMin) - c.tc.seconds);
     return groups.find((x) => Math.abs(off - x.center) <= CLUSTER_TOLERANCE);
   };
-  const place = (c: ClipMeta): { start: number; method: Placement['method']; segment?: number } | null => {
+  const place = (clip: ClipMeta): { start: number; method: Placement['method']; segment?: number } | null => {
+    const c = settle(clip);
     if (!c.clock) return null;
     let start = c.clock.epochSec;
     let method: Placement['method'] = 'clock';
@@ -314,7 +352,9 @@ function syncCamera(
       method = 'timecode';
       return { start, method, segment: 0 };
     } else if (c.tc && source === 'timecode-and-clock' && g) {
-      start = c.clock.epochSec + wrapSigned(c.tc.seconds - wallClock(c, tzMin)) + g.center;
+      // Отклонение клипа от расхождения «часы − тайм-код» всего отрезка. Оно мало, поэтому переход тайм-кода
+      // через полночь не сдвигает клип на сутки, даже когда само расхождение — около 12 часов.
+      start = c.clock.epochSec - wrapSigned(wrapSigned(wallClock(c, tzMin) - c.tc.seconds) - g.center);
       method = 'timecode-and-clock';
       return { start, method, segment };
     }
@@ -614,6 +654,15 @@ function dateWeight(cam: Camera): number {
   return cam.clips.some((c) => c.hasVideo) ? 2 : 1.5;
 }
 
+// Даты файлов — время копирования: время только из дат файлов, а записи по нему накладываются друг на друга
+// (одно устройство так не снимает). Такое устройство о дате съёмки не голосует.
+function copiedDates(cam: Camera): boolean {
+  const timed = cam.clips.filter((c) => c.clock && !cam.excludedClipIds.includes(c.id));
+  if (timed.length < 2 || !timed.every((c) => c.clock!.source === 'file')) return false;
+  const s = [...timed].sort((a, b) => a.clock!.epochSec - b.clock!.epochSec);
+  return s.some((c, i) => i > 0 && c.clock!.epochSec < s[i - 1].clock!.epochSec + s[i - 1].recordedSec - 3);
+}
+
 function overlapSec(a: CameraSync, b: CameraSync): number {
   if (a.start === null || a.end === null || b.start === null || b.end === null) return 0;
   return Math.min(a.end, b.end) - Math.max(a.start, b.start);
@@ -634,15 +683,20 @@ export function runSync(cameras: Camera[], corrections: Record<string, number> =
   // от остальных переносится в начало съёмки — его место найдёт звук. Сдвиг считается по исходным часам,
   // поэтому он одинаков при любых поправках по звуку и они к нему применяются как есть.
   const rawOutcomes = cameras.map((c) => syncCamera(c, tz, {}, copies, strays, []));
+  const copied = new Set(cameras.filter(copiedDates).map((c) => c.id));
   const ranges: DeviceRange[] = [];
   rawOutcomes.forEach((o, i) => {
-    const w = dateWeight(cameras[i]);
+    const w = copied.has(cameras[i].id) ? 0 : dateWeight(cameras[i]);
     if (o.sync.start !== null && o.sync.end !== null && w > 0) ranges.push({ cameraId: cameras[i].id, start: o.sync.start, end: o.sync.end, weight: w });
   });
   const session = sessionGroup(ranges);
   const sessionStart = Math.min(...ranges.filter((r) => session.has(r.cameraId)).map((r) => r.start));
   const dateShift = new Map<string, number>();
   for (const r of ranges) if (!session.has(r.cameraId) && Number.isFinite(sessionStart)) dateShift.set(r.cameraId, sessionStart - r.start);
+  // Даты копирования — тоже в начало съёмки, даже если оказались рядом с ней: место найдёт звук.
+  rawOutcomes.forEach((o, i) => {
+    if (copied.has(cameras[i].id) && o.sync.start !== null && Number.isFinite(sessionStart)) dateShift.set(cameras[i].id, sessionStart - o.sync.start);
+  });
 
   // Каждая камера — по своим клипам. Потом дорожки с чужими клипами раскладываются ещё раз:
   // время такого клипа считает его камера, со своим ручным сдвигом и поправками.
@@ -673,13 +727,21 @@ export function runSync(cameras: Camera[], corrections: Record<string, number> =
     if (s.dateOutlierSec === null) continue;
     const cam = cameras.find((c) => c.id === s.cameraId)!;
     const own = rawOutcomes[cameras.indexOf(cam)].sync.start!;
-    issues.push(issue({
-      severity: 'warning',
-      cameraId: cam.id,
-      title: `«${cam.name}»: дата на устройстве — ${formatDate(own, tz)}, а остальные снимали ${formatDate(sessionStart, tz)}`,
-      details: `Разница ${formatDurationHuman(Math.abs(s.dateOutlierSec))}. Похоже, часы устройства не выставлены. Программа не верит этой дате: до синхронизации запись лежит в начале съёмки, а её место найдёт звук. Опорой для других камер она не станет.`,
-      actions: [],
-    }));
+    issues.push(issue(copied.has(cam.id)
+      ? {
+        severity: 'warning',
+        cameraId: cam.id,
+        title: `«${cam.name}»: даты файлов — время копирования`,
+        details: `Время записей взято из дат файлов (${formatDate(own, tz)}), а по ним записи накладываются друг на друга — так бывает, когда даты сменились при копировании. Программа не верит этим датам: до синхронизации записи лежат в начале съёмки, а их место найдёт звук. Опорой для других камер они не станут.`,
+        actions: [],
+      }
+      : {
+        severity: 'warning',
+        cameraId: cam.id,
+        title: `«${cam.name}»: дата на устройстве — ${formatDate(own, tz)}, а остальные снимали ${formatDate(sessionStart, tz)}`,
+        details: `Разница ${formatDurationHuman(Math.abs(s.dateOutlierSec))}. Похоже, часы устройства не выставлены. Программа не верит этой дате: до синхронизации запись лежит в начале съёмки, а её место найдёт звук. Опорой для других камер она не станет.`,
+        actions: [],
+      }));
   }
 
   // Проверка камер между собой: часовой пояс, другой день, нет пересечения.

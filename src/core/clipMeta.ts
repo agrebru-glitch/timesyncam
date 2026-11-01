@@ -71,6 +71,8 @@ export function detectVendor(name: string, probe: FfprobeResult | null, sony: So
   if (fmt['com.apple.quicktime.make']?.toLowerCase().includes('apple') || /^IMG_\d{4}\.(MOV|MP4)$/.test(n)) return 'apple';
   if (/blackmagic/.test(hay)) return 'blackmagic';
   if (/canon/.test(hay) || fmt.major_brand === 'CAEP') return 'canon';
+  // XAVC — формат Sony: камера узнаётся и без XML, если его потеряли при копировании.
+  if (fmt.major_brand === 'XAVC') return 'sony';
   if (/panasonic|lumix/.test(hay)) return 'panasonic';
   if (/fujifilm/.test(hay)) return 'fujifilm';
   if (/nikon/.test(hay)) return 'nikon';

@@ -175,3 +175,92 @@ test('Время суток — по самой большой компании 
   const many = Array.from({ length: 50 }, () => ({ device: 'GoPro', v: 7, weak: false }));
   assert.ok(Math.abs(agreeingClocks([...many, { device: 'A', v: 0.2, weak: false }, { device: 'B', v: -0.2, weak: false }])) <= 0.2);
 });
+
+test('Без согласных часов время суток — часы средней из близких камер, при любом порядке дорожек и без усреднения', () => {
+  // Как на концерте тестера: у каждой камеры свои часы (0, −50, −82 с), рекордер с верной датой отстаёт на 10 ч.
+  const votes = [
+    { device: 'CAM 02', v: 0, weak: false },
+    { device: 'CAM 03', v: -50, weak: false },
+    { device: 'Петличка', v: -82, weak: false },
+    { device: 'Zoom', v: -38000, weak: false, exact: true },
+  ];
+  const r = rng(5);
+  for (let k = 0; k < 12; k++) {
+    const order = [...votes].sort(() => r() - 0.5);
+    assert.equal(agreeingClocks(order), -50);
+  }
+  // Двое расходятся на 3 с — берутся часы одного из них, а не середина между ними.
+  assert.ok([0, 3].includes(agreeingClocks([{ device: 'A', v: 0, weak: false }, { device: 'B', v: 3, weak: false }])));
+  // Тайм-код по часам точнее самих часов: в согласной компании решает он.
+  assert.equal(agreeingClocks([{ device: 'A', v: 0.6, weak: false }, { device: 'B', v: 0, weak: false, exact: true }]), 0);
+});
+
+test('Тайм-код по часам самой камеры — это те же часы: две такие камеры с часами вразнобой встают по звуку', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 600, recordedSec: 600 });
+  // Часы B на 3 с вперёд, тайм-код выставлен по ним же.
+  const b = clip({ start: T16 + 103, tcSeconds: tcOf(T16 + 103), durationSec: 400, recordedSec: 400 });
+  truth.set(a.id, T16);
+  truth.set(b.id, T16 + 100);
+  const cams = [camera('A', [a]), camera('B', [b])];
+  const coarse = runSync(cams);
+  assert.ok(coarse.cameras.every((c) => c.timeSource === 'timecode'));
+  const result = await alignByAudio(cams, coarse, fakeAudio(truth), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+  // Чьи часы верны, знать нельзя — но о расхождении в 3 с сказано прямо, без «камеры стояли далеко».
+  assert.ok(result.issues.some((i) => /(спешат|отстают) на 3 с/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+  assert.ok(!result.issues.some((i) => /далеко друг от друга/.test(i.details ?? '')));
+});
+
+test('Общий тайм-код от одного генератора: звук его подтвердил — камеры стоят по тайм-коду, а не по запоздавшему звуку', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 600, recordedSec: 600 });
+  const b = clip({ start: T16 + 100, tcSeconds: tcOf(T16 + 100), durationSec: 400, recordedSec: 400 });
+  truth.set(a.id, T16);
+  // Камера B стоит в 25 м от сцены: звук доходит до неё на 73 мс позже.
+  truth.set(b.id, T16 + 100 - 0.073);
+  const cams = [camera('A', [a]), camera('B', [b])];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
+  const final = runSync(cams, result.corrections);
+  const at = (id: string) => final.placements.find((p) => p.clipId === id)!.start;
+  assert.ok(Math.abs(at(b.id) - at(a.id) - 100) < 0.002, `${((at(b.id) - at(a.id) - 100) * 1000).toFixed(1)} мс`);
+  assert.ok(result.issues.some((i) => i.cameraId === 'B' && /расходится/.test(i.title) && /общий/.test(i.details ?? '')));
+});
+
+test('Рекордер с верной датой, но сбитым временем суток не тянет за собой всю съёмку', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, durationSec: 900, recordedSec: 900 });
+  const b = clip({ start: T16 + 20 + 50, durationSec: 800, recordedSec: 800 }); // часы на 50 с вперёд
+  // Тайм-код рекордера — по его часам, а они на 10,5 ч позади. Дата та же, поэтому выбросом он не считается.
+  const wrong = T16 + 10 - 10.5 * 3600;
+  const rec = clip({ start: wrong, tcSeconds: tcOf(wrong), durationSec: 880, recordedSec: 880, hasVideo: false, rate: null, width: null, height: null });
+  truth.set(a.id, T16);
+  truth.set(b.id, T16 + 20);
+  truth.set(rec.id, T16 + 10);
+  const cams = [camera('A', [a]), camera('B', [b]), camera('Zoom', [rec])];
+  const coarse = runSync(cams);
+  assert.equal(coarse.cameras.find((c) => c.cameraId === 'Zoom')!.dateOutlierSec, null);
+  const result = await alignByAudio(cams, coarse, fakeAudio(truth), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+  // Время съёмки — по камерам, рекордер найден на 10,5 ч позже своих часов.
+  assert.ok(Math.abs(result.corrections[a.id] ?? 0) <= 60 && Math.abs(result.corrections[b.id] ?? 0) <= 60);
+  assert.ok(result.issues.some((i) => i.cameraId === 'Zoom' && /на 10 ч 30 мин позже/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Петличка скопирована без времени в именах: даты файлов накладываются, запись без общего звука встаёт встык и с предупреждением', async () => {
+  const truth = new Map<string, number>();
+  const cam = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 900, recordedSec: 900 });
+  truth.set(cam.id, T16);
+  // Даты файлов — время копирования, через 2 с друг за другом. Последний кусок — «в другом помещении».
+  const lav = [0, 1, 2].map((k) => {
+    const c = clip({ start: T16 + 5000 + k * 2, durationSec: 300, recordedSec: 300, hasVideo: false, rate: null, width: null, height: null });
+    Object.assign(c, { clock: { ...c.clock!, source: 'file', precisionSec: 3 } });
+    truth.set(c.id, T16 + 20 + k * 300);
+    return c;
+  });
+  const cams = [camera('Камера', [cam]), camera('Петличка', lav)];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth, new Set([lav[2].id])), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+  const warn = result.issues.find((i) => i.cameraId === 'Петличка' && /не нашлась по звуку/.test(i.title));
+  assert.ok(warn && /встык/.test(warn.details ?? '') && warn.details!.includes(lav[2].name), result.issues.map((i) => i.title).join('; '));
+});

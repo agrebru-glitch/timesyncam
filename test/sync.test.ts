@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { applyRelocation, findDuplicates, findStrays, pilePlacements, planRelocation, relocateFrames, relocationIssues, runSync, sessionGroup } from '../src/core/sync.ts';
 import { buildFcp7Xml, defaultTimelineRate } from '../src/core/fcp7.ts';
 import { camera, clip, T16 } from './fixtures.ts';
+import { parseTc, tcToSeconds } from '../src/core/timecode.ts';
 
 const OFFSET = 7 * 3600 + 27 * 60 + 28; // как в реальной съёмке на A7 IV: тайм-код убегает вперёд на 7:27:28
 const wall = (epoch: number) => (((epoch + 3 * 3600) % 86400) + 86400) % 86400;
@@ -332,3 +333,99 @@ test('Рекордер с датой 2010 года и тайм-кодом по �
   // О часовых поясах и «другом дне» по отношению к рекордеру не говорим — у него своя запись.
   assert.ok(!r.issues.some((i) => /расходятся с «Zoom»|чем «Zoom»/.test(i.title)));
 });
+
+// Метка тайм-кода 29,97 DF для момента sec от полуночи — как её пишет камера, но без «;»: так тайм-код Sony
+// выглядит в контейнере MP4, когда XML потерялся.
+function dfLabel(sec: number): string {
+  let n = Math.round((sec * 30000) / 1001);
+  const d = Math.floor(n / 17982);
+  const m = n % 17982;
+  n += 18 * d + (m > 2 ? 2 * Math.floor((m - 2) / 1798) : 0);
+  const two = (x: number) => String(x).padStart(2, '0');
+  return `${two(Math.floor(n / 108000) % 24)}:${two(Math.floor(n / 1800) % 60)}:${two(Math.floor(n / 30) % 60)}:${two(n % 30)}`;
+}
+
+test('Тайм-код 29,97 без пометки DF: камера Sony без XML не распадается на отрезки, паузы точны до кадра', () => {
+  const fps = 30000 / 1001;
+  // Free Run, тайм-код на 5000 с впереди часов; клипы через час с лишним, как на концерте тестера.
+  const reals = [T16 + 0.37, T16 + 4059.59 + 0.37, T16 + 9000.81];
+  const mk = (real: number, make: string, label: (s: number) => string) => {
+    const text = label((wall(real) + 5000) % 86400);
+    const seconds = tcToSeconds({ ...parseTc(text)!, drop: false }, 30, fps); // как прочитает файл без пометки
+    return clip({ start: Math.floor(real), rate: { num: 30000, den: 1001 }, tc: { text, seconds, countRate: 30, drop: false, source: 'container' }, camera: { make, model: make } });
+  };
+  const sony = reals.map((r) => mk(r, 'Sony', dfLabel));
+  const s = runSync([camera('A', sony)]);
+  assert.equal(s.cameras[0].timecodeJumps, 0);
+  const at = (id: string) => s.placements.find((p) => p.clipId === id)!.start;
+  for (let i = 1; i < reals.length; i++) {
+    const err = at(sony[i].id) - at(sony[0].id) - (reals[i] - reals[0]);
+    assert.ok(Math.abs(err) < 1 / 30, `клип ${i}: ${(err * 1000).toFixed(0)} мс`);
+  }
+  // Настоящий NDF у другой камеры так и читается как NDF.
+  const ndfLabel = (sec: number) => {
+    const n = Math.round((sec * 30000) / 1001);
+    const two = (x: number) => String(x).padStart(2, '0');
+    return `${two(Math.floor(n / 108000) % 24)}:${two(Math.floor(n / 1800) % 60)}:${two(Math.floor(n / 30) % 60)}:${two(n % 30)}`;
+  };
+  const canon = reals.map((r) => mk(r, 'Canon', ndfLabel));
+  const c = runSync([camera('B', canon)]);
+  assert.equal(c.cameras[0].timecodeJumps, 0);
+  const atC = (id: string) => c.placements.find((p) => p.clipId === id)!.start;
+  for (let i = 1; i < reals.length; i++) assert.ok(Math.abs(atC(canon[i].id) - atC(canon[0].id) - (reals[i] - reals[0])) < 1 / 30);
+});
+
+test('Даты файлов — время копирования: тайм-код рекордера не рвётся на отрезки, паузы — по тайм-коду', () => {
+  // BWF-тайм-код по часам рекордера, дат в метаданных нет; файлы скопированы через 2 с друг за другом,
+  // поэтому по датам файлов записи накладываются.
+  const copied = T16 + 2 * 86400;
+  const lengths = [7456.085, 2143.048];
+  const recs = [0, 7457].map((at, i) => {
+    const c = clip({ start: copied + i * 2 - lengths[i], tcSeconds: 29110 + at, durationSec: lengths[i], recordedSec: lengths[i], hasVideo: false, rate: null, width: null, height: null });
+    Object.assign(c, { clock: { ...c.clock!, source: 'file', precisionSec: 3 } });
+    return c;
+  });
+  const s = runSync([camera('Zoom', recs)]);
+  assert.equal(s.cameras[0].timecodeJumps, 0);
+  const at = (id: string) => s.placements.find((p) => p.clipId === id)!.start;
+  assert.ok(Math.abs(at(recs[1].id) - at(recs[0].id) - 7457) < 0.001);
+  assert.equal(new Set(s.placements.map((p) => p.segment)).size, 1);
+});
+
+test('Расхождение «часы − тайм-код» около 12 часов: ни один клип не уезжает на сутки', () => {
+  // Как у CAM 03 на концерте, когда даты файлов — время копирования: тайм-код 22:50 и 23:57,
+  // файлы скопированы в полдень. Расхождение у первого клипа −11,6 ч, у второго перешло бы через −12 ч.
+  const noon = T16 - 4 * 3600 + 2 * 86400; // 12:00 по Москве через двое суток
+  const lengths = [2932.43, 4460.46];
+  const tcs = [82201.59, 86248.36];
+  const cams = lengths.map((len, i) => {
+    const c = clip({ start: noon + i * 2 - len, tcSeconds: tcs[i], durationSec: len, recordedSec: len });
+    Object.assign(c, { clock: { ...c.clock!, source: 'file', precisionSec: 3 } });
+    return c;
+  });
+  const s = runSync([camera('CAM 03', cams)]);
+  const at = (id: string) => s.placements.find((p) => p.clipId === id)!.start;
+  assert.ok(Math.abs(at(cams[1].id) - at(cams[0].id) - (tcs[1] - tcs[0])) < 0.001, `${at(cams[1].id) - at(cams[0].id)}`);
+});
+
+test('Камеры с датами копирования не перевешивают одно устройство с верной датой', () => {
+  // Три камеры без дат в метаданных: время — из дат файлов, а это время копирования через двое суток,
+  // и по нему клипы каждой камеры накладываются. Петличка — с временем из имени файла.
+  const copiedAt = T16 + 2 * 86400;
+  const cams = ['CAM 01', 'CAM 02', 'CAM 03'].map((name) => camera(name, [3000, 4400].map((len, i) => {
+    const c = clip({ start: copiedAt + i * 2 - len, durationSec: len, recordedSec: len });
+    Object.assign(c, { clock: { ...c.clock!, source: 'file', precisionSec: 3 } });
+    return c;
+  })));
+  const lav = clip({ start: T16, durationSec: 1800, recordedSec: 1800, hasVideo: false, rate: null, width: null, height: null });
+  Object.assign(lav, { clock: { ...lav.clock!, source: 'filename' } });
+  const s = runSync([...cams, camera('Петличка', [lav])]);
+  assert.equal(s.cameras.find((c) => c.cameraId === 'Петличка')!.dateOutlierSec, null);
+  for (const name of ['CAM 01', 'CAM 02', 'CAM 03']) {
+    assert.notEqual(s.cameras.find((c) => c.cameraId === name)!.dateOutlierSec, null);
+    assert.ok(s.issues.some((i) => i.cameraId === name && /время копирования/.test(i.title)));
+  }
+  // До сверки по звуку всё лежит у начала съёмки, а не через двое суток.
+  assert.ok(s.end - s.start < 3 * 3600);
+});
+
