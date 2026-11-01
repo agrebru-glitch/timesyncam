@@ -27,16 +27,25 @@ for (const [i, d] of dirs.entries()) {
 }
 const fetchAudio = { features: (c: { path: string }, s: number, d: number) => audioFeatures(c.path, s, d), samples: (c: { path: string }, s: number, d: number, ch: number) => audioSamples(c.path, s, d, ch) };
 
+// Ошибка каждого клипа. Для монтажа важна стыковка камер между собой, поэтому показываем и общий сдвиг
+// всей съёмки (медиана ошибок), и ошибку каждого клипа относительно него. Больше двух кадров — с пометкой «!».
 function errors(r: SyncResult, title: string) {
-  console.log(`--- ${title}`);
-  for (const cam of cameras) {
-    const errs = cam.clips.map((c) => {
-      const p = r.placements.find((x) => x.clipId === c.id);
-      const t = truth.get(`${cam.id}/${c.name}`);
-      return p && t !== undefined ? ((p.start - t) * 1000).toFixed(1) : '—';
-    });
-    console.log(`  ${cam.id}: ${errs.join(' / ')} мс`);
-  }
+  const all: number[] = [];
+  const rows = cameras.map((cam) => cam.clips.map((c) => {
+    const p = r.placements.find((x) => x.clipId === c.id);
+    const t = truth.get(`${cam.id}/${c.name}`);
+    const e = p && t !== undefined ? p.start - t : null;
+    if (e !== null) all.push(e);
+    return e;
+  }));
+  const s = [...all].sort((a, b) => a - b);
+  const base = s.length ? s[Math.floor(s.length / 2)] : 0;
+  const show = (e: number) => (Math.abs(e) >= 60 ? `${(e / 3600).toFixed(Math.abs(e) >= 36000 ? 0 : 2)} ч` : Math.abs(e) >= 1 ? `${e.toFixed(2)} с` : `${(e * 1000).toFixed(1)} мс`);
+  const bad = all.filter((e) => Math.abs(e - base) > 0.08).length;
+  console.log(`--- ${title}: общий сдвиг ${show(base)}, клипов мимо больше 2 кадров: ${bad} из ${all.length}`);
+  cameras.forEach((cam, i) => {
+    console.log(`  ${cam.id}: ${rows[i].map((e) => (e === null ? '—' : `${show(e - base)}${Math.abs(e - base) > 0.08 ? '!' : ''}`)).join(' / ')}`);
+  });
 }
 
 const coarse = runSync(cameras);
