@@ -24,6 +24,7 @@ export interface Api {
   waveform(path: string): Promise<Uint8Array | null>;
   scanQr(path: string, localSec: number, fps: number, width: number, height: number, durationSec: number): Promise<{ result: QrResult | null; framesRead: number; framesWithCode: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;
+  saveReport(defaultName: string, content: string): Promise<string | null>;
   reveal(path: string): Promise<void>;
   openLink(name: 'support' | 'github' | 'release'): Promise<void>;
   tools(): Promise<{ ffprobe: boolean; ffmpeg: boolean }>;

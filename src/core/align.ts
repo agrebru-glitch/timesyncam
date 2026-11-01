@@ -44,8 +44,10 @@ const FINE_WINDOWS = 5;
 
 type Trust = 'anchor' | 'clock' | 'weak' | 'none';
 
-// Подробный журнал сравнения пар — для разбора сложных съёмок (переменная окружения TSC_ALIGN_DEBUG=1).
+// Журнал решений: какие сдвиги проверялись, сколько окон совпало, что выбрано и почему. Уходит в отчёт
+// для разработчика; с переменной окружения TSC_ALIGN_DEBUG=1 ещё и печатается.
 const DEBUG = typeof process !== 'undefined' && !!process.env?.TSC_ALIGN_DEBUG;
+type Log = (line: string) => void;
 
 interface Member {
   p: Placement;
@@ -342,7 +344,7 @@ function centered(a: Piece, b: Piece, checks: Check[], d: number): { d: number; 
 }
 
 // Сравнение пары кусков: лучший проверенный сдвиг или null.
-function measurePair(a: Piece, b: Piece): { edge: Edge | null; ambiguous: boolean } {
+function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguous: boolean } {
   const table = xcorrFeatures(a.coarse!, b.coarse!, Math.round((MIN_OVERLAP * RATE) / POOL));
   if (!table) return { edge: null, ambiguous: false };
   // table: a[0] совпадает с b[k] — значит, начало b на k кадров раньше начала a.
@@ -355,10 +357,8 @@ function measurePair(a: Piece, b: Piece): { edge: Edge | null; ambiguous: boolea
   }).sort((x, y) => y.support - x.support || y.score - x.score);
   const best = tried[0];
   const second = tried.find((x) => x !== best && Math.abs(x.d - best.d) > PEAK_GUARD);
-  if (DEBUG) {
-    console.log(`пара ${a.cameraId}#${a.id} — ${b.cameraId}#${b.id}:`);
-    for (const x of tried) console.log(`    сдвиг ${x.d.toFixed(2)} с: совпало ${x.support} из ${x.tested}, балл ${x.score.toFixed(2)}`);
-  }
+  log(`пара ${a.cameraId}#${a.id} — ${b.cameraId}#${b.id}:`);
+  for (const x of tried) log(`    сдвиг ${x.d.toFixed(2)} с: совпало ${x.support} из ${x.tested}, балл ${x.score.toFixed(2)}`);
   if (!best || best.support === 0) return { edge: null, ambiguous: false };
   // Соперники — кандидаты, подтверждённые почти так же. Лучший должен выиграть у каждого очно: на тех же
   // местах записи совпасть лучше хотя бы в трёх окнах и не проиграть заметно. Иначе — неоднозначно, не угадываем.
@@ -367,19 +367,26 @@ function measurePair(a: Piece, b: Piece): { edge: Edge | null; ambiguous: boolea
   for (const c of tried) {
     if (c === winner || Math.abs(c.d - winner.d) <= PEAK_GUARD || c.support < winner.support * RIVAL) continue;
     const h = headToHead(a, b, winner.d, c.d);
-    if (DEBUG) console.log(`    очно ${winner.d.toFixed(2)} против ${c.d.toFixed(2)}: t=${h.t.toFixed(1)}, явных побед ${h.clear1} : ${h.clear2}`);
+    log(`    очно ${winner.d.toFixed(2)} против ${c.d.toFixed(2)}: t=${h.t.toFixed(1)}, явных побед ${h.clear1} : ${h.clear2}`);
     if (h.winner === 1) continue;
     if (h.winner === 2) winner = c;
     else undecided = true;
   }
-  if (undecided) return { edge: null, ambiguous: true };
+  if (undecided) {
+    log('    итог: неоднозначно — звук похож на несколько мест');
+    return { edge: null, ambiguous: true };
+  }
   const share = winner.support / Math.max(1, winner.tested);
   // Уверенно: совпало хотя бы в трёх окнах и в большинстве проверенных. Короткая общая часть (одно-два
   // окна): все окна согласны и соперника нет.
   const strong = winner.support >= 3 && share >= 0.5;
   const short = winner.tested <= 2 && winner.support === winner.tested && (!second || second.support === 0 || winner !== best) && winner.score >= 0.25;
-  if (!strong && !short) return { edge: null, ambiguous: false };
+  if (!strong && !short) {
+    log('    итог: уверенного совпадения нет');
+    return { edge: null, ambiguous: false };
+  }
   const chosen = winner;
+  log(`    итог: ${chosen.d.toFixed(3)} с${strong ? '' : ' (короткая общая часть)'}`);
   // Проверочные окна заново — уже вокруг уточнённого сдвига, чтобы точки сверки стояли точно.
   const checks = verify(a, b, chosen.d);
   const c = centered(a, b, checks, chosen.d);
@@ -506,6 +513,29 @@ function solve(nodes: number[], edges: Edge[], pieces: Piece[]): { pos: Map<numb
   return { pos, used, dropped: [...dropped] };
 }
 
+// Время суток для группы, сведённой по звуку. Каждое устройство своими часами предлагает, где стоит группа.
+// Часы бывают сбиты, поэтому не усредняем всех подряд: берём самую весомую компанию устройств, чьи
+// предложения согласны в пределах точности часов (1,5 с, с датой файла — 3,5 с), и её середину.
+// Вес устройства делится на число его кусков — камера с полсотней клипов не перевешивает остальных.
+export function agreeingClocks(votes: { device: string; v: number; weak: boolean }[]): number {
+  const perDevice = new Map<string, number>();
+  for (const x of votes) perDevice.set(x.device, (perDevice.get(x.device) ?? 0) + 1);
+  const w = (x: { device: string; weak: boolean }) => (x.weak ? 1 : 3) / perDevice.get(x.device)!;
+  let best: typeof votes = [];
+  let bestW = -1;
+  for (const x of votes) {
+    const group = votes.filter((y) => Math.abs(y.v - x.v) <= (x.weak || y.weak ? 3.5 : 1.5));
+    const gw = group.reduce((s, y) => s + w(y), 0);
+    const devices = new Set(group.map((y) => y.device)).size;
+    const bestDevices = new Set(best.map((y) => y.device)).size;
+    if (gw > bestW + 1e-9 || (Math.abs(gw - bestW) <= 1e-9 && devices > bestDevices)) {
+      best = group;
+      bestW = gw;
+    }
+  }
+  return weightedMedian(best.map((y) => ({ v: y.v, w: w(y) })));
+}
+
 // Связные группы кусков по использованным связям.
 function components(nodes: number[], edges: Edge[]): number[][] {
   const adj = new Map<number, number[]>(nodes.map((n) => [n, []]));
@@ -541,6 +571,14 @@ function memberAt(p: Piece, u: number, len: number): Member | null {
 export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio: AudioFetch & { whole?: (clip: ClipMeta) => Promise<AudioPiece | null> }, opts: AudioOptions): Promise<AudioSyncResult> {
   const pieces = buildPieces(cameras, coarse, opts);
   const issues: Issue[] = [];
+  const lines: string[] = [];
+  const log: Log = (line) => {
+    lines.push(line);
+    if (DEBUG) console.log(line);
+  };
+  for (const p of pieces) {
+    log(`кусок ${p.cameraId}#${p.id}: ${p.members.length} клип(ов), ${p.length.toFixed(1)} с, доверие ${p.trust}${p.recorder ? ', только звук' : ''}${p.follower ? ', ведомый' : ''}: ${p.members.map((m) => `${m.clip.name}@${m.at.toFixed(2)}`).join(', ')}`);
+  }
   const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? '';
   const whole = audio.whole ?? ((c: ClipMeta) => audio.features(c, 0, c.durationSec));
 
@@ -596,7 +634,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       if (a.cameraId === b.cameraId || (a.follower && b.follower)) continue;
       triedOf.add(a.id);
       triedOf.add(b.id);
-      const r = measurePair(a, b);
+      const r = measurePair(a, b, log);
       if (r.edge) edges.push(r.edge);
       if (r.ambiguous) {
         ambiguousOf.add(a.id);
@@ -634,7 +672,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       // Точка по волне относится к своему месту записи; с учётом хода часов переносим её в середину общей части.
       if (g && g.confidence >= FINE_CONFIDENCE && Math.abs(g.lag) < off) fineDs.push({ d: c.local - g.lag / FINE_SR + e.slope * (e.mid - (u + FINE_LEN / 2)), conf: g.confidence });
     }
-    if (DEBUG) console.log(`точно ${a.cameraId} — ${b.cameraId}: грубо ${e.d.toFixed(3)}, по волне ${fineDs.map((f) => `${f.d.toFixed(3)} (${f.conf.toFixed(0)})`).join(', ') || 'нет'}`);
+    log(`точно ${a.cameraId} — ${b.cameraId}: грубо ${e.d.toFixed(3)}, по волне ${fineDs.map((f) => `${f.d.toFixed(3)} (${f.conf.toFixed(0)})`).join(', ') || 'нет'}`);
     if (fineDs.length) {
       e.d = median(fineDs.map((f) => f.d));
       e.fine = true;
@@ -649,6 +687,8 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   for (const p of anchors) if (!leaders.includes(p.id)) leaders.push(p.id);
   const { pos, used, dropped } = solve(leaders, leaderEdges, pieces);
   const comps = components(leaders, used);
+  for (const e of dropped) if (!e.hard) log(`отброшено как противоречие: ${pieces[e.a].cameraId}#${e.a} — ${pieces[e.b].cameraId}#${e.b}, ${e.d.toFixed(3)} с (совпало ${e.support})`);
+  log(`группы: ${comps.map((c) => c.map((n) => `${pieces[n].cameraId}#${n}`).join(' + ')).join(' | ')}`);
 
   // 4. Где стоит каждая группа: контрольный кадр и точный тайм-код — жёстко, иначе — по часам согласных о дате.
   const placed = new Map<number, number>(); // начало куска на таймлинии
@@ -659,8 +699,11 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     const hard = ps.filter((p) => p.trust === 'anchor');
     const voters = hard.length ? hard : ps.filter((p) => p.trust === 'clock' || p.trust === 'weak');
     let shift: number;
-    if (voters.length) {
-      shift = weightedMedian(voters.map((p) => ({ v: p.prior - pos.get(p.id)!, w: p.trust === 'weak' ? 1 : 3 })));
+    if (hard.length) {
+      shift = median(hard.map((p) => p.prior - pos.get(p.id)!));
+    } else if (voters.length) {
+      shift = agreeingClocks(voters.map((p) => ({ device: p.cameraId, v: p.prior - pos.get(p.id)!, weak: p.trust === 'weak' })));
+      log(`время группы — по часам: ${voters.map((p) => `${p.cameraId}#${p.id} ${(p.prior - pos.get(p.id)! - shift).toFixed(2)} с`).join(', ')}`);
     } else if (comp.length > 1 || triedOf.has(comp[0])) {
       // Группа только из устройств с неверной датой: кладём в начало съёмки.
       shift = sessionStart - Math.min(...comp.map((n) => pos.get(n)!));
@@ -781,7 +824,8 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     const own = pieces.filter((p) => p.cameraId === cam.id);
     const actions: IssueAction[] = own[0]?.members[0] ? [{ kind: 'show-clip', clipId: own[0].members[0].clip.id }] : [];
     const confirmed = r.anchors.filter((a) => a.role === 'confirm').length;
-    if (r.status === 'applied' && r.correction !== null && Math.abs(r.correction) > 2 && !own.some((p) => p.trust === 'none')) {
+    // Часы камер обычно расходятся на секунды — предупреждаем, когда камера ушла заметно, от 10 с.
+    if (r.status === 'applied' && r.correction !== null && Math.abs(r.correction) > 10 && !own.some((p) => p.trust === 'none')) {
       const tz = Math.abs(Math.abs(r.correction) / 3600 - Math.round(Math.abs(r.correction) / 3600)) < 0.25 && Math.abs(r.correction) > 1800;
       issues.push(issue({
         severity: 'warning',
@@ -796,6 +840,16 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         cameraId: cam.id,
         title: `«${cam.name}» встала по звуку`,
         details: `Дате на устройстве программа не верит, поэтому место найдено только по звуку: совпадение подтверждено в ${confirmed} местах по всей общей записи.`,
+        actions,
+      }));
+    } else if ((r.status === 'applied' || r.status === 'confirmed') && r.correction !== null && Math.abs(r.correction) > 1.5 && !own.some((p) => p.trust === 'none' || p.trust === 'anchor')) {
+      // Расхождение больше точности часов (секунда), но меньше заметного сбоя: место по звуку точное,
+      // а часы устройства расходятся с остальными — говорим, на сколько и в какую сторону.
+      issues.push(issue({
+        severity: 'info',
+        cameraId: cam.id,
+        title: `Часы «${cam.name}» ${r.correction > 0 ? 'отстают' : 'спешат'} на ${formatDurationHuman(Math.abs(r.correction))} относительно остальных камер`,
+        details: `По звуку «${cam.name}» поставлена точно: совпадение подтверждено в ${confirmed} местах по всей общей записи. Расхождение — в часах самого устройства. Перед съёмкой выставляйте время на всех камерах и рекордерах по одним часам.`,
         actions,
       }));
     } else if (r.status === 'no-match') {
@@ -867,6 +921,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     }));
   }
 
+  for (const p of pieces) log(`место ${p.cameraId}#${p.id}: ${placed.has(p.id) ? `поправка ${(placed.get(p.id)! - p.prior).toFixed(3)} с` : 'по звуку не найдено'}`);
   opts.onProgress?.(done + left, done + left);
-  return { cameras: results, corrections, issues };
+  return { cameras: results, corrections, issues, log: lines };
 }

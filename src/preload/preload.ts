@@ -24,6 +24,7 @@ const api = {
   scanQr: (path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) =>
     ipcRenderer.invoke('qr:scan', path, localSec, fps, width, height, durationSec),
   saveExport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('export:save', defaultName, content),
+  saveReport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('report:save', defaultName, content),
   reveal: (path: string) => ipcRenderer.invoke('shell:reveal', path),
   openLink: (name: 'support' | 'github' | 'release') => ipcRenderer.invoke('shell:open-link', name),
   tools: (): Promise<{ ffprobe: boolean; ffmpeg: boolean }> => ipcRenderer.invoke('app:tools'),

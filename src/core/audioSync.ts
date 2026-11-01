@@ -243,6 +243,7 @@ export interface AudioSyncResult {
   cameras: AudioCameraResult[];
   corrections: Record<string, number>; // поправка каждого клипа в секундах
   issues: Issue[];
+  log?: string[]; // журнал решений сверки — для отчёта разработчику
 }
 
 export interface AudioOptions {

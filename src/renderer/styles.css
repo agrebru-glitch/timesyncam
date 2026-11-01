@@ -303,3 +303,7 @@ button, input, select { font: inherit; color: inherit; }
 .preview-off-box b { color: var(--text); font-size: 14px; }
 .link { border: 0; background: none; padding: 0; font: inherit; color: var(--accent-hover); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .link:hover { color: var(--text); }
+.report-box { display: flex; align-items: center; gap: 16px; justify-content: space-between; padding: 12px 16px; margin-bottom: 18px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-1); }
+.report-box > div { display: flex; flex-direction: column; gap: 3px; }
+.report-box span { color: var(--text-2); font-size: 12px; }
+.report-box .btn { flex: none; }

@@ -104,6 +104,15 @@ function createWindow(): void {
           win!.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'right', clickCount: 1 });
           await new Promise((r) => setTimeout(r, 600));
         }
+        // Для проверки кнопок: левый щелчок в заданной точке окна.
+        const lc = /^(\d+),(\d+)$/.exec(process.env.SYNC_CLICK ?? '');
+        if (lc) {
+          const x = Number(lc[1]);
+          const y = Number(lc[2]);
+          win!.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+          win!.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+          await new Promise((r) => setTimeout(r, 1500));
+        }
         const img = await win!.webContents.capturePage();
         await writeFile(shot, img.toPNG());
         app.quit();
@@ -199,6 +208,23 @@ ipcMain.handle('qr:scan', async (_e, path: string, localSec: number, fps: number
 ipcMain.handle('audio:waveform', async (_e, path: string) => {
   if (!allowedMedia.has(path)) return null;
   return audioWaveform(path);
+});
+
+// Отчёт для разработчика — файл JSON, куда скажет пользователь.
+ipcMain.handle('report:save', async (_e, defaultName: string, content: string) => {
+  // Проверочный запуск: отчёт пишется сразу по пути из переменной, без диалога.
+  if (process.env.SYNC_REPORT) {
+    await writeFile(process.env.SYNC_REPORT, content, 'utf8');
+    return process.env.SYNC_REPORT;
+  }
+  const r = await dialog.showSaveDialog(win!, {
+    title: 'Сохранить отчёт для разработчика',
+    defaultPath: defaultName,
+    filters: [{ name: 'Отчёт TimesynCam', extensions: ['json'] }],
+  });
+  if (r.canceled || !r.filePath) return null;
+  await writeFile(r.filePath, content, 'utf8');
+  return r.filePath;
 });
 
 ipcMain.handle('export:save', async (_e, defaultName: string, content: string) => {

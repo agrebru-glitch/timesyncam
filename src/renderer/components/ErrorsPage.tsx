@@ -1,6 +1,8 @@
 import type { IssueAction } from '../../core/types.ts';
 import { formatShift } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
+import { api } from '../api.ts';
+import { buildReport } from '../report.ts';
 import { IconAlert, IconError, IconInfo } from '../icons.tsx';
 
 export function ErrorsPage() {
@@ -45,8 +47,24 @@ export function ErrorsPage() {
   const camName = (id: string | null) => state.cameras.find((c) => c.id === id)?.name ?? 'Общее';
   const hasClips = state.cameras.some((c) => c.clips.length > 0);
 
+  // Отчёт: имя файла с датой и временем, чтобы несколько отчётов не путались.
+  const saveReport = async () => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    const name = `TimesynCam-отчёт-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+    const path = await api.saveReport(name, buildReport(state, issues));
+    if (path) dispatch({ type: 'toast', text: 'Отчёт сохранён — отправьте этот файл разработчику', revealPath: path });
+  };
+
   return (
     <div className="page">
+      <div className="report-box">
+        <div>
+          <b>Синхронизация ошиблась?</b>
+          <span>Сохраните отчёт и отправьте разработчику. В нём нет видео, звука и путей на диске — только сведения о клипах и решения программы.</span>
+        </div>
+        <button className="btn" onClick={() => void saveReport()} disabled={!hasClips}>Сохранить отчёт для разработчика</button>
+      </div>
       <h1>Ошибки и предупреждения</h1>
       <p className="lead">
         {!hasClips

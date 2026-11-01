@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alignByAudio } from '../src/core/align.ts';
+import { agreeingClocks, alignByAudio } from '../src/core/align.ts';
 import { runSync } from '../src/core/sync.ts';
 import type { Camera, ClipMeta } from '../src/core/types.ts';
 import { camera, clip, T16 } from './fixtures.ts';
@@ -160,4 +160,18 @@ test('Рекордер: часовая запись с уходом часов �
   const midErr = start + 1700 - (T16 + 5 + 1700 * RATE);
   assert.ok(Math.abs(midErr) < 0.01, `в середине ошибка ${(midErr * 1000).toFixed(1)} мс`);
   assert.ok(result.issues.some((i) => /часы рекордера ушли/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Время суток — по самой большой компании согласных часов, а не по середине между всеми', () => {
+  // Две камеры согласны в пределах секунды, петличка спешит на 3 с, ещё одна камера — на 50 с.
+  const v = agreeingClocks([
+    { device: 'A', v: 0.5, weak: false },
+    { device: 'B', v: -0.5, weak: false },
+    { device: 'Петличка', v: 3.2, weak: false },
+    { device: 'C', v: 50.3, weak: false },
+  ]);
+  assert.ok(Math.abs(v) <= 0.5, `${v}`);
+  // Камера с полусотней клипов без тайм-кода не перевешивает две согласные камеры.
+  const many = Array.from({ length: 50 }, () => ({ device: 'GoPro', v: 7, weak: false }));
+  assert.ok(Math.abs(agreeingClocks([...many, { device: 'A', v: 0.2, weak: false }, { device: 'B', v: -0.2, weak: false }])) <= 0.2);
 });
