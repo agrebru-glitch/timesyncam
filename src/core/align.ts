@@ -377,9 +377,11 @@ function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguo
     return { edge: null, ambiguous: true };
   }
   const share = winner.support / Math.max(1, winner.tested);
-  // Уверенно: совпало хотя бы в трёх окнах и в большинстве проверенных. Короткая общая часть (одно-два
-  // окна): все окна согласны и соперника нет.
-  const strong = winner.support >= 3 && share >= 0.5;
+  const runnerUp = Math.max(0, ...tried.filter((x) => x !== winner && Math.abs(x.d - winner.d) > PEAK_GUARD).map((x) => x.support));
+  // Уверенно: совпало хотя бы в трёх окнах и в большинстве проверенных — или хотя бы в восьми и вдвое чаще
+  // любого другого сдвига (устройство часть времени не слышит зал: человек с петличкой вышел, и такие окна
+  // совпасть не могут). Короткая общая часть (одно-два окна): все окна согласны и соперника нет.
+  const strong = winner.support >= 3 && (share >= 0.5 || (winner.support >= 8 && winner.support >= 2 * runnerUp));
   const short = winner.tested <= 2 && winner.support === winner.tested && (!second || second.support === 0 || winner !== best) && winner.score >= 0.25;
   if (!strong && !short) {
     log('    итог: уверенного совпадения нет');

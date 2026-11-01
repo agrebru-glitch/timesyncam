@@ -9,6 +9,8 @@ import { grabFrame, toolPath, toolsAvailable } from './ffmpeg.ts';
 import { audioWaveform } from './audio.ts';
 import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
 import { scanQr } from './qr.ts';
+import { extendedReport } from './materials.ts';
+import type { MaterialClip } from './materials.ts';
 import { checkForUpdate } from './update.ts';
 
 // Встроенный плеер получает доступ только к файлам, которые программа сама нашла при сканировании.
@@ -111,7 +113,7 @@ function createWindow(): void {
           const y = Number(lc[2]);
           win!.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
           win!.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-          await new Promise((r) => setTimeout(r, 1500));
+          await new Promise((r) => setTimeout(r, Number(process.env.SYNC_CLICK_WAIT ?? 1500)));
         }
         const img = await win!.webContents.capturePage();
         await writeFile(shot, img.toPNG());
@@ -210,21 +212,22 @@ ipcMain.handle('audio:waveform', async (_e, path: string) => {
   return audioWaveform(path);
 });
 
-// Отчёт для разработчика — файл JSON, куда скажет пользователь.
-ipcMain.handle('report:save', async (_e, defaultName: string, content: string) => {
-  // Проверочный запуск: отчёт пишется сразу по пути из переменной, без диалога.
-  if (process.env.SYNC_REPORT) {
-    await writeFile(process.env.SYNC_REPORT, content, 'utf8');
-    return process.env.SYNC_REPORT;
+// Расширенный отчёт для разработчика — ZIP-архив: отчёт, звук клипов без видео, сведения о файлах и системе.
+// Проверочный запуск (SYNC_REPORT) пишет архив сразу по пути из переменной, без диалога.
+ipcMain.handle('report:extended', async (event, defaultName: string, clips: MaterialClip[], report: string) => {
+  if (clips.some((c) => !allowedMedia.has(c.path))) return null;
+  let out = process.env.SYNC_REPORT ?? null;
+  if (!out) {
+    const r = await dialog.showSaveDialog(win!, {
+      title: 'Сохранить расширенный отчёт для разработчика',
+      defaultPath: defaultName,
+      filters: [{ name: 'Архив ZIP', extensions: ['zip'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    out = r.filePath;
   }
-  const r = await dialog.showSaveDialog(win!, {
-    title: 'Сохранить отчёт для разработчика',
-    defaultPath: defaultName,
-    filters: [{ name: 'Отчёт TimesynCam', extensions: ['json'] }],
-  });
-  if (r.canceled || !r.filePath) return null;
-  await writeFile(r.filePath, content, 'utf8');
-  return r.filePath;
+  await extendedReport(out, app.getVersion(), clips, report, (done, total) => event.sender.send('report:progress', { done, total }));
+  return out;
 });
 
 ipcMain.handle('export:save', async (_e, defaultName: string, content: string) => {

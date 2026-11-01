@@ -24,7 +24,9 @@ export interface Api {
   waveform(path: string): Promise<Uint8Array | null>;
   scanQr(path: string, localSec: number, fps: number, width: number, height: number, durationSec: number): Promise<{ result: QrResult | null; framesRead: number; framesWithCode: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;
-  saveReport(defaultName: string, content: string): Promise<string | null>;
+  // Расширенный отчёт для разработчика: ZIP с отчётом, звуком клипов без видео, сведениями о файлах и системе.
+  saveExtendedReport(defaultName: string, clips: { camera: string; path: string; audioChannels: number }[], report: string): Promise<string | null>;
+  onReportProgress(cb: (p: { done: number; total: number }) => void): () => void;
   reveal(path: string): Promise<void>;
   openLink(name: 'support' | 'github' | 'release'): Promise<void>;
   tools(): Promise<{ ffprobe: boolean; ffmpeg: boolean }>;

@@ -24,7 +24,13 @@ const api = {
   scanQr: (path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) =>
     ipcRenderer.invoke('qr:scan', path, localSec, fps, width, height, durationSec),
   saveExport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('export:save', defaultName, content),
-  saveReport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('report:save', defaultName, content),
+  saveExtendedReport: (defaultName: string, clips: { camera: string; path: string; audioChannels: number }[], report: string): Promise<string | null> =>
+    ipcRenderer.invoke('report:extended', defaultName, clips, report),
+  onReportProgress: (cb: (p: { done: number; total: number }) => void) => {
+    const listener = (_e: unknown, p: { done: number; total: number }) => cb(p);
+    ipcRenderer.on('report:progress', listener);
+    return () => ipcRenderer.removeListener('report:progress', listener);
+  },
   reveal: (path: string) => ipcRenderer.invoke('shell:reveal', path),
   openLink: (name: 'support' | 'github' | 'release') => ipcRenderer.invoke('shell:open-link', name),
   tools: (): Promise<{ ffprobe: boolean; ffmpeg: boolean }> => ipcRenderer.invoke('app:tools'),

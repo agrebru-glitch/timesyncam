@@ -307,3 +307,4 @@ button, input, select { font: inherit; color: inherit; }
 .report-box > div { display: flex; flex-direction: column; gap: 3px; }
 .report-box span { color: var(--text-2); font-size: 12px; }
 .report-box .btn { flex: none; }
+.report-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }

@@ -4,6 +4,7 @@ import { useApp } from '../App.tsx';
 import { api } from '../api.ts';
 import { buildReport } from '../report.ts';
 import { IconAlert, IconError, IconInfo } from '../icons.tsx';
+import { useState } from 'react';
 
 export function ErrorsPage() {
   const { state, dispatch, issues, synced, placements, fps } = useApp();
@@ -47,13 +48,27 @@ export function ErrorsPage() {
   const camName = (id: string | null) => state.cameras.find((c) => c.id === id)?.name ?? 'Общее';
   const hasClips = state.cameras.some((c) => c.clips.length > 0);
 
-  // Отчёт: имя файла с датой и временем, чтобы несколько отчётов не путались.
-  const saveReport = async () => {
+  // Имя с датой и временем, чтобы несколько отчётов не путались.
+  const stamp = () => {
     const d = new Date();
     const p = (n: number) => String(n).padStart(2, '0');
-    const name = `TimesynCam-отчёт-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
-    const path = await api.saveReport(name, buildReport(state, issues));
-    if (path) dispatch({ type: 'toast', text: 'Отчёт сохранён — отправьте этот файл разработчику', revealPath: path });
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  };
+  // Расширенный отчёт: один архив со всем, что нужно разобрать съёмку, — звук без видео, сведения, решения.
+  const [collecting, setCollecting] = useState<{ done: number; total: number } | null>(null);
+  const saveReport = async () => {
+    const clips = state.cameras.flatMap((c) => c.clips.map((k) => ({ camera: c.name, path: k.path, audioChannels: k.audioChannels })));
+    setCollecting({ done: 0, total: clips.length + 1 });
+    const off = api.onReportProgress((p) => setCollecting(p));
+    try {
+      const path = await api.saveExtendedReport(`TimesynCam-расширенный-отчёт-${stamp()}.zip`, clips, buildReport(state, issues));
+      if (path) dispatch({ type: 'toast', text: 'Расширенный отчёт сохранён — отправьте этот архив разработчику', revealPath: path });
+    } catch {
+      dispatch({ type: 'toast', text: 'Не получилось собрать отчёт — проверьте, что на диске хватает места' });
+    } finally {
+      off();
+      setCollecting(null);
+    }
   };
 
   return (
@@ -61,9 +76,11 @@ export function ErrorsPage() {
       <div className="report-box">
         <div>
           <b>Синхронизация ошиблась?</b>
-          <span>Сохраните отчёт и отправьте разработчику. В нём нет видео, звука и путей на диске — только сведения о клипах и решения программы.</span>
+          <span>Сохраните расширенный отчёт и отправьте разработчику. В архиве — звук клипов без видео (около 20 МБ на час записи), сведения о файлах и решения программы. Видео и полных путей на диске в нём нет. Займёт несколько минут.</span>
         </div>
-        <button className="btn" onClick={() => void saveReport()} disabled={!hasClips}>Сохранить отчёт для разработчика</button>
+        <button className="btn" onClick={() => void saveReport()} disabled={!hasClips || !!collecting}>
+          {collecting ? `Собираю отчёт ${collecting.done} из ${collecting.total}…` : 'Сохранить расширенный отчёт'}
+        </button>
       </div>
       <h1>Ошибки и предупреждения</h1>
       <p className="lead">
