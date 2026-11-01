@@ -1,5 +1,5 @@
 import type { ClipMeta } from '../core/types.ts';
-import type { AudioPiece } from '../core/audioSync.ts';
+import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
 import type { QrResult } from '../core/qrSync.ts';
 
 export interface ScanResult {
@@ -17,8 +17,10 @@ export interface Api {
   onScanProgress(cb: (p: { scanId: string; done: number; total: number }) => void): () => void;
   onAutoload(cb: (p: { folders: string[]; sync: boolean; tab?: string; at?: string; menu?: boolean; view?: string; control?: string; mode?: string; qr?: boolean; preview?: string }) => void): void;
   grabFrame(path: string, seconds: number): Promise<string | null>;
-  audioFeatures(path: string, startSec: number, durSec: number): Promise<AudioPiece | null>;
-  audioSamples(path: string, startSec: number, durSec: number, channel: number): Promise<Float32Array | null>;
+  // Сверка по звуку в фоновом потоке. null — сверку остановили.
+  syncAudio(job: AudioJob): Promise<AudioSyncResult | null>;
+  cancelSync(): Promise<void>;
+  onSyncProgress(cb: (p: { done: number; total: number }) => void): () => void;
   waveform(path: string): Promise<Uint8Array | null>;
   scanQr(path: string, localSec: number, fps: number, width: number, height: number, durationSec: number): Promise<{ result: QrResult | null; framesRead: number; framesWithCode: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;

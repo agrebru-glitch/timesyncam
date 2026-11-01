@@ -13,9 +13,13 @@ const api = {
     ipcRenderer.on('app:autoload', (_e, p) => cb(p));
   },
   grabFrame: (path: string, seconds: number): Promise<string | null> => ipcRenderer.invoke('media:grab', path, seconds),
-  audioFeatures: (path: string, startSec: number, durSec: number) => ipcRenderer.invoke('audio:features', path, startSec, durSec),
-  audioSamples: (path: string, startSec: number, durSec: number, channel: number): Promise<Float32Array | null> =>
-    ipcRenderer.invoke('audio:samples', path, startSec, durSec, channel),
+  syncAudio: (job: unknown) => ipcRenderer.invoke('sync:audio', job),
+  cancelSync: () => ipcRenderer.invoke('sync:cancel'),
+  onSyncProgress: (cb: (p: { done: number; total: number }) => void) => {
+    const listener = (_e: unknown, p: { done: number; total: number }) => cb(p);
+    ipcRenderer.on('sync:progress', listener);
+    return () => ipcRenderer.removeListener('sync:progress', listener);
+  },
   waveform: (path: string): Promise<Uint8Array | null> => ipcRenderer.invoke('audio:waveform', path),
   scanQr: (path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) =>
     ipcRenderer.invoke('qr:scan', path, localSec, fps, width, height, durationSec),

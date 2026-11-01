@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import type { Dispatch } from 'react';
 import type { Issue, Placement } from '../core/types.ts';
 import { applyRelocation, pilePlacements, planRelocation, relocateFrames, relocationIssues, runSync } from '../core/sync.ts';
-import { AUDIO_SEARCH_SEC, heardCameras, refineByAudio } from '../core/audioSync.ts';
+import { AUDIO_SEARCH_SEC, heardCameras } from '../core/audioSync.ts';
 import { controlCorrections } from '../core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
 import { defaultTimelineRate } from '../core/fcp7.ts';
@@ -256,20 +256,27 @@ export function App() {
       return;
     }
     dispatch({ type: 'audio-start' });
+    // Сверка идёт в фоновом потоке — окно не замирает, её можно остановить.
+    const offProgress = api.onSyncProgress(({ done, total }) => dispatch({ type: 'audio-progress', done, total }));
     try {
-      const audio = await refineByAudio(cameras, coarse, {
-        features: (clip, start, dur) => api.audioFeatures(clip.path, start, dur),
-        samples: (clip, start, dur, ch) => api.audioSamples(clip.path, start, dur, ch),
-      }, {
+      const audio = await api.syncAudio({
+        cameras,
+        coarse,
         searchSec: AUDIO_SEARCH_SEC,
         maxAnchors: 8,
-        isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true,
-        followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)),
-        onProgress: (done, total) => dispatch({ type: 'audio-progress', done, total }),
+        enabled: cameras.filter((c) => c.audioAssist).map((c) => c.id),
+        followers: cameras.filter((c) => c.follower).map((c) => c.id),
         pre,
-        fixed,
-        controlClips,
-      });
+        fixed: [...fixed],
+        controlClips: [...controlClips],
+      }).finally(offProgress);
+      if (!audio) {
+        // Сверку остановили — камеры остаются по тайм-коду, часам и контрольным кадрам.
+        dispatch({ type: 'audio-done', result: null });
+        if (Object.keys(pre).length) dispatch({ type: 'synced', result: runSync(cameras, pre, fixed), fit: true });
+        dispatch({ type: 'toast', text: 'Сверка по звуку остановлена — камеры стоят по тайм-коду и часам.' });
+        return;
+      }
       if (stateRef.current.version !== version) {
         dispatch({ type: 'audio-done', result: null });
         return;
@@ -465,6 +472,11 @@ export function App() {
                     : 'Синхронизировать'}
               </span>
             </button>
+            {state.audioRun && (
+              <button className="btn ghost sync-stop" title="Остановить сверку по звуку — камеры останутся по тайм-коду и часам" onClick={() => void api.cancelSync()}>
+                <IconX /> Остановить
+              </button>
+            )}
             {state.syncMenuOpen && <SyncMenu />}
           </div>
           <button

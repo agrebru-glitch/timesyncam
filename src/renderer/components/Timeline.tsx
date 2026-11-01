@@ -12,7 +12,8 @@ import { WAVE_RATE } from '../../core/audioSync.ts';
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
 const ROW_H = 52;
-const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600];
+// Шаг крупных делений линейки: от секунды до лет — линейка не захлёбывается метками при любом масштабе.
+const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 2 * 86400, 7 * 86400, 30 * 86400, 91 * 86400, 365 * 86400, 5 * 365 * 86400, 25 * 365 * 86400];
 const WAVES_KEY = 'timesyncam.showWaves';
 
 // Уровни огрублённой волны: на каждом следующем — максимум из двух соседних точек.
@@ -151,12 +152,14 @@ export function Timeline() {
 
     // Линейка: время суток, а до синхронизации — время от начала кучки.
     const rulerTz = synced ? tz : 0;
-    const step = STEPS.find((s) => s / vp.secPerPx >= 90) ?? 21600;
+    const step = STEPS.find((s) => s / vp.secPerPx >= 90) ?? STEPS[STEPS.length - 1];
     const minor = step / 5;
+    // Страховка: меток не больше, чем пикселей на экране.
+    const ticks = (t1 - t0) / minor;
     g.font = '11px "Cascadia Mono", ui-monospace, Menlo, Consolas, monospace';
     g.textBaseline = 'middle';
     const wallStart = Math.floor((t0 + rulerTz * 60) / minor) * minor - rulerTz * 60;
-    for (let t = wallStart; t <= t1; t += minor) {
+    for (let t = wallStart; t <= t1 && ticks < size.w * 2; t += minor) {
       if (!synced && t < -1e-6) continue;
       const xx = Math.round(x(t)) + 0.5;
       const isMajor = Math.abs(((t + rulerTz * 60) / step) - Math.round((t + rulerTz * 60) / step)) < 1e-6;
@@ -165,7 +168,7 @@ export function Timeline() {
       if (isMajor) {
         g.fillStyle = '#a4a6ad';
         const wall = ((t + tz * 60) % 86400 + 86400) % 86400;
-        const label = !synced ? formatClockTime(t, 0, step < 60) : wall < 1 ? `${formatDate(t, tz)}` : formatClockTime(t, tz, step < 60);
+        const label = !synced ? formatClockTime(t, 0, step < 60) : wall < 1 || step >= 86400 ? `${formatDate(t, tz)}` : formatClockTime(t, tz, step < 60);
         g.fillText(label, xx + 4, 9);
         g.fillStyle = 'rgba(255,255,255,0.035)';
         g.fillRect(xx, RULER_H, 1, size.h - RULER_H);

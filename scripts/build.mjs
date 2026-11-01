@@ -7,6 +7,8 @@ export async function buildElectron() {
   const common = { bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'], sourcemap: true, logLevel: 'warning' };
   await esbuild({ ...common, entryPoints: ['src/main/main.ts'], outfile: 'dist/main/main.cjs' });
   await esbuild({ ...common, entryPoints: ['src/preload/preload.ts'], outfile: 'dist/preload/preload.cjs' });
+  // Сверка по звуку — в отдельном потоке (src/main/syncWorker.ts).
+  await esbuild({ ...common, entryPoints: ['src/main/syncWorker.ts'], outfile: 'dist/main/syncWorker.cjs' });
   // Значок окна и панели задач — тот же, что у установщика.
   await mkdir('dist', { recursive: true });
   await copyFile('build/icon.png', 'dist/icon.png');

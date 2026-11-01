@@ -52,6 +52,9 @@
       "output": "release",
       "buildResources": "build"
     },
+    "asarUnpack": [
+      "dist/main/syncWorker.cjs"
+    ],
     "files": [
       "dist/**/*",
       "!dist/**/*.map",

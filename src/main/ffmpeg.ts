@@ -16,8 +16,14 @@ function resolveTool(name: 'ffprobe' | 'ffmpeg'): string {
   return exe;
 }
 
-const FFPROBE = resolveTool('ffprobe');
-const FFMPEG = resolveTool('ffmpeg');
+let FFPROBE = resolveTool('ffprobe');
+let FFMPEG = resolveTool('ffmpeg');
+
+// Фоновый поток не знает, где лежит программа: пути к ffmpeg ему передаёт главный процесс.
+export function useToolPaths(p: { ffmpeg: string; ffprobe: string }): void {
+  FFMPEG = p.ffmpeg;
+  FFPROBE = p.ffprobe;
+}
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {

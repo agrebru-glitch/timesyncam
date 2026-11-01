@@ -257,6 +257,19 @@ export interface AudioOptions {
   followers?: Set<string>; // ведомые камеры: сверяются по остальным, но опорой ни для кого не служат
 }
 
+// Задание сверки для фонового потока: то же, что AudioOptions, только без функций — их через поток не передать.
+export interface AudioJob {
+  cameras: Camera[];
+  coarse: SyncResult;
+  searchSec: number;
+  maxAnchors: number;
+  enabled: string[]; // камеры, которым можно поправлять время по звуку
+  followers: string[];
+  pre: Record<string, number>;
+  fixed: string[];
+  controlClips: string[];
+}
+
 const hasAudio = (c: ClipMeta) => c.audioChannels > 0 && c.captureFps === null;
 
 interface Pair {

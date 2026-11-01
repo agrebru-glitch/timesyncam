@@ -1,11 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'electron';
 import { createReadStream } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { extname, join, sep } from 'node:path';
 import { Readable } from 'node:stream';
+import { Worker } from 'node:worker_threads';
 import { AUDIO_EXT, scanPaths, VIDEO_EXT } from './scan.ts';
-import { grabFrame, toolsAvailable } from './ffmpeg.ts';
-import { audioFeatures, audioSamples, audioWaveform } from './audio.ts';
+import { grabFrame, toolPath, toolsAvailable } from './ffmpeg.ts';
+import { audioWaveform } from './audio.ts';
+import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
 import { scanQr } from './qr.ts';
 import { checkForUpdate } from './update.ts';
 
@@ -142,14 +144,51 @@ ipcMain.handle('media:grab', async (_e, path: string, seconds: number) => {
   return grabFrame(path, seconds);
 });
 
-ipcMain.handle('audio:features', async (_e, path: string, startSec: number, durSec: number) => {
-  if (!allowedMedia.has(path)) return null;
-  return audioFeatures(path, startSec, durSec);
+// Сверка по звуку — в фоновом потоке. Поток живёт, пока открыта программа, и помнит прочитанный звук;
+// «Остановить» завершает его, следующая сверка запустит новый.
+let syncWorker: Worker | null = null;
+let syncJob: { resolve: (r: AudioSyncResult | null) => void; reject: (e: Error) => void; progress: (done: number, total: number) => void } | null = null;
+
+function finishJob(fn: (job: NonNullable<typeof syncJob>) => void): void {
+  const job = syncJob;
+  syncJob = null;
+  if (job) fn(job);
+}
+
+function workerFor(): Worker {
+  if (syncWorker) return syncWorker;
+  // В собранной программе поток лежит рядом с архивом app.asar — в app.asar.unpacked.
+  const path = join(__dirname, 'syncWorker.cjs').replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
+  const w = new Worker(path, { workerData: { tools: { ffmpeg: toolPath('ffmpeg'), ffprobe: toolPath('ffprobe') } } });
+  w.on('message', (m: { type: 'progress'; done: number; total: number } | { type: 'done'; result: AudioSyncResult } | { type: 'error'; message: string }) => {
+    if (m.type === 'progress') syncJob?.progress(m.done, m.total);
+    else if (m.type === 'done') finishJob((j) => j.resolve(m.result));
+    else finishJob((j) => j.reject(new Error(m.message)));
+  });
+  w.on('error', (e: unknown) => finishJob((j) => j.reject(e instanceof Error ? e : new Error(String(e)))));
+  w.on('exit', () => {
+    if (syncWorker === w) syncWorker = null;
+    finishJob((j) => j.resolve(null));
+  });
+  syncWorker = w;
+  return w;
+}
+
+ipcMain.handle('sync:audio', (event, job: AudioJob) => {
+  // Поток читает только файлы, которые пользователь сам добавил в программу.
+  for (const cam of job.cameras) for (const c of cam.clips) if (!allowedMedia.has(c.path)) return null;
+  if (syncJob) return null;
+  return new Promise<AudioSyncResult | null>((resolve, reject) => {
+    syncJob = { resolve, reject, progress: (done, total) => event.sender.send('sync:progress', { done, total }) };
+    workerFor().postMessage(job);
+  });
 });
 
-ipcMain.handle('audio:samples', async (_e, path: string, startSec: number, durSec: number, channel: number) => {
-  if (!allowedMedia.has(path)) return null;
-  return audioSamples(path, startSec, durSec, channel);
+ipcMain.handle('sync:cancel', async () => {
+  const w = syncWorker;
+  syncWorker = null;
+  if (w) await w.terminate();
+  finishJob((j) => j.resolve(null));
 });
 
 ipcMain.handle('qr:scan', async (_e, path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) => {
