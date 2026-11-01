@@ -237,6 +237,18 @@ export interface AudioCameraResult {
   steps: { from: number; correction: number }[]; // где и на сколько менялась поправка
   anchors: AudioAnchor[];
   wideShift?: number | null; // сдвиг всей камеры, найденный поиском по всей записи
+  accuracySec?: number | null; // типичная погрешность места клипов по звуку (без расстояния до сцены)
+}
+
+// Ход часов звукового устройства относительно видео, измеренный по звуку.
+export interface DriftEstimate {
+  cameraId: string;
+  ppm: number; // секунда записи длится 1 + ppm·10⁻⁶ секунды реального времени
+  sigmaPpm: number;
+  points: number; // точек сверки, на которых измерен
+  longestSec: number; // самая длинная запись устройства
+  edgeErrorSec: number; // расхождение к краям этой записи, если ставить её по середине без выравнивания
+  apply: boolean; // оценка надёжна и расхождение заметно — при экспорте звук выравнивается
 }
 
 export interface AudioSyncResult {
@@ -244,6 +256,8 @@ export interface AudioSyncResult {
   corrections: Record<string, number>; // поправка каждого клипа в секундах
   issues: Issue[];
   log?: string[]; // журнал решений сверки — для отчёта разработчику
+  drift?: DriftEstimate[];
+  accuracy?: Record<string, number>; // погрешность места каждого клипа по звуку, секунды
 }
 
 export interface AudioOptions {

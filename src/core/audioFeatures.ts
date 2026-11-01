@@ -239,6 +239,36 @@ export interface ScoreTable {
   scores: Float64Array;
 }
 
+// Кусок отпечатка с кадра from длиной len (за краями — тишина).
+export function sliceFeatures(f: Features, from: number, len: number): Features {
+  const out = new Float32Array(len * f.bands);
+  const s = Math.max(0, from);
+  const e = Math.min(f.frames, from + len);
+  if (e > s) out.set(f.data.subarray(s * f.bands, e * f.bands), (s - from) * f.bands);
+  return { frames: len, bands: f.bands, data: out };
+}
+
+// Есть ли в куске отпечатка атаки звука, а не только тишина и ровный шум.
+export function hasAttacks(f: Features): boolean {
+  let n = 0;
+  for (let i = 0; i < f.data.length; i++) if (f.data[i] > 1) n++;
+  return n >= f.frames * 0.01;
+}
+
+// Грубый отпечаток: максимум по k кадрам — атаки не теряются.
+export function poolFeatures(f: Features, k: number): Features {
+  const n = Math.ceil(f.frames / k);
+  const out = new Float32Array(n * f.bands);
+  for (let t = 0; t < n; t++) {
+    for (let b = 0; b < f.bands; b++) {
+      let m = -Infinity;
+      for (let j = t * k; j < Math.min(f.frames, (t + 1) * k); j++) m = Math.max(m, f.data[j * f.bands + b]);
+      out[t * f.bands + b] = m;
+    }
+  }
+  return { frames: n, bands: f.bands, data: out };
+}
+
 export function xcorrFeatures(target: Features, ref: Features, minOverlap: number): ScoreTable | null {
   const n = target.frames;
   const m = ref.frames;
@@ -292,7 +322,10 @@ export function xcorrFeatures(target: Features, ref: Features, minOverlap: numbe
 }
 
 // Точная задержка между двумя кусками волны. x[0] при нулевом сдвиге совпадает с y[off].
-export function gccPhat(x: Float32Array, y: Float32Array, sr: number, off: number, maxLag: number): { lag: number; confidence: number } | null {
+// rival — высота самого сильного другого пика в пределах ±rivalLag относительно лучшего: эхо зала даёт второй пик
+// на своей задержке, и тогда неясно, какой из них — прямой звук. Ищется шире, чем сам сдвиг: отражение бывает
+// дальше окна поиска (y для этого берётся с запасом).
+export function gccPhat(x: Float32Array, y: Float32Array, sr: number, off: number, maxLag: number, rivalLag = maxLag): { lag: number; confidence: number; rival: number; rivalLag: number } | null {
   const size = nextPow2(x.length + y.length);
   const xr = new Float64Array(size);
   const xi = new Float64Array(size);
@@ -349,5 +382,17 @@ export function gccPhat(x: Float32Array, y: Float32Array, sr: number, off: numbe
     const d = y0 - 2 * y1 + y2;
     if (d < 0) frac = Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / d));
   }
-  return { lag: bestK + frac - off, confidence: best / rms };
+  // Другой пик — локальный максимум дальше 0,2 мс от лучшего (ширина самого пика при полосе до 8 кГц).
+  const guard = Math.max(2, Math.round(sr * 0.0002));
+  let second = 0;
+  let secondK = bestK;
+  for (let k = Math.max(1, off - rivalLag); k <= Math.min(size - 2, off + rivalLag); k++) {
+    if (Math.abs(k - bestK) <= guard) continue;
+    const v = xr[k];
+    if (v > second && v >= xr[k - 1] && v >= xr[k + 1]) {
+      second = v;
+      secondK = k;
+    }
+  }
+  return { lag: bestK + frac - off, confidence: best / rms, rival: second / best, rivalLag: secondK - off };
 }

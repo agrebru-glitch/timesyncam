@@ -1,10 +1,11 @@
 // Повтор сверки по расширенному отчёту тестера — без видео, по звуку из архива.
-//   node scripts/replay-report.mts <распакованный архив> [--old]
+//   node scripts/replay-report.mts <распакованный архив> [--json раскладка.json]
 // Восстанавливает клипы из report.json (время, тайм-код, откуда взято), подставляет звук <файл>.opus
 // и прогоняет раскладку и сверку. Печатает, где программа тестера поставила клипы и где их ставит сейчас.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runSync } from '../src/core/sync.ts';
+import { heardCameras } from '../src/core/audioSync.ts';
 import { alignByAudio } from '../src/core/align.ts';
 import { audioFeatures, audioSamples, audioWholeFeatures } from '../src/main/audio.ts';
 import type { Camera, ClipMeta } from '../src/core/types.ts';
@@ -35,7 +36,7 @@ const audio = await alignByAudio(cameras, coarse, {
   samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch),
   whole: (c) => audioWholeFeatures(c.path, c.durationSec),
 }, { searchSec: 30, maxAnchors: 8, isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true, followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)) });
-const now = runSync(cameras, audio.corrections);
+const now = runSync(cameras, audio.corrections, heardCameras(audio));
 
 for (const line of audio.log ?? []) console.log(line);
 console.log('--- клипы: у тестера → сейчас (секунды от начала съёмки)');
@@ -51,3 +52,13 @@ for (const cam of cameras) {
   }
 }
 for (const i of audio.issues) console.log(`  [${i.severity}] ${i.title}`);
+// Раскладка «файл → начало, с» — для сверки по звуку (probe) и сравнения с проектом монтажки.
+const jsonAt = process.argv.indexOf('--json');
+if (jsonAt > 0) {
+  const at: Record<string, number> = {};
+  for (const cam of cameras) for (const k of cam.clips) {
+    const p = now.placements.find((x) => x.clipId === k.id);
+    if (p) at[k.name] = p.start;
+  }
+  writeFileSync(process.argv[jsonAt + 1], JSON.stringify(at));
+}

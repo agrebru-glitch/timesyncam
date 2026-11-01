@@ -15,11 +15,12 @@
 //    который оператор отметил точным или звук подтвердил общим, держат своё место жёстко.
 // 5. Сдвиг каждой пары уточняется по самой волне на 48 кГц — до долей миллисекунды.
 import type { Camera, ClipMeta, Issue, IssueAction, Placement, SyncResult } from './types.ts';
-import { FEAT_RATE, FINE_SR, gccPhat, xcorrFeatures } from './audioFeatures.ts';
+import { FEAT_RATE, FINE_SR, gccPhat, hasAttacks as active, poolFeatures, sliceFeatures as slice, xcorrFeatures } from './audioFeatures.ts';
 import type { Features } from './audioFeatures.ts';
 import { correlate, SILENCE_DB } from './audioSync.ts';
 import type { AudioAnchor, AudioCameraResult, AudioFetch, AudioOptions, AudioPiece, AudioSyncResult } from './audioSync.ts';
 import { formatDurationHuman, pluralRu } from './format.ts';
+import { refineClips } from './refine.ts';
 
 const RATE = FEAT_RATE; // кадров отпечатка в секунду
 const POOL = 4; // грубый поиск — 25 кадров в секунду
@@ -148,36 +149,6 @@ function clockErrorAt(known: { at: number; c: number }[], at: number): number {
   const after = s.find((k) => k.at > at);
   if (before && after) return before.c + ((at - before.at) / (after.at - before.at)) * (after.c - before.c);
   return (before ?? after)!.c;
-}
-
-// Кусок отпечатка с кадра from длиной len (за краями — тишина).
-function slice(f: Features, from: number, len: number): Features {
-  const out = new Float32Array(len * f.bands);
-  const s = Math.max(0, from);
-  const e = Math.min(f.frames, from + len);
-  if (e > s) out.set(f.data.subarray(s * f.bands, e * f.bands), (s - from) * f.bands);
-  return { frames: len, bands: f.bands, data: out };
-}
-
-// Есть ли в куске отпечатка атаки звука, а не только тишина и ровный шум.
-function active(f: Features): boolean {
-  let n = 0;
-  for (let i = 0; i < f.data.length; i++) if (f.data[i] > 1) n++;
-  return n >= f.frames * 0.01;
-}
-
-// Грубый отпечаток: максимум по POOL кадрам — атаки не теряются.
-function pooled(f: Features): Features {
-  const n = Math.ceil(f.frames / POOL);
-  const out = new Float32Array(n * f.bands);
-  for (let t = 0; t < n; t++) {
-    for (let b = 0; b < f.bands; b++) {
-      let m = -Infinity;
-      for (let k = t * POOL; k < Math.min(f.frames, (t + 1) * POOL); k++) m = Math.max(m, f.data[k * f.bands + b]);
-      out[t * f.bands + b] = m;
-    }
-  }
-  return { frames: n, bands: f.bands, data: out };
 }
 
 // Лучшие сдвиги по таблице сравнения: локальные пики, не ближе guard друг к другу. На краю, где записи
@@ -616,7 +587,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   const audible = pieces.filter((p) => opts.isEnabled(p.cameraId) && p.members.some((m) => hasAudio(m.clip)));
   const clipsToRead = audible.flatMap((p) => p.members.filter((m) => hasAudio(m.clip)));
   let done = 0;
-  let left = clipsToRead.length + (audible.length * (audible.length - 1)) / 2 + audible.length * 2;
+  let left = 2 * clipsToRead.length + (audible.length * (audible.length - 1)) / 2 + audible.length * 2;
   const tick = (n = 1) => {
     done += n;
     left = Math.max(0, left - n);
@@ -647,7 +618,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     }
     if (any) {
       p.feat = { frames, bands: 12, data };
-      p.coarse = pooled(p.feat);
+      p.coarse = poolFeatures(p.feat, POOL);
     }
   }
 
@@ -842,7 +813,31 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       actions: [{ kind: 'open-faq', anchor: 'manual-sync' }],
     }));
   }
+  // 6. Уточнение каждого клипа по звуку: тайм-код через паузы, секунды BWF, «встык», ход часов.
+  const fixedClips = new Set<string>();
+  const exactClips = new Set(pieces.filter((p) => p.exact).flatMap((p) => p.members.map((m) => m.clip.id)));
+  for (const p of pieces) if (p.trust === 'anchor') for (const m of p.members) fixedClips.add(m.clip.id);
+  for (const e of edges) if (e.sound !== undefined) for (const n of [e.a, e.b]) for (const m of pieces[n].members) fixedClips.add(m.clip.id);
+  const refined = await refineClips({
+    cameras,
+    coarse,
+    corrections,
+    feats: got,
+    samples: (c, s, d, ch) => audio.samples(c, s, d, ch),
+    isEnabled: opts.isEnabled,
+    followers: opts.followers ?? new Set(),
+    fixedClips,
+    exactClips,
+    log,
+    tick,
+  });
+  Object.assign(corrections, refined.corrections);
+  issues.push(...refined.issues);
+
   for (const [cameraId, g] of guessed) {
+    // Записи, которые уточнение всё-таки нашло по звуку, — уже не догадка.
+    g.names = g.names.filter((name) => !pieces.some((p) => p.cameraId === cameraId && p.members.some((m) => m.clip.name === name && refined.measured.has(m.clip.id))));
+    if (!g.names.length) continue;
     const shown = g.names.slice(0, 5).join(', ') + (g.names.length > 5 ? '…' : '');
     issues.push(issue({
       severity: 'warning',
@@ -1002,19 +997,6 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       }));
     }
   }
-  // Ход часов рекордера за запись — в пределах нормы, но если заметен, говорим, как поставлена запись.
-  for (const e of used) {
-    const drift = Math.abs(e.slope) * e.span;
-    const rec = pieces[e.a].recorder ? pieces[e.a] : pieces[e.b].recorder ? pieces[e.b] : null;
-    if (!rec || drift <= 0.08 || issues.some((i) => i.cameraId === rec.cameraId && /часы рекордера ушли/.test(i.title))) continue;
-    issues.push(issue({
-      severity: 'info',
-      cameraId: rec.cameraId,
-      title: `«${nameOf(rec.cameraId)}»: за ${formatDurationHuman(e.span)} записи часы рекордера ушли на ${Math.round(drift * 1000)} мс — это в пределах погрешности`,
-      details: `Часы рекордера и камер идут чуть по-разному — для длинной записи это нормально. Запись поставлена по своей середине: к началу и к концу звук может отличаться от видео примерно на ±${Math.round(drift * 500)} мс. Если нужна точность до кадра по всей длине, подгоните отдельные места по хлопку в монтажке.`,
-      actions: [],
-    }));
-  }
   if (dropped.some((e) => !e.hard && e.support >= 3)) {
     issues.push(issue({
       severity: 'info',
@@ -1027,5 +1009,6 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
 
   for (const p of pieces) log(`место ${p.cameraId}#${p.id}: ${placed.has(p.id) ? `поправка ${(placed.get(p.id)! - p.prior).toFixed(3)} с` : 'по звуку не найдено'}`);
   opts.onProgress?.(done + left, done + left);
-  return { cameras: results, corrections, issues, log: lines };
+  for (const r of results) r.accuracySec = refined.deviceAccuracy.get(r.cameraId) ?? null;
+  return { cameras: results, corrections, issues, log: lines, drift: refined.drift, accuracy: refined.accuracy };
 }

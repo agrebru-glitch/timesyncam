@@ -35,7 +35,8 @@ export const BURSTS: Burst[] = [];
 
 // rate — ход часов устройства: 1 + 40e-6 значит, что его секунда на 40 мкс длиннее настоящей (кварц отстаёт).
 // muteUntil — до этого момента (настоящее время) устройство писало только шум.
-export function record(fromEpoch: number, dur: number, sr: number, gain: number, noiseSeed: number, opts: { silent?: boolean; noise?: number; bursts?: Burst[]; rate?: number; muteUntil?: number } = {}): Float32Array {
+// echo — отражение в зале: каждый звук приходит ещё раз через delay секунд с громкостью gain от прямого.
+export function record(fromEpoch: number, dur: number, sr: number, gain: number, noiseSeed: number, opts: { silent?: boolean; noise?: number; bursts?: Burst[]; rate?: number; muteUntil?: number; echo?: { delay: number; gain: number } } = {}): Float32Array {
   const n = Math.round(dur * sr);
   const out = new Float32Array(n);
   if (opts.silent) return out;
@@ -44,7 +45,9 @@ export function record(fromEpoch: number, dur: number, sr: number, gain: number,
   const noise = opts.noise ?? 0.02;
   for (let i = 0; i < n; i++) out[i] = ((mix(noiseSeed ^ Math.imul(i + 1, 0x9e3779b1)) / 4294967296) * 2 - 1) * noise;
   const rate = opts.rate ?? 1;
-  for (const b of opts.bursts ?? BURSTS) {
+  const echo = opts.echo;
+  const bursts = (opts.bursts ?? BURSTS).flatMap((b) => (echo ? [b, { ...b, t: b.t + echo.delay, amp: b.amp * echo.gain }] : [b]));
+  for (const b of bursts) {
     if (b.t < fromEpoch - 0.2 || b.t > fromEpoch + dur * rate || b.t < (opts.muteUntil ?? -Infinity)) continue;
     const i0 = Math.max(0, Math.floor(((b.t - fromEpoch) / rate) * sr));
     const i1 = Math.min(n, Math.ceil(((b.t + 0.12 - fromEpoch) / rate) * sr));
@@ -59,7 +62,7 @@ export function record(fromEpoch: number, dur: number, sr: number, gain: number,
   return out;
 }
 
-export function fakeAudio(truth: Map<string, number>, silentIds = new Set<string>(), bursts: Burst[] = BURSTS, rates = new Map<string, number>(), mutes = new Map<string, number>()): AudioFetch {
+export function fakeAudio(truth: Map<string, number>, silentIds = new Set<string>(), bursts: Burst[] = BURSTS, rates = new Map<string, number>(), mutes = new Map<string, number>(), echoes = new Map<string, { delay: number; gain: number }>()): AudioFetch {
   // У каждой камеры свой шум и своя громкость, как у настоящих микрофонов.
   const hash = (s: string) => [...s].reduce((h, ch) => (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0, 7);
   const gain = (c: ClipMeta) => 0.4 + (hash(c.id) % 3) * 0.2;
@@ -67,10 +70,10 @@ export function fakeAudio(truth: Map<string, number>, silentIds = new Set<string
   return {
     features: async (c, start, dur) => {
       const len = Math.min(dur, c.durationSec - start);
-      const s = record(truth.get(c.id)! + start * (rates.get(c.id) ?? 1), len, FEAT_SR, gain(c), seed(c, start, 1), { silent: silentIds.has(c.id), bursts, rate: rates.get(c.id), muteUntil: mutes.get(c.id) });
+      const s = record(truth.get(c.id)! + start * (rates.get(c.id) ?? 1), len, FEAT_SR, gain(c), seed(c, start, 1), { silent: silentIds.has(c.id), bursts, rate: rates.get(c.id), muteUntil: mutes.get(c.id), echo: echoes.get(c.id) });
       const picked = pickChannel([s, s], FEAT_SR, peakDb, SILENCE_DB);
       return { feat: picked.feat, peakDb: picked.peakDb, channel: picked.channel };
     },
-    samples: async (c, start, dur) => record(truth.get(c.id)! + start * (rates.get(c.id) ?? 1), Math.min(dur, c.durationSec - start), FINE_SR, gain(c), seed(c, start, 2), { bursts, rate: rates.get(c.id) }),
+    samples: async (c, start, dur) => record(truth.get(c.id)! + start * (rates.get(c.id) ?? 1), Math.min(dur, c.durationSec - start), FINE_SR, gain(c), seed(c, start, 2), { bursts, rate: rates.get(c.id), echo: echoes.get(c.id) }),
   };
 }

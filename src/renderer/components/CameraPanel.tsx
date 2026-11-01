@@ -74,6 +74,8 @@ function audioText(au: AudioCameraResult | undefined, cam: Camera, running: bool
   if (running) return { title: 'Сверяю…' };
   if (!au) return null;
   const clips = au.anchors.filter((a) => a.role !== 'weak' && a.role !== 'ignored').length;
+  // Точность по звуку — без расстояния до сцены: звук идёт около 3 мс на метр, его по звуку не видно.
+  const acc = au.accuracySec != null ? ` · точность ±${au.accuracySec < 0.001 ? '1 мс' : formatDurationHuman(au.accuracySec)}` : '';
   switch (au.status) {
     case 'reference':
       return { title: 'Опорная для сверки', sub: 'По её звуку выравниваются остальные камеры' };
@@ -82,15 +84,15 @@ function audioText(au: AudioCameraResult | undefined, cam: Camera, running: bool
         ? { title: `Расходится по звуку на ${formatSigned(au.correction)}`, sub: 'Тайм-код точный, раскладка не менялась. Возможно, камеры стояли далеко друг от друга.', tone: 'warn' }
         : { title: 'Звук совпал с тайм-кодом', tone: 'ok' };
     case 'confirmed':
-      return { title: 'Звук подтвердил раскладку', sub: `Точек сверки: ${clips}, расхождение меньше кадра`, tone: 'ok' };
+      return { title: 'Звук подтвердил раскладку', sub: `Точек сверки: ${clips}${acc || ', расхождение меньше кадра'}`, tone: 'ok' };
     case 'applied': {
       const wide = au.wideShift != null ? `Найдена по звуку: часы сбиты на ${formatDurationHuman(Math.abs(au.wideShift))}. ` : '';
       if (au.model === 'per-clip' && cam.clips.length > 0 && cam.clips.every((c) => !c.hasVideo)) {
-        return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}. Каждая запись встала по своей середине — штатный ход часов рекордера учтён`, tone: 'ok' };
+        return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}${acc}. Ход часов рекордера измерен по звуку`, tone: 'ok' };
       }
-      if (au.model === 'per-clip') return { title: 'Поправлена по звуку', sub: `${wide}Своя поправка у клипов с общим звуком (${clips}), остальным — по ближайшей точке`, tone: 'ok' };
-      if (au.model === 'per-anchor') return { title: `Поправка менялась по ходу съёмки: ${au.steps.length} шага`, sub: `${wide}В начале ${formatSigned(au.steps[0].correction)}, в конце ${formatSigned(au.steps[au.steps.length - 1].correction)}`, tone: 'ok' };
-      return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}`, tone: 'ok' };
+      if (au.model === 'per-clip') return { title: 'Поправлена по звуку', sub: `${wide}Своя поправка у клипов с общим звуком (${clips}), остальным — по ближайшей точке${acc}`, tone: 'ok' };
+      if (au.model === 'per-anchor') return { title: `Поправка менялась по ходу съёмки: ${au.steps.length} шага`, sub: `${wide}В начале ${formatSigned(au.steps[0].correction)}, в конце ${formatSigned(au.steps[au.steps.length - 1].correction)}${acc}`, tone: 'ok' };
+      return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}${acc}`, tone: 'ok' };
     }
     case 'no-overlap':
       return { title: 'Не с чем сверить', sub: 'Нет общего звука с другими камерами' };

@@ -52,8 +52,8 @@ test('Рекордер с датой 2010 года и тайм-кодом по �
   assert.ok(coarse.cameras.find((c) => c.cameraId === 'Zoom')!.dateOutlierSec !== null);
   const result = await alignByAudio(cams, coarse, fakeAudio(truth), opts);
   for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
-  // Камера A с точным тайм-кодом не сдвинулась.
-  assert.ok(Math.abs(result.corrections[a.id] ?? 0) < 1e-9);
+  // Камера A с точным тайм-кодом не сдвинулась (уточнение по звуку двигает её меньше чем на полмиллисекунды).
+  assert.ok(Math.abs(result.corrections[a.id] ?? 0) < 0.0005, `${result.corrections[a.id]}`);
   const final = runSync(cams, result.corrections);
   assert.ok(final.end - final.start < 3600);
 });
@@ -159,7 +159,10 @@ test('Рекордер: часовая запись с уходом часов �
   // В середине записи звук совпадает точно: начало записи стоит на половину ухода часов раньше середины.
   const midErr = start + 1700 - (T16 + 5 + 1700 * RATE);
   assert.ok(Math.abs(midErr) < 0.01, `в середине ошибка ${(midErr * 1000).toFixed(1)} мс`);
-  assert.ok(result.issues.some((i) => /часы рекордера ушли/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+  // Ход часов измерен по звуку: 40 миллионных, запись выравнивается при экспорте.
+  const drift = result.drift?.find((d) => d.cameraId === 'Рекордер');
+  assert.ok(drift && Math.abs(drift.ppm - 40) < 2 && drift.apply, JSON.stringify(drift));
+  assert.ok(result.issues.some((i) => /часы отстают на 40 ppm/.test(i.title)), result.issues.map((i) => i.title).join('; '));
 });
 
 test('Время суток — по самой большой компании согласных часов, а не по середине между всеми', () => {
@@ -263,4 +266,88 @@ test('Петличка скопирована без времени в имен�
   for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
   const warn = result.issues.find((i) => i.cameraId === 'Петличка' && /не нашлась по звуку/.test(i.title));
   assert.ok(warn && /встык/.test(warn.details ?? '') && warn.details!.includes(lav[2].name), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Уточнение: тайм-код камеры сбился через паузу на 0,4 с — второй клип встаёт по звуку, с сообщением', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 1500, recordedSec: 1500 });
+  truth.set(a.id, T16);
+  // Камера B: Free Run, тайм-код на 5000 с впереди. После паузы камеру включили — тайм-код сбился на 0,4 с,
+  // по часам (точным до секунды) этого не видно.
+  const b1 = clip({ start: T16 + 100, tcSeconds: tcOf(T16 + 100, 5000), durationSec: 400, recordedSec: 400 });
+  const b2 = clip({ start: T16 + 700, tcSeconds: tcOf(T16 + 700, 5000.4), durationSec: 400, recordedSec: 400 });
+  truth.set(b1.id, T16 + 100);
+  truth.set(b2.id, T16 + 700);
+  const cams = [camera('A', [a]), camera('B', [b1, b2])];
+  const coarse = runSync(cams);
+  assert.equal(coarse.cameras.find((c) => c.cameraId === 'B')!.timecodeJumps, 0); // по часам скачка не видно
+  const result = await alignByAudio(cams, coarse, fakeAudio(truth), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+  assert.ok(result.issues.some((i) => i.cameraId === 'B' && /тайм-код сбивался после пауз/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Уточнение: «встык» по часам оказался паузой в 2 с — клип встаёт по звуку', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 900, recordedSec: 900 });
+  truth.set(a.id, T16);
+  // Камера без тайм-кода: по её часам второй клип начался через секунду после конца первого, на деле — через две.
+  const c1 = clip({ start: T16 + 50, durationSec: 300, recordedSec: 300 });
+  const c2 = clip({ start: T16 + 50 + 300 + 1, durationSec: 300, recordedSec: 300 });
+  truth.set(c1.id, T16 + 50.4);
+  truth.set(c2.id, T16 + 50.4 + 300 + 2);
+  const cams = [camera('A', [a]), camera('C', [c1, c2])];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+  assert.ok(result.issues.some((i) => i.cameraId === 'C' && /не одна запись/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Уточнение: BWF-время рекордера — целые секунды; второй файл встаёт по звуку, а не по округлённому времени', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 1400, recordedSec: 1400 });
+  truth.set(a.id, T16);
+  const rec = (real: number, dur: number) => {
+    const c = clip({ start: Math.floor(real), tcSeconds: tcOf(Math.floor(real)), durationSec: dur, recordedSec: dur, hasVideo: false, rate: null, width: null, height: null });
+    Object.assign(c, { tc: { ...c.tc!, source: 'bwf' } });
+    truth.set(c.id, real);
+    return c;
+  };
+  const z1 = rec(T16 + 30.37, 500);
+  const z2 = rec(T16 + 800.79, 400);
+  const cams = [camera('A', [a]), camera('Zoom', [z1, z2])];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+  assert.ok(result.issues.some((i) => i.cameraId === 'Zoom' && /целыми секундами/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Ход часов в пределах кадра не выравнивается и не тревожит сообщениями', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 2000, recordedSec: 2000 });
+  const rec = clip({ start: T16 + 10, durationSec: 1800, recordedSec: 1800, hasVideo: false, rate: null, width: null, height: null });
+  truth.set(a.id, T16);
+  truth.set(rec.id, T16 + 10);
+  const cams = [camera('A', [a]), camera('Рекордер', [rec])];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth, new Set(), undefined, new Map([[rec.id, 1 + 5e-6]])), opts);
+  const drift = result.drift?.find((d) => d.cameraId === 'Рекордер');
+  assert.ok(drift && Math.abs(drift.ppm - 5) < 2 && !drift.apply, JSON.stringify(drift));
+  assert.ok(!result.issues.some((i) => /ход часов|ppm/.test(i.title)), result.issues.map((i) => i.title).join('; '));
+});
+
+test('Погрешность: у записи с сильным эхом точность честно хуже, у чистых — до миллисекунд', async () => {
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 900, recordedSec: 900 });
+  const b = clip({ start: T16 + 20, durationSec: 800, recordedSec: 800 });
+  const r = clip({ start: T16 + 40, durationSec: 700, recordedSec: 700, hasVideo: false, rate: null, width: null, height: null });
+  truth.set(a.id, T16);
+  truth.set(b.id, T16 + 20);
+  truth.set(r.id, T16 + 40);
+  const cams = [camera('A', [a]), camera('B', [b]), camera('Эхо', [r])];
+  // Рекордер у стены: отражение через 35 мс громче прямого звука.
+  const echoes = new Map([[r.id, { delay: 0.035, gain: 1.2 }]]);
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth, new Set(), undefined, new Map(), new Map(), echoes), opts);
+  const acc = (id: string) => result.cameras.find((c) => c.cameraId === id)!.accuracySec ?? NaN;
+  assert.ok(acc('A') < 0.003 && acc('B') < 0.003, `A ${acc('A')}, B ${acc('B')}`);
+  assert.ok(acc('Эхо') >= 0.012, `эхо: ${acc('Эхо')}`);
+  // Место — у прямого звука или у отражения, но не дальше.
+  const e = errors(cams, result.corrections, truth).get(r.id)!;
+  assert.ok(Math.abs(e) < 0.04, `${(e * 1000).toFixed(1)} мс`);
 });
