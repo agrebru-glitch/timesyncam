@@ -4,7 +4,10 @@ import { readFileSync } from 'node:fs';
 
 // Кнопки «Скачать» в README ведут прямо на файлы релиза — при смене версии их нужно обновить.
 test('ссылки на скачивание в README — на текущую версию', () => {
-  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+  const { version: full } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+  // Бета (0.4.0-beta.1) в README не попадает: ссылки ведут на последний выпуск — проверяем только итоговые версии.
+  if (full.includes('-')) return;
+  const version = full;
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const links = [...readme.matchAll(/releases\/download\/(v[^/]+)\/([^")\s]+)/g)];
   assert.ok(links.length >= 4, 'в README нет ссылок на файлы релиза');
