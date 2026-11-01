@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'electron';
 import { createReadStream } from 'node:fs';
-import { stat, writeFile } from 'node:fs/promises';
-import { extname, join, sep } from 'node:path';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname, extname, join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
 import { AUDIO_EXT, scanPaths, VIDEO_EXT } from './scan.ts';
@@ -123,9 +123,33 @@ function createWindow(): void {
   });
 }
 
+// Последняя папка, откуда брали клипы, — чтобы для следующей камеры не идти к ней заново. Хранится между запусками.
+const settingsPath = () => join(app.getPath('userData'), 'settings.json');
+let lastDir: string | undefined;
+async function rememberDir(paths: string[], isFile: boolean): Promise<void> {
+  if (!paths.length) return;
+  lastDir = isFile ? dirname(paths[0]) : dirname(paths[0].replace(/[\\/]+$/, ''));
+  try {
+    await writeFile(settingsPath(), JSON.stringify({ lastDir }), 'utf8');
+  } catch {
+    // запоминать необязательно
+  }
+}
+async function startDir(): Promise<string | undefined> {
+  if (lastDir) return lastDir;
+  try {
+    lastDir = (JSON.parse(await readFile(settingsPath(), 'utf8')) as { lastDir?: string }).lastDir;
+  } catch {
+    lastDir = undefined;
+  }
+  return lastDir;
+}
+
 ipcMain.handle('dialog:pick-folder', async () => {
-  const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'multiSelections'], title: 'Папка с клипами камеры' });
-  return r.canceled ? null : r.filePaths;
+  const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory', 'multiSelections'], title: 'Папка с клипами камеры', defaultPath: await startDir() });
+  if (r.canceled) return null;
+  await rememberDir(r.filePaths, false);
+  return r.filePaths;
 });
 
 // Отдельные файлы камеры или рекордера — на Windows диалог не умеет выбирать сразу и папки, и файлы.
@@ -133,12 +157,15 @@ ipcMain.handle('dialog:pick-files', async () => {
   const r = await dialog.showOpenDialog(win!, {
     properties: ['openFile', 'multiSelections'],
     title: 'Файлы камеры или рекордера',
+    defaultPath: await startDir(),
     filters: [
       { name: 'Видео и звук', extensions: [...VIDEO_EXT, ...AUDIO_EXT].map((e) => e.slice(1)) },
       { name: 'Все файлы', extensions: ['*'] },
     ],
   });
-  return r.canceled ? null : r.filePaths;
+  if (r.canceled) return null;
+  await rememberDir(r.filePaths, true);
+  return r.filePaths;
 });
 
 ipcMain.handle('scan:paths', async (event, scanId: string, paths: string[]) => {

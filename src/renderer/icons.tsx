@@ -19,6 +19,11 @@ export const IconPlus = ({ className }: P) => base(<g><path d="M12 5v14" /><path
 export const IconFolder = ({ className }: P) => base(<path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />, className);
 export const IconQr = ({ className }: P) => base(<g><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><path d="M14 14h2v2h-2zM18 14h2M14 18v2M17 17h3v3h-3z" /></g>, className);
 
+export const IconCamera = ({ className }: P) => base(<g><rect x="3" y="7" width="18" height="13" rx="2" /><path d="M8 7l1.5-2.5h5L16 7" /><circle cx="12" cy="13.5" r="3.5" /></g>, className);
+export const IconHeadphones = ({ className }: P) => base(<g><path d="M4 15v-3a8 8 0 0 1 16 0v3" /><rect x="3" y="14" width="4.5" height="6" rx="1.5" /><rect x="16.5" y="14" width="4.5" height="6" rx="1.5" /></g>, className);
+export const IconTimer = ({ className }: P) => base(<g><circle cx="12" cy="13.5" r="7.5" /><path d="M12 13.5V9.5" /><path d="M9.5 3h5" /><path d="M12 3v2.5" /></g>, className);
+export const IconTimerSound = ({ className }: P) => base(<g><circle cx="10" cy="13.5" r="6.5" /><path d="M10 13.5V10" /><path d="M8 4h4" /><path d="M18.5 9.5a5 5 0 0 1 0 8" /><path d="M21 7.5a8 8 0 0 1 0 12" /></g>, className);
+
 export const IconHeart = ({ className }: P) => base(<path d="M12 19.5s-7.5-4.6-7.5-10A4.2 4.2 0 0 1 12 7a4.2 4.2 0 0 1 7.5 2.5c0 5.4-7.5 10-7.5 10z" />, className);
 
 // Знак программы — как иконка приложения: клипы камер и курсор синхронизации.

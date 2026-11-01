@@ -136,7 +136,11 @@ test('Экспорт XML: дорожка на камеру, таймлиния �
   assert.match(xml, /<sequence[\s\S]*?<timecode>[\s\S]*?<string>00:00:00:00<\/string><frame>0<\/frame>/);
   assert.match(xml, /file:\/\/localhost\/D:\/%D0%A1%D1%8A%D1%91%D0%BC%D0%BA%D0%B0%2027_10\/C9151\.MP4/);
   assert.match(xml, /Тест &amp; проверка/);
-  assert.equal((xml.match(/<track>/g) ?? []).length, 3); // видео + 2 канала звука
+  assert.equal((xml.match(/<track[ >]/g) ?? []).length, 3); // видео + 2 канала звука
+  // Два канала камеры — стереодорожка для Premiere, а не два моно.
+  assert.equal((xml.match(/premiereTrackType="Stereo"/g) ?? []).length, 2);
+  assert.match(xml, /currentExplodedTrackIndex="0"[^>]*totalExplodedTrackCount="2"/);
+  assert.match(xml, /premiereChannelType="stereo"/);
   const starts = [...xml.matchAll(/<start>(\d+)<\/start>/g)].map((m) => Number(m[1]));
   assert.equal(starts[0], 0);
   assert.equal(starts[1], Math.round((r.placements[1].start - r.placements[0].start) * 25));

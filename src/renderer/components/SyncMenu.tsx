@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useApp } from '../App.tsx';
+import { IconQr, IconTimer, IconTimerSound } from '../icons.tsx';
 import type { SyncMode } from '../state.ts';
 
 const OPTIONS: { mode: SyncMode; title: string; text: string }[] = [
@@ -56,7 +57,9 @@ export function SyncMenu() {
             onClick={() => !disabled && void doSync(o.mode)}
             title={noFrames ? 'Сначала отметьте контрольные кадры: правая кнопка по клипу на таймлинии → «Выбрать контрольным кадром»' : disabled ? 'Для сверки по звуку нужен ffmpeg' : undefined}
           >
-            <span className="radio" aria-hidden="true" />
+            <span className="sync-icon" aria-hidden="true">
+              {o.mode === 'control' ? <IconQr className="icon" /> : o.mode === 'audio' ? <IconTimerSound className="icon" /> : <IconTimer className="icon" />}
+            </span>
             <span className="sync-option-body">
               <span className="sync-option-title">
                 {o.title}

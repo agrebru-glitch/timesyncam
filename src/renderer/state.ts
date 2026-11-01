@@ -63,6 +63,19 @@ export interface State {
 }
 
 let camSeq = 0;
+// Имя дорожки по папке. Служебные папки карт памяти (CLIP, DCIM, PRIVATE, M4ROOT, 100GOPRO…) пропускаем —
+// берём папку повыше, которую назвал человек.
+const SERVICE_FOLDER = /^(clip|clips|dcim|private|m4root|avchd|bdmv|stream|xdroot|sub|thmbnl|general|contents|video|audio|\d{3}[a-z_]{0,8}|\d{3}gopro|\d{3}media)$/i;
+export function folderTitle(path: string | undefined): string | null {
+  if (!path) return null;
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (/^[a-z]:$/i.test(parts[i])) break;
+    if (!SERVICE_FOLDER.test(parts[i])) return parts[i].slice(0, 40);
+  }
+  return null;
+}
+
 export function newCamera(index: number): Camera {
   camSeq += 1;
   return {
@@ -200,7 +213,9 @@ export function reducer(state: State, a: Action): State {
         const known = new Set(c.clips.map((x) => x.path));
         const fresh = a.clips.filter((x) => !known.has(x.path));
         added = fresh.length;
-        return { ...c, clips: [...c.clips, ...fresh], folders: [...new Set([...c.folders, ...a.folders])], scanning: null };
+        // Дорожка со стандартным именем берёт имя папки, как её назвал оператор: «CAM 01», «Звук петлички».
+        const named = c.clips.length === 0 && fresh.length > 0 && /^(Камера|Звук) \d+$/.test(c.name) ? folderTitle(a.folders[0]) : null;
+        return { ...c, name: named ?? c.name, clips: [...c.clips, ...fresh], folders: [...new Set([...c.folders, ...a.folders])], scanning: null };
       });
       // Появилась вторая (третья…) камера с клипами — напоминаем про контрольный кадр.
       const wasEmpty = !state.cameras.find((c) => c.id === a.cameraId)?.clips.length;

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Placement } from '../../core/types.ts';
+import type { Camera, Placement } from '../../core/types.ts';
+import { rateValue } from '../../core/timecode.ts';
 import { formatClockTime, formatDate, pluralRu } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
-import { IconPlus } from '../icons.tsx';
+import { IconCamera, IconHeadphones, IconPlus } from '../icons.tsx';
+import { newCamera } from '../state.ts';
 import type { Viewport } from '../state.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { isMac } from '../platform.ts';
@@ -30,6 +32,23 @@ function pyramid(w: Uint8Array): Uint8Array[] {
   }
   pyramids.set(w, p);
   return p;
+}
+
+// Сведения о дорожке, как в монтажке: «2 клипа · 29,97 к/с · стерео», у рекордера — «4 клипа · 48 кГц · моно».
+function trackInfo(cam: Camera): string {
+  const most = <T,>(xs: T[]): T | undefined => {
+    const m = new Map<T, number>();
+    for (const x of xs) m.set(x, (m.get(x) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  };
+  const parts = [pluralRu(cam.clips.length, 'клип', 'клипа', 'клипов')];
+  const fps = most(cam.clips.filter((c) => c.hasVideo && c.rate).map((c) => Math.round(rateValue(c.rate!) * 100) / 100));
+  const sr = most(cam.clips.filter((c) => c.audioSampleRate).map((c) => c.audioSampleRate!));
+  if (fps) parts.push(`${String(fps).replace('.', ',')} к/с`);
+  else if (sr) parts.push(`${String(sr / 1000).replace('.', ',')} кГц`);
+  const ch = most(cam.clips.map((c) => c.audioChannels)) ?? 0;
+  parts.push(ch === 0 ? 'без звука' : ch === 1 ? 'моно' : ch === 2 ? 'стерео' : `${ch} кан.`);
+  return parts.join(' · ');
 }
 
 export function Timeline() {
@@ -563,24 +582,36 @@ export function Timeline() {
             onDragLeave={() => setDropRow(null)}
             onDrop={(e) => onDrop(e, r.index)}
           >
-            <span className="t"><span className="cam-dot" style={{ background: cameraColor(r.index) }} />{r.cam.name}</span>
+            <span className="t">
+              <span className="cam-dot" style={{ background: cameraColor(r.index) }} />
+              {r.cam.clips.length > 0 && r.cam.clips.every((c) => !c.hasVideo) ? <IconHeadphones className="icon track-kind" /> : <IconCamera className="icon track-kind" />}
+              {r.cam.name}
+            </span>
             <span className="s">
               {r.cam.scanning
                 ? `Читаю ${r.cam.scanning.done} из ${r.cam.scanning.total || '…'}`
                 : r.cam.clips.length
-                  ? `${pluralRu(r.cam.clips.length, 'клип', 'клипа', 'клипов')}${r.cam.follower ? ' · ведомая' : ''}`
+                  ? `${trackInfo(r.cam)}${r.cam.follower ? ' · ведомая' : ''}`
                   : 'Перетащите папку или файлы'}
             </span>
           </div>
         ))}
         <div
           className={`tl-add ${dropRow === 'new' ? 'drop' : ''}`}
-          onClick={() => dispatch({ type: 'add-camera' })}
           onDragOver={(e) => { e.stopPropagation(); onDragOver(e, 'new'); }}
           onDragLeave={() => setDropRow(null)}
           onDrop={(e) => onDrop(e, 'new')}
         >
-          <IconPlus /> Добавить камеру/рекордер
+          <button className="tl-add-btn" onClick={() => dispatch({ type: 'add-camera' })} title="Новая дорожка для камеры">
+            <IconPlus /> <IconCamera className="icon" /> Камера
+          </button>
+          <button
+            className="tl-add-btn"
+            onClick={() => dispatch({ type: 'add-camera', camera: { ...newCamera(state.cameras.length + 1), name: `Звук ${state.cameras.filter((c) => /^Звук \d+$/.test(c.name)).length + 1}` } })}
+            title="Новая дорожка для рекордера, петлички или звука с телефона"
+          >
+            <IconPlus /> <IconHeadphones className="icon" /> Звук
+          </button>
         </div>
       </div>
       <div

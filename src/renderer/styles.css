@@ -308,3 +308,15 @@ button, input, select { font: inherit; color: inherit; }
 .report-box span { color: var(--text-2); font-size: 12px; }
 .report-box .btn { flex: none; }
 .report-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+/* Дорожки: значок камеры или наушников, кнопки «Камера» и «Звук». */
+.tl-head .t .track-kind { width: 14px; height: 14px; color: var(--text-2); flex: none; }
+.tl-add { gap: 4px; cursor: default; }
+.tl-add-btn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.tl-add-btn:hover { color: var(--text); background: var(--hover); }
+.tl-add-btn .icon { width: 14px; height: 14px; }
+/* Меню синхронизации: значок режима вместо кружка. */
+.sync-option .sync-icon { width: 28px; height: 28px; border-radius: 8px; flex: none; display: grid; place-items: center; background: var(--surface-2); color: var(--text-2); margin-top: 1px; }
+.sync-option .sync-icon .icon { width: 18px; height: 18px; }
+.sync-option.on .sync-icon { background: var(--accent); color: #fff; }
+.sync-option.precise .sync-icon { color: #6fdc9d; }
+.sync-option.precise.on .sync-icon { background: #2f9a5c; color: #fff; }

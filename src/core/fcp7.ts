@@ -105,7 +105,8 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
   const toFrame = (epoch: number) => Math.round((epoch - seqStartEpoch) * seqFps);
 
   const videoTracks: { cameraName: string; items: TrackItem[] }[] = [];
-  const audioTracks: { cameraName: string; channel: number; items: TrackItem[] }[] = [];
+  // stereo — камера пишет два канала: Premiere склеит пару дорожек в одну стереодорожку.
+  const audioTracks: { cameraName: string; channel: number; stereo: boolean; items: TrackItem[] }[] = [];
   const fileIds = new Map<string, string>();
   let clipCounter = 0;
   let fileCounter = 0;
@@ -131,7 +132,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
           if (clip.audioChannels < ch) continue;
           aItems.push({ placement: p, clip, id: `clipitem-${++clipCounter}` });
         }
-        if (aItems.length) audioTracks.push({ cameraName: cam.name, channel: ch, items: aItems });
+        if (aItems.length) audioTracks.push({ cameraName: cam.name, channel: ch, stereo: maxCh === 2, items: aItems });
       }
     }
   }
@@ -161,21 +162,22 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
       ? `<video><samplecharacteristics>${rateXml(r)}<width>${clip.width ?? opts.width}</width><height>${clip.height ?? opts.height}</height><pixelaspectratio>square</pixelaspectratio></samplecharacteristics></video>`
       : '';
     const audio = clip.audioChannels > 0
-      ? `<audio><samplecharacteristics><depth>16</depth><samplerate>${clip.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${clip.audioChannels}</channelcount></audio>`
+      ? `<audio><samplecharacteristics><depth>16</depth><samplerate>${clip.audioSampleRate ?? 48000}</samplerate></samplecharacteristics><channelcount>${clip.audioChannels}</channelcount>${clip.audioChannels === 2 ? '<layout>stereo</layout>' : ''}</audio>`
       : '';
     return `<file id="${id}"><name>${esc(clip.name)}</name><pathurl>${esc(pathToUrl(clip.path))}</pathurl>${rateXml(r)}<duration>${durFrames}</duration>`
       + `<timecode>${rateXml(r)}<string>${tc.text}</string><frame>${tc.frame}</frame><displayformat>${tc.drop ? 'DF' : 'NDF'}</displayformat></timecode>`
       + `<media>${video}${audio}</media></file>`;
   };
 
-  const clipItemXml = (it: TrackItem, mediatype: 'video' | 'audio', channel = 1): string => {
+  const clipItemXml = (it: TrackItem, mediatype: 'video' | 'audio', channel = 1, stereo = false): string => {
     const start = toFrame(it.placement.start);
     const dur = Math.max(1, Math.round(it.clip.durationSec * seqFps));
     const links = (linksByClip.get(it.clip.id + it.placement.lane) ?? [])
-      .map((l) => `<link><linkclipref>${l.id}</linkclipref><mediatype>${l.mediatype}</mediatype><trackindex>${l.track}</trackindex><clipindex>${l.index}</clipindex></link>`)
+      .map((l) => `<link><linkclipref>${l.id}</linkclipref><mediatype>${l.mediatype}</mediatype><trackindex>${l.track}</trackindex><clipindex>${l.index}</clipindex><groupindex>1</groupindex></link>`)
       .join('');
     const source = mediatype === 'audio' ? `<sourcetrack><mediatype>audio</mediatype><trackindex>${channel}</trackindex></sourcetrack>` : '';
-    return `<clipitem id="${it.id}"><name>${esc(it.clip.name)}</name><enabled>TRUE</enabled><duration>${dur}</duration>${rateXml(opts.rate)}`
+    const channelType = stereo && it.clip.audioChannels === 2 ? ' premiereChannelType="stereo"' : '';
+    return `<clipitem id="${it.id}"${channelType}><name>${esc(it.clip.name)}</name><enabled>TRUE</enabled><duration>${dur}</duration>${rateXml(opts.rate)}`
       + `<start>${start}</start><end>${start + dur}</end><in>0</in><out>${dur}</out>${fileXml(it.clip)}${source}${links}</clipitem>`;
   };
 
@@ -194,7 +196,9 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
   const endFrame = Math.max(0, ...result.placements.map((p) => toFrame(p.end)));
 
   const vXml = videoTracks.map((t) => `<track><enabled>TRUE</enabled><locked>FALSE</locked>${t.items.map((it) => clipItemXml(it, 'video')).join('')}</track>`).join('\n');
-  const aXml = audioTracks.map((t) => `<track><enabled>TRUE</enabled><locked>FALSE</locked><outputchannelindex>${((t.channel - 1) % 2) + 1}</outputchannelindex>${t.items.map((it) => clipItemXml(it, 'audio', t.channel)).join('')}</track>`).join('\n');
+  // Стерео камеры — пара дорожек с пометками Premiere: он показывает её одной стереодорожкой, а не двумя моно.
+  const trackAttrs = (t: (typeof audioTracks)[number]) => (t.stereo ? ` premiereTrackType="Stereo" currentExplodedTrackIndex="${t.channel - 1}" totalExplodedTrackCount="2"` : '');
+  const aXml = audioTracks.map((t) => `<track${trackAttrs(t)}><enabled>TRUE</enabled><locked>FALSE</locked><outputchannelindex>${((t.channel - 1) % 2) + 1}</outputchannelindex>${t.items.map((it) => clipItemXml(it, 'audio', t.channel, t.stereo)).join('')}</track>`).join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>

@@ -38,9 +38,12 @@ function timeSourceText(cs: CameraSync | undefined, cam: Camera): { title: strin
   }
   if (cs.timeSource === 'timecode-and-clock') {
     const off = cs.timecodeVsClockSec ?? 0;
+    // Откуда это известно — на примере первого клипа: что пишет тайм-код и что показывали часы камеры.
+    const ex = [...cam.clips].filter((c) => c.tc && c.clock && c.clock.source !== 'file').sort((a, b) => a.clock!.epochSec - b.clock!.epochSec)[0];
+    const example = ex ? ` Например, ${ex.name}: тайм-код ${ex.tc!.text.slice(0, 8)}, часы камеры ${formatClockTime(ex.clock!.epochSec, ex.clock!.tzOffsetMin ?? -new Date().getTimezoneOffset(), true)}.` : '';
     return {
       title: 'Тайм-код + часы камеры',
-      sub: `Паузы между клипами — точно до кадра. Тайм-код ${off < 0 ? 'убегает вперёд' : 'отстаёт'} от часов на ${formatDurationHuman(off)} — это учтено.`,
+      sub: `Паузы между клипами — точно до кадра. Тайм-код ${off < 0 ? 'убегает вперёд' : 'отстаёт'} от часов на ${formatDurationHuman(off)} — это учтено.${example}`,
     };
   }
   return {
