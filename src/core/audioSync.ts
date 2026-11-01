@@ -456,8 +456,11 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   // Опора: камеры с контрольным кадром; если их нет — камеры с точным тайм-кодом;
   // иначе — камера с видео, у которой больше всего общего звука с остальными: длинная запись рекордера
   // опорой сама не становится, чтобы ход её часов не уводил всю таймлинию. Ведомые камеры опорой не бывают.
-  const leaders = withAudio.map((c) => c.id).filter((id) => !isFollower(id));
-  const candidates = leaders.length ? leaders : withAudio.map((c) => c.id);
+  // Устройство с чужой датой (часы не выставлены) опорой не бывает: его время — догадка, место найдёт звук.
+  const outliers = new Set(coarse.cameras.filter((c) => c.dateOutlierSec !== null).map((c) => c.cameraId));
+  const trusted = withAudio.map((c) => c.id).filter((id) => !outliers.has(id));
+  const leaders = trusted.filter((id) => !isFollower(id));
+  const candidates = leaders.length ? leaders : trusted.length ? trusted : withAudio.map((c) => c.id);
   const fromControl = opts.fixed ? candidates.filter((id) => opts.fixed!.has(id)) : [];
   const absolute = fromControl.length ? [] : candidates.filter((id) => sourceOf.get(id) === 'timecode');
   const withVideo = candidates.filter((id) => !allOf(id).every((p) => !clipById.get(p.clipId)!.hasVideo));

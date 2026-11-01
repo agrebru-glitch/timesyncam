@@ -1,7 +1,7 @@
 // Синхронизация: раскладывает клипы всех камер по реальному времени съёмки.
 import type { Camera, CameraSync, ClipMeta, Issue, Placement, SyncResult, TimeSource } from './types.ts';
 import { DAY, isNtscRate, rateValue, wrapDay, wrapSigned } from './timecode.ts';
-import { formatDurationHuman, formatShift, pluralRu } from './format.ts';
+import { formatDate, formatDurationHuman, formatShift, pluralRu } from './format.ts';
 
 const CLUSTER_TOLERANCE = 1.6; // секунды: часы камер пишут время с точностью до секунды
 const ABSOLUTE_TC_TOLERANCE = 2; // если тайм-код совпадает с часами, это реальное время
@@ -174,6 +174,7 @@ function syncCamera(
   copies: Map<string, Duplicate>,
   strays: Map<string, Stray>,
   guests: Guest[],
+  dateShift = 0,
 ): CameraOutcome {
   const issues: Issue[] = [];
   const clips = activeClips(cam, copies).filter((c) => !strays.has(copyKey(cam.id, c.id)));
@@ -186,6 +187,7 @@ function syncCamera(
     start: null,
     end: null,
     lanes: 0,
+    dateOutlierSec: null,
   };
   if (clips.length === 0 && guests.length === 0) return { sync, placements: [], issues, place: () => null };
 
@@ -318,7 +320,7 @@ function syncCamera(
   const raw: { clip: ClipMeta; start: number; method: Placement['method']; ownerId?: string }[] = [];
   for (const c of clips) {
     const at = place(c);
-    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + (corrections[c.id] ?? 0), method: at.method });
+    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + dateShift + (corrections[c.id] ?? 0), method: at.method });
   }
   for (const gst of guests) raw.push({ clip: gst.clip, start: gst.start, method: gst.method, ownerId: gst.ownerId });
 
@@ -577,6 +579,38 @@ function duplicateIssues(cameras: Camera[], copies: Map<string, Duplicate>): Iss
   return out;
 }
 
+// Согласие дат. Каждое устройство само по себе может врать: рекордер с невыставленными часами пишет
+// 2010 год, а его тайм-код равен этим же часам. Поэтому время съёмки определяет большинство: самая весомая
+// группа устройств, у которых съёмки идут рядом (промежуток между ними меньше 12 часов). Камера с часами
+// в метаданных весит больше рекордера, дата файла — меньше всех. При равенстве верим более поздней
+// дате: сбитые часы почти всегда уходят в прошлое (2000, 2010, 1970).
+export interface DeviceRange { cameraId: string; start: number; end: number; weight: number }
+export const SESSION_GAP_SEC = 12 * 3600;
+
+export function sessionGroup(ranges: DeviceRange[], gapSec = SESSION_GAP_SEC): Set<string> {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const groups: { ids: string[]; weight: number; start: number }[] = [];
+  let end = -Infinity;
+  for (const r of sorted) {
+    if (!groups.length || r.start - end > gapSec) groups.push({ ids: [], weight: 0, start: r.start });
+    const g = groups[groups.length - 1];
+    g.ids.push(r.cameraId);
+    g.weight += r.weight;
+    end = Math.max(end, r.end);
+  }
+  groups.sort((a, b) => b.weight - a.weight || b.ids.length - a.ids.length || b.start - a.start);
+  return new Set(groups[0]?.ids ?? []);
+}
+
+// Вес устройства в споре о дате: камера с часами в метаданных — 2, запись только со звуком — 1,5,
+// время только из даты файла — 1.
+function dateWeight(cam: Camera): number {
+  const timed = cam.clips.filter((c) => c.clock);
+  if (!timed.length) return 0;
+  if (timed.every((c) => c.clock!.source === 'file')) return 1;
+  return cam.clips.some((c) => c.hasVideo) ? 2 : 1.5;
+}
+
 function overlapSec(a: CameraSync, b: CameraSync): number {
   if (a.start === null || a.end === null || b.start === null || b.end === null) return 0;
   return Math.min(a.end, b.end) - Math.max(a.start, b.start);
@@ -593,9 +627,24 @@ export function runSync(cameras: Camera[], corrections: Record<string, number> =
   const tz = pickDisplayTz(cameras);
   const copies = findDuplicates(cameras);
   const strays = findStrays(cameras, copies);
-  // Сначала каждая камера — по своим клипам. Потом дорожки с чужими клипами раскладываются ещё раз:
+  // Сначала — по часам, без поправок: какие устройства согласны о дате съёмки. Устройство с датой далеко
+  // от остальных переносится в начало съёмки — его место найдёт звук. Сдвиг считается по исходным часам,
+  // поэтому он одинаков при любых поправках по звуку и они к нему применяются как есть.
+  const rawOutcomes = cameras.map((c) => syncCamera(c, tz, {}, copies, strays, []));
+  const ranges: DeviceRange[] = [];
+  rawOutcomes.forEach((o, i) => {
+    const w = dateWeight(cameras[i]);
+    if (o.sync.start !== null && o.sync.end !== null && w > 0) ranges.push({ cameraId: cameras[i].id, start: o.sync.start, end: o.sync.end, weight: w });
+  });
+  const session = sessionGroup(ranges);
+  const sessionStart = Math.min(...ranges.filter((r) => session.has(r.cameraId)).map((r) => r.start));
+  const dateShift = new Map<string, number>();
+  for (const r of ranges) if (!session.has(r.cameraId) && Number.isFinite(sessionStart)) dateShift.set(r.cameraId, sessionStart - r.start);
+
+  // Каждая камера — по своим клипам. Потом дорожки с чужими клипами раскладываются ещё раз:
   // время такого клипа считает его камера, со своим ручным сдвигом и поправками.
-  let outcomes = cameras.map((c) => syncCamera(c, tz, corrections, copies, strays, []));
+  const shiftOf = (id: string) => dateShift.get(id) ?? 0;
+  let outcomes = cameras.map((c) => syncCamera(c, tz, corrections, copies, strays, [], shiftOf(c.id)));
   if (strays.size) {
     const guestsOf = new Map<string, Guest[]>();
     for (const st of strays.values()) {
@@ -603,17 +652,35 @@ export function runSync(cameras: Camera[], corrections: Record<string, number> =
       const clip = cameras.find((c) => c.id === st.cameraId)!.clips.find((c) => c.id === st.clipId)!;
       const at = outcomes[owner].place(clip);
       if (!at) continue;
-      const start = at.start + cameras[owner].manualShiftSec + (corrections[clip.id] ?? 0);
+      const start = at.start + cameras[owner].manualShiftSec + shiftOf(st.ownerId) + (corrections[clip.id] ?? 0);
       guestsOf.set(st.cameraId, [...(guestsOf.get(st.cameraId) ?? []), { clip, start, method: at.method, ownerId: st.ownerId }]);
     }
-    outcomes = cameras.map((c, i) => (guestsOf.has(c.id) ? syncCamera(c, tz, corrections, copies, strays, guestsOf.get(c.id)!) : outcomes[i]));
+    outcomes = cameras.map((c, i) => (guestsOf.has(c.id) ? syncCamera(c, tz, corrections, copies, strays, guestsOf.get(c.id)!, shiftOf(c.id)) : outcomes[i]));
+  }
+  for (const o of outcomes) {
+    const s = dateShift.get(o.sync.cameraId);
+    if (s !== undefined) o.sync.dateOutlierSec = -s;
   }
   const placements = outcomes.flatMap((o) => o.placements);
   const issues = [...duplicateIssues(cameras, copies), ...strayIssues(cameras, strays), ...outcomes.flatMap((o) => o.issues)];
   const syncs = outcomes.map((o) => o.sync);
 
+  // Устройства с чужой датой: прямо говорим, какая у них дата и почему ей не верим.
+  for (const s of syncs) {
+    if (s.dateOutlierSec === null) continue;
+    const cam = cameras.find((c) => c.id === s.cameraId)!;
+    const own = rawOutcomes[cameras.indexOf(cam)].sync.start!;
+    issues.push(issue({
+      severity: 'warning',
+      cameraId: cam.id,
+      title: `«${cam.name}»: дата на устройстве — ${formatDate(own, tz)}, а остальные снимали ${formatDate(sessionStart, tz)}`,
+      details: `Разница ${formatDurationHuman(Math.abs(s.dateOutlierSec))}. Похоже, часы устройства не выставлены. Программа не верит этой дате: до синхронизации запись лежит в начале съёмки, а её место найдёт звук. Опорой для других камер она не станет.`,
+      actions: [],
+    }));
+  }
+
   // Проверка камер между собой: часовой пояс, другой день, нет пересечения.
-  const withRange = syncs.filter((s) => s.start !== null);
+  const withRange = syncs.filter((s) => s.start !== null && s.dateOutlierSec === null);
   if (withRange.length > 1) {
     const ref = [...withRange].sort((a, b) => {
       const aAbs = a.timeSource === 'timecode' ? 1 : 0;

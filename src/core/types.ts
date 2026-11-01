@@ -117,6 +117,10 @@ export interface CameraSync {
   start: number | null;
   end: number | null;
   lanes: number;
+  // Дата устройства далеко от остальных (часы не выставлены): на сколько секунд его часы расходились
+  // со съёмкой. Такому времени программа не верит: до синхронизации устройство лежит в начале съёмки,
+  // ставится по звуку и опорой не бывает. null — дата согласна с остальными.
+  dateOutlierSec: number | null;
 }
 
 export interface SyncResult {

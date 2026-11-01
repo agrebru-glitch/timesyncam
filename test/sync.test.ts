@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyRelocation, findDuplicates, findStrays, pilePlacements, planRelocation, relocateFrames, relocationIssues, runSync } from '../src/core/sync.ts';
+import { applyRelocation, findDuplicates, findStrays, pilePlacements, planRelocation, relocateFrames, relocationIssues, runSync, sessionGroup } from '../src/core/sync.ts';
 import { buildFcp7Xml, defaultTimelineRate } from '../src/core/fcp7.ts';
 import { camera, clip, T16 } from './fixtures.ts';
 
@@ -300,4 +300,31 @@ test('Клип своей камеры без XML не уезжает на до�
   // А у дорожки A номеров нет вовсе — её клипы могут быть той же камерой 222: не угадываем.
   const plainA = b.map((c) => ({ ...c, id: c.id + 'a', path: c.path + 'a' }));
   assert.equal(planRelocation([camera('A', [...plainA, strayB]), camera('B', b2)]).moves.length, 0);
+});
+
+test('Согласие дат: большинство решает, когда была съёмка, при равенстве — более поздняя дата', () => {
+  const day = 86400;
+  const r = (cameraId: string, start: number, weight = 2) => ({ cameraId, start, end: start + 3600, weight });
+  // Три камеры в один вечер, рекордер — в 2010 году.
+  assert.deepEqual([...sessionGroup([r('A', T16), r('B', T16 + 600), r('C', T16 + 7200), r('Z', T16 - 6112 * day, 1.5)])].sort(), ['A', 'B', 'C']);
+  // Один на один: верим поздней дате — сбитые часы уходят в прошлое.
+  assert.deepEqual([...sessionGroup([r('A', T16), r('Z', T16 - 6112 * day)])], ['A']);
+  // Камера на сутки вперёд — уже не та съёмка.
+  assert.deepEqual([...sessionGroup([r('A', T16), r('B', T16 + 300), r('C', T16 + day + 3600)])].sort(), ['A', 'B']);
+});
+
+test('Рекордер с датой 2010 года и тайм-кодом по ней не становится опорой и не растягивает съёмку на годы', () => {
+  const cams = [
+    camera('A', freeRunClips([T16 + 10, T16 + 900], 0)),
+    camera('B', freeRunClips([T16 + 40, T16 + 950])),
+    // Тайм-код рекордера равен его часам — раньше это считалось «точным тайм-кодом».
+    camera('Zoom', [clip({ start: T16 - 6112 * 86400 + 5, tcSeconds: wall(T16 - 6112 * 86400 + 5), hasVideo: false })]),
+  ];
+  const r = runSync(cams);
+  const zoom = r.cameras.find((c) => c.cameraId === 'Zoom')!;
+  assert.ok(zoom.dateOutlierSec !== null && zoom.dateOutlierSec < -6000 * 86400);
+  assert.ok(r.end - r.start < 3 * 3600, `съёмка растянута на ${((r.end - r.start) / 86400).toFixed(0)} дн`);
+  assert.ok(r.issues.some((i) => i.cameraId === 'Zoom' && /дата на устройстве/.test(i.title)));
+  // О часовых поясах и «другом дне» по отношению к рекордеру не говорим — у него своя запись.
+  assert.ok(!r.issues.some((i) => /расходятся с «Zoom»|чем «Zoom»/.test(i.title)));
 });
