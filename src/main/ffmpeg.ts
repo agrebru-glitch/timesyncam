@@ -50,6 +50,11 @@ export function toolPath(name: 'ffmpeg' | 'ffprobe'): string {
   return name === 'ffmpeg' ? FFMPEG : FFPROBE;
 }
 
+// Запуск с потоковым выводом — для чтения длинных записей кусками.
+export function spawnTool(name: 'ffmpeg' | 'ffprobe', args: string[]) {
+  return spawn(name === 'ffmpeg' ? FFMPEG : FFPROBE, args, { windowsHide: true });
+}
+
 export function runTool(name: 'ffmpeg' | 'ffprobe', args: string[], timeoutMs: number) {
   return run(name === 'ffmpeg' ? FFMPEG : FFPROBE, args, timeoutMs);
 }

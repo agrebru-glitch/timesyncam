@@ -1,8 +1,8 @@
 // Звук для сверки камер и волны на таймлинии. ffmpeg вынимает нужный кусок звука, ядро считает отпечаток.
 import { AUDIO_SAMPLE_RATE, peakDb, SILENCE_DB, waveformPeaks } from '../core/audioSync.ts';
 import type { AudioPiece } from '../core/audioSync.ts';
-import { FEAT_SR, FINE_SR, pickChannel } from '../core/audioFeatures.ts';
-import { runTool } from './ffmpeg.ts';
+import { BandEnergy, FEAT_RATE, FEAT_SR, FINE_SR, featuresFromEnergy, pickChannel } from '../core/audioFeatures.ts';
+import { runTool, spawnTool } from './ffmpeg.ts';
 
 const featCache = new Map<string, AudioPiece>();
 const waves = new Map<string, Uint8Array>();
@@ -54,6 +54,54 @@ export async function audioFeatures(path: string, startSec: number, durSec: numb
   if (featCache.size > CACHE_LIMIT) featCache.delete(featCache.keys().next().value!);
   featCache.set(key, piece);
   return piece;
+}
+
+// Отпечаток всего файла — для сверки «все со всеми». Звук читается потоком, по кускам, и сразу
+// превращается в громкость по полосам для обоих каналов; берётся канал, где атаки звука чётче.
+// Хранится, пока открыта программа (в фоновом потоке сверки).
+const wholeCache = new Map<string, Promise<AudioPiece | null>>();
+
+export function audioWholeFeatures(path: string, durationSec: number): Promise<AudioPiece | null> {
+  const hit = wholeCache.get(path);
+  if (hit) return hit;
+  const job = readWhole(path, durationSec);
+  wholeCache.set(path, job);
+  return job;
+}
+
+function readWhole(path: string, durationSec: number): Promise<AudioPiece | null> {
+  return new Promise((resolve) => {
+    const expected = Math.ceil(durationSec * FEAT_RATE) + 16;
+    const ch = [new BandEnergy(FEAT_SR, expected), new BandEnergy(FEAT_SR, expected)];
+    let rest: Buffer = Buffer.alloc(0);
+    let same = true; // каналы одинаковые по всему файлу (моно, разложенное на два) — второй не берём
+    const child = spawnTool('ffmpeg', ['-v', 'error', '-i', path, '-vn', '-ac', '2', '-ar', String(FEAT_SR), '-f', 'f32le', 'pipe:1']);
+    child.stdout.on('data', (d: Buffer) => {
+      const buf = rest.length ? Buffer.concat([rest, d]) : d;
+      const usable = Math.floor(buf.length / 8) * 8;
+      rest = buf.subarray(usable);
+      const inter = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + usable));
+      const n = inter.length / 2;
+      const l = new Float32Array(n);
+      const r = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        l[i] = inter[2 * i];
+        r[i] = inter[2 * i + 1];
+        if (same && Math.abs(l[i] - r[i]) > 1e-6) same = false;
+      }
+      ch[0].push(l);
+      ch[1].push(r);
+    });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      if (code !== 0 || ch[0].frames < 2) return resolve(null);
+      const db = (peak: number) => (peak > 0 ? 20 * Math.log10(peak) : -200);
+      const cands = (same ? [0] : [0, 1]).map((i) => ({ i, peakDb: db(ch[i].peak), raw: featuresFromEnergy(ch[i].energy(), ch[i].frames) }));
+      const loud = cands.filter((c) => c.peakDb >= SILENCE_DB);
+      const best = (loud.length ? loud : cands).reduce((a, b) => (b.raw.clarity > a.raw.clarity ? b : a));
+      resolve({ feat: best.raw.feat, peakDb: Math.max(...cands.map((c) => c.peakDb)), channel: best.i });
+    });
+  });
 }
 
 // Волна выбранного канала на 48 кГц — для точной сверки.

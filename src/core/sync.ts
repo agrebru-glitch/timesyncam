@@ -297,11 +297,12 @@ function syncCamera(
     const off = wrapSigned(wallClock(c, tzMin) - c.tc.seconds);
     return groups.find((x) => Math.abs(off - x.center) <= CLUSTER_TOLERANCE);
   };
-  const place = (c: ClipMeta): { start: number; method: Placement['method'] } | null => {
+  const place = (c: ClipMeta): { start: number; method: Placement['method']; segment?: number } | null => {
     if (!c.clock) return null;
     let start = c.clock.epochSec;
     let method: Placement['method'] = 'clock';
     const g = groupFor(c);
+    const segment = g ? groups.indexOf(g) : undefined;
     const tcUsable = !c.captureFps || !!g;
     if (c.tc && tcUsable && source === 'timecode') {
       // Камера снимала и 24p, и 30p/25p: клип 24p выпал из главной группы только из-за счёта тайм-кода.
@@ -311,16 +312,18 @@ function syncCamera(
       if (main && g !== main && Math.abs(wrapSigned(wallClock(c, tzMin) - label) - main.center) <= CLUSTER_TOLERANCE) tcSec = label;
       start = c.clock.epochSec + wrapSigned(tcSec - wallClock(c, tzMin));
       method = 'timecode';
+      return { start, method, segment: 0 };
     } else if (c.tc && source === 'timecode-and-clock' && g) {
       start = c.clock.epochSec + wrapSigned(c.tc.seconds - wallClock(c, tzMin)) + g.center;
       method = 'timecode-and-clock';
+      return { start, method, segment };
     }
     return { start, method };
   };
-  const raw: { clip: ClipMeta; start: number; method: Placement['method']; ownerId?: string }[] = [];
+  const raw: { clip: ClipMeta; start: number; method: Placement['method']; segment?: number; ownerId?: string }[] = [];
   for (const c of clips) {
     const at = place(c);
-    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + dateShift + (corrections[c.id] ?? 0), method: at.method });
+    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + dateShift + (corrections[c.id] ?? 0), method: at.method, segment: at.segment });
   }
   for (const gst of guests) raw.push({ clip: gst.clip, start: gst.start, method: gst.method, ownerId: gst.ownerId });
 
@@ -371,7 +374,7 @@ function syncCamera(
       lastRecordedEnd = start + r.clip.recordedSec;
       lastRecordedClip = r.clip;
     }
-    placements.push({ clipId: r.clip.id, cameraId: cam.id, start, end, method: r.method, lane, ...(guest ? { timeCameraId: r.ownerId } : {}) });
+    placements.push({ clipId: r.clip.id, cameraId: cam.id, start, end, method: r.method, lane, ...(r.segment !== undefined && !guest ? { segment: r.segment } : {}), ...(guest ? { timeCameraId: r.ownerId } : {}) });
   }
   sync.lanes = laneEnds.length;
   if (placements.length > 0) {

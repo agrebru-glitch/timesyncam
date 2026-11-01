@@ -94,32 +94,74 @@ export interface RawFeatures {
   clarity: number; // насколько звук «разборчивый»: во сколько раз сильные атаки выше обычного уровня
 }
 
-export function bandFeatures(samples: Float32Array, sr: number): RawFeatures {
-  const hop = Math.round(sr / FEAT_RATE);
-  const n = samples.length >= WIN ? Math.floor((samples.length - WIN) / hop) + 1 : 0;
-  const edges = bandBins(sr);
-  const energy = new Float64Array(n * BANDS);
-  const re = new Float64Array(WIN);
-  const im = new Float64Array(WIN);
-  for (let t = 0; t < n; t++) {
-    const off = t * hop;
+// Громкость по полосам для каждого кадра — первый шаг отпечатка. Считается потоком: звук можно подавать
+// кусками по мере чтения файла, так отпечаток двухчасовой записи не требует держать всю волну в памяти.
+export class BandEnergy {
+  private readonly hop: number;
+  private readonly edges: number[];
+  private readonly re = new Float64Array(WIN);
+  private readonly im = new Float64Array(WIN);
+  private tail = new Float32Array(0); // хвост прошлого куска, которого не хватило на целое окно
+  private out: Float32Array;
+  frames = 0;
+  peak = 0;
+
+  constructor(sr: number, expectedFrames = 1024) {
+    this.hop = Math.round(sr / FEAT_RATE);
+    this.edges = bandBins(sr);
+    this.out = new Float32Array(Math.max(1, expectedFrames) * BANDS);
+  }
+
+  push(chunk: Float32Array): void {
+    for (let i = 0; i < chunk.length; i++) {
+      const a = Math.abs(chunk[i]);
+      if (a > this.peak) this.peak = a;
+    }
+    const buf = new Float32Array(this.tail.length + chunk.length);
+    buf.set(this.tail);
+    buf.set(chunk, this.tail.length);
+    let off = 0;
+    for (; off + WIN <= buf.length; off += this.hop) this.frame(buf, off);
+    this.tail = buf.slice(off);
+  }
+
+  private frame(buf: Float32Array, off: number): void {
+    const { re, im, edges } = this;
     for (let i = 0; i < WIN; i++) {
-      re[i] = samples[off + i] * hann[i];
+      re[i] = buf[off + i] * hann[i];
       im[i] = 0;
     }
     fft(re, im, false);
+    if ((this.frames + 1) * BANDS > this.out.length) {
+      const grown = new Float32Array(this.out.length * 2);
+      grown.set(this.out);
+      this.out = grown;
+    }
     for (let b = 0; b < BANDS; b++) {
       let s = 0;
       for (let k = edges[b]; k < Math.max(edges[b] + 2, edges[b + 1]); k++) s += re[k] * re[k] + im[k] * im[k];
-      energy[t * BANDS + b] = s;
+      this.out[this.frames * BANDS + b] = s;
     }
+    this.frames++;
   }
+
+  energy(): Float32Array {
+    return this.out.subarray(0, this.frames * BANDS);
+  }
+}
+
+function median(sorted: Float64Array): number {
+  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+}
+
+// Из громкости по полосам — отпечаток атак.
+export function featuresFromEnergy(energyIn: ArrayLike<number>, n: number): RawFeatures {
+  const energy = Float64Array.from({ length: n * BANDS }, (_, i) => energyIn[i]);
   // Громкость полосы относительно её обычного уровня: ровный шум даёт около нуля, хлопок — сильный всплеск.
   const column = new Float64Array(n);
   for (let b = 0; b < BANDS; b++) {
     for (let t = 0; t < n; t++) column[t] = energy[t * BANDS + b];
-    const sortedCol = Array.from(column).sort((x, y) => x - y);
-    const floor = (sortedCol[Math.floor(sortedCol.length / 2)] ?? 0) + 1e-12;
+    const floor = median(Float64Array.from(column).sort()) + 1e-12;
     for (let t = 0; t < n; t++) energy[t * BANDS + b] = Math.log(1 + energy[t * BANDS + b] / floor);
   }
   const data = new Float32Array(n * BANDS);
@@ -137,10 +179,8 @@ export function bandFeatures(samples: Float32Array, sr: number): RawFeatures {
   const col = new Float64Array(n);
   for (let b = 0; b < BANDS; b++) {
     for (let t = 0; t < n; t++) col[t] = data[t * BANDS + b];
-    const sortedB = Array.from(col).sort((x, y) => x - y);
-    const med = sortedB[Math.floor(sortedB.length / 2)] ?? 0;
-    const dev = Array.from(col, (v) => Math.abs(v - med)).sort((x, y) => x - y);
-    const mad = dev[Math.floor(dev.length / 2)] ?? 0;
+    const med = median(Float64Array.from(col).sort());
+    const mad = median(Float64Array.from(col, (v) => Math.abs(v - med)).sort());
     const thr = med + 2 * mad;
     let mean = 0;
     for (let t = 0; t < n; t++) {
@@ -156,10 +196,16 @@ export function bandFeatures(samples: Float32Array, sr: number): RawFeatures {
   }
   const sd = Math.sqrt(total / (n * BANDS || 1)) || 1;
   for (let i = 0; i < data.length; i++) data[i] /= sd;
-  const sorted = Array.from(summed).sort((a, b) => a - b);
-  const p = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)))] ?? 0;
+  const sorted = Float64Array.from(summed).sort();
+  const p = (q: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)))] : 0);
   const clarity = sorted.length ? p(0.98) / (p(0.5) + 1e-3) : 0;
   return { feat: { frames: n, bands: BANDS, data }, clarity };
+}
+
+export function bandFeatures(samples: Float32Array, sr: number): RawFeatures {
+  const e = new BandEnergy(sr, Math.ceil(samples.length / Math.round(sr / FEAT_RATE)) + 1);
+  e.push(samples);
+  return featuresFromEnergy(e.energy(), e.frames);
 }
 
 // Каналы с разным звуком (внешний микрофон и встроенный) — берём тот, где атаки звука чётче.

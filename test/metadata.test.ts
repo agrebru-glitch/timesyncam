@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSonyXml, decodeSonyLtc, parseFps } from '../src/core/sonyXml.ts';
-import { buildClipMeta, timeFromFilename } from '../src/core/clipMeta.ts';
+import { buildClipMeta, timeFromFilename, timeOfDayFromFilename } from '../src/core/clipMeta.ts';
 import type { FfprobeResult } from '../src/core/clipMeta.ts';
 import { SONY_XML_25P, SONY_XML_50P, SONY_XML_SQ } from './fixtures.ts';
 
@@ -143,4 +143,11 @@ test('Canon/Panasonic MOV: тайм-код из дорожки tmcd', () => {
 test('время в именах телефонов', () => {
   assert.equal(timeFromFilename('PXL_20260612_160301123.mp4'), new Date(2026, 5, 12, 16, 3, 1, 123).getTime() / 1000);
   assert.equal(timeFromFilename('C9151.MP4'), null);
+  assert.equal(timeFromFilename('REC 2026-10-30 18.59.09.wav'), new Date(2026, 9, 30, 18, 59, 9).getTime() / 1000);
+  // Петличка и часть рекордеров пишут в имя только время суток.
+  assert.equal(timeOfDayFromFilename('18-52-06.wav'), 18 * 3600 + 52 * 60 + 6);
+  assert.equal(timeOfDayFromFilename('rec_09.05.30.mp3'), 9 * 3600 + 5 * 60 + 30);
+  assert.equal(timeOfDayFromFilename('C9151.MP4'), null);
+  assert.equal(timeOfDayFromFilename('ZOOM0001.WAV'), null);
+  assert.equal(timeOfDayFromFilename('25-61-00.wav'), null);
 });

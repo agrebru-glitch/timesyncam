@@ -98,11 +98,20 @@ function localEpoch(y: number, mo: number, d: number, h: number, mi: number, s: 
 
 // Время из имени файла: DJI_20260612183015_0001_D.MP4, PXL_20260612_183015123.mp4, 20260612_183015.mp4
 export function timeFromFilename(name: string): number | null {
-  const m = /(20\d{2})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})(\d{2})(\d{3})?/.exec(name);
+  const m = /(20\d{2})[-.]?(\d{2})[-.]?(\d{2})[ _T-]?(\d{2})[-.]?(\d{2})[-.]?(\d{2})(\d{3})?/.exec(name);
   if (!m) return null;
   const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number);
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return null;
   return localEpoch(y, mo, d, h, mi, s, m[7] ? Number(m[7]) : 0);
+}
+
+// Только время суток в имени файла — так называют записи петлички и часть рекордеров: «18-52-06.wav».
+// Разделители обязательны, чтобы не спутать с номером клипа.
+export function timeOfDayFromFilename(name: string): number | null {
+  const m = /(?:^|[^\d])([01]\d|2[0-3])[-_.](\d{2})[-_.](\d{2})(?=[^\d]|$)/.exec(name.replace(/\.[^.]+$/, ''));
+  if (!m) return null;
+  const [h, mi, s] = m.slice(1, 4).map(Number);
+  return mi > 59 || s > 59 ? null : h * 3600 + mi * 60 + s;
 }
 
 // Многие камеры (GoPro, часть DJI) пишут местное время, но помечают его как UTC.
@@ -256,6 +265,14 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     clock = { epochSec: createdValid.epochSec, precisionSec: 1, tzOffsetMin: createdValid.tzOffsetMin === 0 ? null : createdValid.tzOffsetMin, source: 'container' };
   } else if (fileNameTime !== null) {
     clock = { epochSec: fileNameTime, precisionSec: 1, tzOffsetMin: null, source: 'filename', note: 'Время взято из имени файла' };
+  } else if (timeOfDayFromFilename(input.name) !== null && input.mtimeMs > 0) {
+    // Время начала — из имени файла (точно до секунды), день — из даты файла: она бывает сбита на минуты
+    // при копировании, но день почти всегда верный. Запись, начатая до полуночи, — днём раньше.
+    const tod = timeOfDayFromFilename(input.name)!;
+    const end = new Date(input.mtimeMs);
+    let start = localEpoch(end.getFullYear(), end.getMonth() + 1, end.getDate(), 0, 0, 0) + tod;
+    if (start > input.mtimeMs / 1000 + 3600) start -= 86400;
+    clock = { epochSec: start, precisionSec: 1, tzOffsetMin: null, source: 'filename', note: 'Время начала взято из имени файла, день — из даты файла' };
   } else if (input.mtimeMs > 0) {
     // Дата изменения файла обычно совпадает с концом записи, но меняется при неаккуратном копировании.
     clock = { epochSec: input.mtimeMs / 1000 - recordedSec, precisionSec: 3, tzOffsetMin: null, source: 'file', note: 'Время взято из даты файла — проверьте, что файлы копировались без изменений' };

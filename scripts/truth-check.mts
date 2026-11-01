@@ -5,7 +5,8 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanFolder } from '../src/main/scan.ts';
-import { audioFeatures, audioSamples } from '../src/main/audio.ts';
+import { audioFeatures, audioSamples, audioWholeFeatures } from '../src/main/audio.ts';
+import { alignByAudio } from '../src/core/align.ts';
 import { scanQr } from '../src/main/qr.ts';
 import { runSync } from '../src/core/sync.ts';
 import { AUDIO_SEARCH_SEC, refineByAudio } from '../src/core/audioSync.ts';
@@ -25,7 +26,14 @@ for (const [i, d] of dirs.entries()) {
   const res = await scanFolder(join(DEMO, d), () => undefined);
   cameras.push({ id: d, name: `Камера ${i + 1}`, folders: [], clips: res.clips, manualShiftSec: 0, timecodeTrust: 'auto', excludedClipIds: [], audioAssist: true, scanning: null });
 }
-const fetchAudio = { features: (c: { path: string }, s: number, d: number) => audioFeatures(c.path, s, d), samples: (c: { path: string }, s: number, d: number, ch: number) => audioSamples(c.path, s, d, ch) };
+const fetchAudio = {
+  features: (c: { path: string }, s: number, d: number) => audioFeatures(c.path, s, d),
+  samples: (c: { path: string }, s: number, d: number, ch: number) => audioSamples(c.path, s, d, ch),
+  whole: (c: { path: string; durationSec: number }) => audioWholeFeatures(c.path, c.durationSec),
+};
+// --old — прежняя сверка цепочкой (для сравнения), по умолчанию — новая: все дорожки со всеми.
+const OLD = process.argv.includes('--old');
+const sync = (opts: Parameters<typeof refineByAudio>[3]) => (OLD ? refineByAudio(cameras, coarse, fetchAudio, opts) : alignByAudio(cameras, coarse, fetchAudio, opts));
 
 // Ошибка каждого клипа. Для монтажа важна стыковка камер между собой, поэтому показываем и общий сдвиг
 // всей съёмки (медиана ошибок), и ошибку каждого клипа относительно него. Больше двух кадров — с пометкой «!».
@@ -51,7 +59,11 @@ function errors(r: SyncResult, title: string) {
 const coarse = runSync(cameras);
 errors(coarse, 'Только тайм-код и часы');
 
-const audio = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true });
+let t0 = performance.now();
+const audio = await sync({ searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true });
+console.log(`  (сверка ${((performance.now() - t0) / 1000).toFixed(0)} с)`);
+for (const c of audio.cameras) console.log(`  ${c.cameraId}: ${c.status}${c.correction !== null ? `, поправка ${c.correction.toFixed(3)} с` : ''}, точек ${c.anchors.filter((a) => a.role !== 'ignored').length}`);
+for (const i of audio.issues) console.log(`  [${i.severity}] ${i.title}`);
 errors(runSync(cameras, audio.corrections), 'Тайм-код + звук');
 
 // Контрольные кадры — короткие клипы с экраном синхронизации.
@@ -68,5 +80,7 @@ for (const cam of cameras) {
   }
 }
 const ctl = controlCorrections(controls, coarse.placements, new Set(coarse.cameras.filter((x) => x.timeSource === 'clock').map((x) => x.cameraId)));
-const withControl = await refineByAudio(cameras, coarse, fetchAudio, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true, pre: ctl.pre, fixed: ctl.fixed, controlClips: ctl.clips });
+t0 = performance.now();
+const withControl = await sync({ searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true, pre: ctl.pre, fixed: ctl.fixed, controlClips: ctl.clips });
+console.log(`  (сверка ${((performance.now() - t0) / 1000).toFixed(0)} с)`);
 errors(runSync(cameras, withControl.corrections), 'Контрольный кадр + тайм-код + звук');

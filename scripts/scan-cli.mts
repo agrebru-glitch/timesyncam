@@ -4,10 +4,11 @@
 // Папки только читаются. XML пишется туда, куда указано.
 import { writeFile } from 'node:fs/promises';
 import { scanFolder } from '../src/main/scan.ts';
-import { audioFeatures, audioSamples } from '../src/main/audio.ts';
+import { audioFeatures, audioSamples, audioWholeFeatures } from '../src/main/audio.ts';
+import { alignByAudio } from '../src/core/align.ts';
 import { scanQr } from '../src/main/qr.ts';
 import { applyRelocation, planRelocation, relocationIssues, runSync } from '../src/core/sync.ts';
-import { AUDIO_SEARCH_SEC, heardCameras, refineByAudio } from '../src/core/audioSync.ts';
+import { AUDIO_SEARCH_SEC, heardCameras } from '../src/core/audioSync.ts';
 import { controlCorrections } from '../src/core/qrSync.ts';
 import type { ControlFrame, QrResult } from '../src/core/qrSync.ts';
 import { rateValue } from '../src/core/timecode.ts';
@@ -82,9 +83,10 @@ for (const [camId, c] of control.cameras) console.log(`  ${camId}: поправ�
 
 if (withAudio) {
   const t = performance.now();
-  const audio = await refineByAudio(cameras, r, {
+  const audio = await alignByAudio(cameras, r, {
     features: (clip, s, d) => audioFeatures(clip.path, s, d),
     samples: (clip, s, d, ch) => audioSamples(clip.path, s, d, ch),
+    whole: (clip) => audioWholeFeatures(clip.path, clip.durationSec),
   }, {
     searchSec: AUDIO_SEARCH_SEC,
     maxAnchors: 8,

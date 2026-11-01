@@ -2,9 +2,9 @@
 // Поток сам читает звук через ffmpeg и держит прочитанное в памяти до закрытия программы:
 // повторная синхронизация не читает файлы заново. Остановить сверку — значит завершить поток.
 import { parentPort, workerData } from 'node:worker_threads';
-import { refineByAudio } from '../core/audioSync.ts';
+import { alignByAudio } from '../core/align.ts';
 import type { AudioJob } from '../core/audioSync.ts';
-import { audioFeatures, audioSamples } from './audio.ts';
+import { audioFeatures, audioSamples, audioWholeFeatures } from './audio.ts';
 import { useToolPaths } from './ffmpeg.ts';
 
 useToolPaths(workerData.tools);
@@ -12,9 +12,11 @@ useToolPaths(workerData.tools);
 parentPort!.on('message', async (job: AudioJob) => {
   try {
     const enabled = new Set(job.enabled);
-    const result = await refineByAudio(job.cameras, job.coarse, {
+    // Сверка всех дорожек со всеми: каждая пара — по всей длине записи, с проверкой по всей общей части.
+    const result = await alignByAudio(job.cameras, job.coarse, {
       features: (clip, start, dur) => audioFeatures(clip.path, start, dur),
       samples: (clip, start, dur, ch) => audioSamples(clip.path, start, dur, ch),
+      whole: (clip) => audioWholeFeatures(clip.path, clip.durationSec),
     }, {
       searchSec: job.searchSec,
       maxAnchors: job.maxAnchors,
