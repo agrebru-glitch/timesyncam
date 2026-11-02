@@ -22,26 +22,53 @@ export function seekArgs(startSec: number, durSec: number | null): { input: stri
   return { input: fast > 0 ? ['-ss', fast.toFixed(4)] : [], output: ['-ss', (startSec - fast).toFixed(4), ...len] };
 }
 
-async function decode(path: string, startSec: number, durSec: number | null, args: string[]): Promise<Float32Array | null> {
-  const { input, output } = seekArgs(startSec, durSec);
+// Где в клипе первый сэмпл звука. У части телефонов звук в файле начинается позже видео (realme — на 0,22 с):
+// разбор с начала файла отдаёт звук с первого сэмпла, а перемотка -ss считает от начала файла — без поправки
+// разбор целиком и окна расходятся на этот сдвиг. Поэтому все разборы идут по времени клипа, а до первого сэмпла
+// звука — тишина. copy — звук, вынутый из клипа в отдельный файл (расширенный отчёт): его время начинается
+// с первого сэмпла.
+export interface AudioTiming {
+  start: number;
+  copy?: boolean;
+}
+
+export const clipTiming = (c: { audioStartSec?: number }): AudioTiming => ({ start: c.audioStartSec ?? 0 });
+
+function withSilence(data: Float32Array, samples: number): Float32Array {
+  const out = new Float32Array(samples + data.length);
+  out.set(data, samples);
+  return out;
+}
+
+// channels и sr — какими выходят сэмплы: тишина спереди должна быть в том же виде.
+async function decode(path: string, startSec: number, durSec: number | null, args: string[], sr: number, channels: number, timing?: AudioTiming): Promise<Float32Array | null> {
+  const first = timing?.start ?? 0;
+  const pad = Math.max(0, first - startSec);
+  const len = durSec === null ? null : durSec - pad;
+  const silence = Math.round(pad * sr) * channels;
+  if (len !== null && len <= 0) return new Float32Array(Math.round((durSec ?? 0) * sr) * channels);
+  // Место в самом файле: у звука, вынутого в отдельный файл, время сдвинуто на начало звука в клипе.
+  const from = Math.max(startSec, first) - (timing?.copy ? first : 0);
+  const { input, output } = seekArgs(from, len);
   try {
     const r = await runTool('ffmpeg', ['-v', 'error', ...input, '-i', path, ...output, '-vn', ...args, '-f', 'f32le', 'pipe:1'], 180000);
     if (r.code !== 0 || r.stdout.length < 4) return null;
-    return toFloat32(r.stdout);
+    const data = toFloat32(r.stdout);
+    return silence ? withSilence(data, silence) : data;
   } catch {
     return null;
   }
 }
 
 // Отпечаток звука: оба канала по отдельности, программа берёт тот, где звук чётче.
-export async function audioFeatures(path: string, startSec: number, durSec: number): Promise<AudioPiece | null> {
+export async function audioFeatures(path: string, startSec: number, durSec: number, timing?: AudioTiming): Promise<AudioPiece | null> {
   const start = Math.max(0, startSec);
   const dur = durSec - (start - startSec);
   if (dur <= 0.5) return null;
   const key = `${path}|${start.toFixed(2)}|${dur.toFixed(2)}`;
   const hit = featCache.get(key);
   if (hit) return hit;
-  const inter = await decode(path, start, dur, ['-ac', '2', '-ar', String(FEAT_SR)]);
+  const inter = await decode(path, start, dur, ['-ac', '2', '-ar', String(FEAT_SR)], FEAT_SR, 2, timing);
   if (!inter) return null;
   const n = Math.floor(inter.length / 2);
   const ch = [new Float32Array(n), new Float32Array(n)];
@@ -61,18 +88,21 @@ export async function audioFeatures(path: string, startSec: number, durSec: numb
 // Хранится, пока открыта программа (в фоновом потоке сверки).
 const wholeCache = new Map<string, Promise<AudioPiece | null>>();
 
-export function audioWholeFeatures(path: string, durationSec: number): Promise<AudioPiece | null> {
+export function audioWholeFeatures(path: string, durationSec: number, timing?: AudioTiming): Promise<AudioPiece | null> {
   const hit = wholeCache.get(path);
   if (hit) return hit;
-  const job = readWhole(path, durationSec);
+  const job = readWhole(path, durationSec, timing?.start ?? 0);
   wholeCache.set(path, job);
   return job;
 }
 
-function readWhole(path: string, durationSec: number): Promise<AudioPiece | null> {
+// first — где в клипе первый сэмпл звука: до него — тишина, чтобы отпечаток шёл по времени клипа.
+function readWhole(path: string, durationSec: number, first: number): Promise<AudioPiece | null> {
   return new Promise((resolve) => {
     const expected = Math.ceil(durationSec * FEAT_RATE) + 16;
     const ch = [new BandEnergy(FEAT_SR, expected), new BandEnergy(FEAT_SR, expected)];
+    const silence = Math.round(first * FEAT_SR);
+    if (silence > 0) for (const c of ch) c.push(new Float32Array(silence));
     let rest: Buffer = Buffer.alloc(0);
     let same = true; // каналы одинаковые по всему файлу (моно, разложенное на два) — второй не берём
     const child = spawnTool('ffmpeg', ['-v', 'error', '-i', path, '-vn', '-ac', '2', '-ar', String(FEAT_SR), '-f', 'f32le', 'pipe:1']);
@@ -105,16 +135,16 @@ function readWhole(path: string, durationSec: number): Promise<AudioPiece | null
 }
 
 // Волна выбранного канала на 48 кГц — для точной сверки.
-export async function audioSamples(path: string, startSec: number, durSec: number, channel: number): Promise<Float32Array | null> {
+export async function audioSamples(path: string, startSec: number, durSec: number, channel: number, timing?: AudioTiming): Promise<Float32Array | null> {
   if (startSec < 0 || durSec <= 0) return null;
-  return decode(path, startSec, durSec, ['-af', `pan=mono|c0=c${channel === 1 ? 1 : 0}`, '-ar', String(FINE_SR)]);
+  return decode(path, startSec, durSec, ['-af', `pan=mono|c0=c${channel === 1 ? 1 : 0}`, '-ar', String(FINE_SR)], FINE_SR, 1, timing);
 }
 
 // Волна всего клипа для таймлинии. Считается один раз на клип и хранится, пока программа открыта.
-export async function audioWaveform(path: string): Promise<Uint8Array | null> {
+export async function audioWaveform(path: string, timing?: AudioTiming): Promise<Uint8Array | null> {
   const hit = waves.get(path);
   if (hit) return hit;
-  const samples = await decode(path, 0, null, ['-ac', '1', '-ar', String(AUDIO_SAMPLE_RATE)]);
+  const samples = await decode(path, 0, null, ['-ac', '1', '-ar', String(AUDIO_SAMPLE_RATE)], AUDIO_SAMPLE_RATE, 1, timing);
   if (!samples) return null;
   const peaks = waveformPeaks(samples, AUDIO_SAMPLE_RATE);
   waves.set(path, peaks);

@@ -237,9 +237,9 @@ ipcMain.handle('qr:scan', async (_e, path: string, localSec: number, fps: number
   return scanQr(path, localSec, fps, width, height, durationSec);
 });
 
-ipcMain.handle('audio:waveform', async (_e, path: string) => {
+ipcMain.handle('audio:waveform', async (_e, path: string, audioStartSec: number) => {
   if (!allowedMedia.has(path)) return null;
-  return audioWaveform(path);
+  return audioWaveform(path, { start: Number(audioStartSec) || 0 });
 });
 
 // Расширенный отчёт для разработчика — ZIP-архив: отчёт, звук клипов без видео, сведения о файлах и системе.

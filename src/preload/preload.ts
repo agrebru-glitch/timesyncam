@@ -20,7 +20,7 @@ const api = {
     ipcRenderer.on('sync:progress', listener);
     return () => ipcRenderer.removeListener('sync:progress', listener);
   },
-  waveform: (path: string): Promise<Uint8Array | null> => ipcRenderer.invoke('audio:waveform', path),
+  waveform: (path: string, audioStartSec: number): Promise<Uint8Array | null> => ipcRenderer.invoke('audio:waveform', path, audioStartSec),
   scanQr: (path: string, localSec: number, fps: number, width: number, height: number, durationSec: number) =>
     ipcRenderer.invoke('qr:scan', path, localSec, fps, width, height, durationSec),
   saveExport: (defaultName: string, content: string): Promise<string | null> => ipcRenderer.invoke('export:save', defaultName, content),

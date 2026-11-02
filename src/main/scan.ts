@@ -1,10 +1,11 @@
 // Чтение папки камеры: находит клипы, их сайдкары и прокси, читает метаданные.
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
-import { buildClipMeta } from '../core/clipMeta.ts';
+import { buildClipMeta, isXavc } from '../core/clipMeta.ts';
 import { parseSonyXml } from '../core/sonyXml.ts';
 import type { ClipMeta } from '../core/types.ts';
 import { probe } from './ffmpeg.ts';
+import { readEmbeddedSonyXml } from './mp4File.ts';
 
 export const VIDEO_EXT = new Set(['.mp4', '.mov', '.mxf', '.mts', '.m2ts', '.m4v', '.avi', '.mkv', '.3gp', '.mpg', '.insv']);
 // Звук рекордеров, телефонов и диктофонов — всё, что читает FFmpeg: WAV/BWF и длинные RF64/W64, M4A (AAC, ALAC),
@@ -175,12 +176,15 @@ export async function scanPaths(paths: string[], onProgress: (done: number, tota
       const item = media[next++];
       try {
         const st = await stat(item.path);
-        const xmlPath = await findSonyXml(item.path, siblings);
-        const sony = xmlPath ? parseSonyXml(await readFile(xmlPath, 'utf8')) : null;
         const pr = await probe(item.path);
         if (!pr || !pr.streams?.length) {
           unreadable.push(item.path);
         } else {
+          // XML Sony — рядом с клипом (его мог поправить и сам пользователь), а если его потеряли при копировании
+          // или переименовании — тот же XML внутри самого MP4.
+          const xmlPath = await findSonyXml(item.path, siblings);
+          const xml = xmlPath ? await readFile(xmlPath, 'utf8') : isXavc(pr) ? await readEmbeddedSonyXml(item.path) : null;
+          const sony = xml ? parseSonyXml(xml) : null;
           clips.push(buildClipMeta({
             id: hashId(item.path),
             path: item.path,

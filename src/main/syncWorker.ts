@@ -4,7 +4,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { alignByAudio } from '../core/align.ts';
 import type { AudioJob } from '../core/audioSync.ts';
-import { audioFeatures, audioSamples, audioWholeFeatures } from './audio.ts';
+import { audioFeatures, audioSamples, audioWholeFeatures, clipTiming } from './audio.ts';
 import { useToolPaths } from './ffmpeg.ts';
 
 useToolPaths(workerData.tools);
@@ -14,9 +14,9 @@ parentPort!.on('message', async (job: AudioJob) => {
     const enabled = new Set(job.enabled);
     // Сверка всех дорожек со всеми: каждая пара — по всей длине записи, с проверкой по всей общей части.
     const result = await alignByAudio(job.cameras, job.coarse, {
-      features: (clip, start, dur) => audioFeatures(clip.path, start, dur),
-      samples: (clip, start, dur, ch) => audioSamples(clip.path, start, dur, ch),
-      whole: (clip) => audioWholeFeatures(clip.path, clip.durationSec),
+      features: (clip, start, dur) => audioFeatures(clip.path, start, dur, clipTiming(clip)),
+      samples: (clip, start, dur, ch) => audioSamples(clip.path, start, dur, ch, clipTiming(clip)),
+      whole: (clip) => audioWholeFeatures(clip.path, clip.durationSec, clipTiming(clip)),
     }, {
       searchSec: job.searchSec,
       maxAnchors: job.maxAnchors,

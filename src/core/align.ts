@@ -151,6 +151,42 @@ function clockErrorAt(known: { at: number; c: number }[], at: number): number {
   return (before ?? after)!.c;
 }
 
+// Поправка куска по звуку (c) — насколько часы устройства ошиблись в начале записи. len — длина записи для
+// одиночного клипа без тайм-кода (только по таким видно, что значат часы).
+interface ClockError {
+  at: number;
+  c: number;
+  len: number | null;
+}
+
+const soloLength = (p: Piece) => (p.clockOnly && !p.fileClock && p.members.length === 1 ? p.members[0].clip.recordedSec : null);
+
+// Часы устройства отмечают конец записи, а не начало: так пишет стоковый Android (время — при остановке), и по имени
+// файла это видно не всегда. Тогда у клипов разной длины, вставших по звуку, одинакова не поправка c, а c + длина.
+// Решается только с большим запасом, чтобы ответ не скакал у порога: ≥ 3 клипа, длины расходятся хотя бы на 10 с,
+// разброс «конца» ≤ 1 с и в 5 раз меньше разброса «начала». Ответ — общая ошибка часов (c + длина), иначе null.
+function endOfRecording(errors: ClockError[]): number | null {
+  const solo = errors.filter((e) => e.len !== null) as (ClockError & { len: number })[];
+  if (solo.length < 3) return null;
+  const lens = solo.map((e) => e.len);
+  if (Math.max(...lens) - Math.min(...lens) < 10) return null;
+  const spread = (v: number[]) => {
+    const m = median(v);
+    return Math.sqrt(v.reduce((s, x) => s + (x - m) ** 2, 0) / v.length);
+  };
+  const ends = solo.map((e) => e.c + e.len);
+  const asEnd = spread(ends);
+  return asEnd <= 1 && spread(solo.map((e) => e.c)) >= 5 * Math.max(asEnd, 0.3) ? median(ends) : null;
+}
+
+// Поправка куска по ошибке часов его устройства: по соседям во времени, а если часы отмечают конец записи —
+// общая ошибка минус длина самого клипа.
+function expectedCorrection(errors: ClockError[], p: Piece): number {
+  const end = endOfRecording(errors);
+  const len = soloLength(p);
+  return end !== null && len !== null ? end - len : clockErrorAt(errors, p.prior);
+}
+
 // Лучшие сдвиги по таблице сравнения: локальные пики, не ближе guard друг к другу. На краю, где записи
 // перекрываются на считанные секунды, случайная похожесть всегда высокая — поэтому похожесть взвешивается
 // длиной общей части: полный вес — от двух минут общего звука (или всей длины короткой записи).
@@ -726,7 +762,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
   });
   // Ошибка часов устройства по уже поставленным кускам. Дата файла меняется при копировании — по ней нельзя.
-  const errorsOf = (cameraId: string) => pieces.filter((p) => p.cameraId === cameraId && placed.has(p.id) && !p.fileClock).map((p) => ({ at: p.prior, c: placed.get(p.id)! - p.prior }));
+  const errorsOf = (cameraId: string): ClockError[] => pieces.filter((p) => p.cameraId === cameraId && placed.has(p.id) && !p.fileClock).map((p) => ({ at: p.prior, c: placed.get(p.id)! - p.prior, len: soloLength(p) }));
   const apart: number[][] = []; // группы, которые встали по своим часам отдельно от главной
   for (const comp of ordered) {
     const ps = comp.map((n) => pieces[n]);
@@ -737,7 +773,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     if (hard.length) {
       shift = median(hard.map((p) => p.prior - pos.get(p.id)!));
     } else if (known.length) {
-      shift = median(known.map((p) => p.prior + clockErrorAt(errorsOf(p.cameraId), p.prior) - pos.get(p.id)!));
+      shift = median(known.map((p) => p.prior + expectedCorrection(errorsOf(p.cameraId), p) - pos.get(p.id)!));
       log(`время группы — по ошибке часов её устройств в других группах: ${known.map((p) => `${p.cameraId}#${p.id}`).join(', ')}`);
     } else if (voters.length) {
       shift = agreeingClocks(voters.map((p) => ({ device: p.cameraId, v: p.prior - pos.get(p.id)!, weak: p.trust === 'weak', exact: p.exact })));
@@ -778,6 +814,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   // сбились при копировании, — часам не верим: запись встаёт встык к соседней, как файлы, на которые
   // рекордер режет длинную запись. Без звука и без верной даты место — догадка: об этом предупреждаем.
   const guessed = new Map<string, { names: string[]; chained: boolean }>();
+  const endClocks = new Set<string>(); // устройства, чьи часы отмечают конец записи
   for (const cam of cameras) {
     if (!opts.isEnabled(cam.id)) continue;
     const own = pieces.filter((p) => p.cameraId === cam.id).sort((a, b) => a.prior - b.prior || a.id - b.id);
@@ -786,7 +823,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     const overlapping = own.some((p, i) => i > 0 && p.prior < own[i - 1].prior + own[i - 1].length - CHAIN_GAP);
     const chained = overlapping && own.every((p) => p.recorder);
     const startOf = new Map(known.map((p) => [p.id, p.prior + pieceCorr.get(p.id)!]));
-    const errors = known.map((p) => ({ at: p.prior, c: pieceCorr.get(p.id)! }));
+    const errors: ClockError[] = known.map((p) => ({ at: p.prior, c: pieceCorr.get(p.id)!, len: soloLength(p) }));
     const put = (p: Piece, start: number) => {
       startOf.set(p.id, start);
       for (const m of p.members) corrections[m.clip.id] = start + m.at - m.p.start;
@@ -802,8 +839,18 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       });
       for (let i = own.length - 2; i >= 0; i--) if (!startOf.has(own[i].id) && startOf.has(own[i + 1].id)) put(own[i], startOf.get(own[i + 1].id)! - own[i].length);
     } else {
-      for (const p of own) if (!startOf.has(p.id)) put(p, p.prior + clockErrorAt(errors, p.prior));
+      for (const p of own) if (!startOf.has(p.id)) put(p, p.prior + expectedCorrection(errors, p));
+      if (endOfRecording(errors) !== null) endClocks.add(cam.id);
     }
+  }
+  for (const cameraId of endClocks) {
+    issues.push(issue({
+      severity: 'info',
+      cameraId,
+      title: `«${nameOf(cameraId)}»: время в файлах — конец записи`,
+      details: 'По записям, совпавшим по звуку, видно: устройство пишет в файл момент остановки записи, а не начала. Записи без общего звука поставлены с учётом их длины.',
+      actions: [],
+    }));
   }
   for (const comp of apart) {
     const ids = [...new Set(comp.map((n) => pieces[n].cameraId))];

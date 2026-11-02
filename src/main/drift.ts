@@ -87,7 +87,7 @@ export async function verifyCopy(path: string, checks: DriftCheck[]): Promise<{ 
     if (done.has(c.at) || c.refAt - ECHO_SPAN < 0) continue;
     const [x, y] = await Promise.all([
       readFresh(path, c.at),
-      audioSamples(c.refPath, c.refAt - ECHO_SPAN, CHECK_LEN + 2 * ECHO_SPAN, c.refChannel),
+      audioSamples(c.refPath, c.refAt - ECHO_SPAN, CHECK_LEN + 2 * ECHO_SPAN, c.refChannel, { start: c.refAudioStart ?? 0 }),
     ]);
     if (!x || !y || x.length < FINE_SR * CHECK_LEN * 0.9 || y.length < FINE_SR * CHECK_LEN * 0.9) continue;
     const g = gccPhat(x, y, FINE_SR, off, Math.round(CHECK_OFFSET * FINE_SR), off);

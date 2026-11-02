@@ -22,7 +22,7 @@ export interface Api {
   syncAudio(job: AudioJob): Promise<AudioSyncResult | null>;
   cancelSync(): Promise<void>;
   onSyncProgress(cb: (p: { done: number; total: number }) => void): () => void;
-  waveform(path: string): Promise<Uint8Array | null>;
+  waveform(path: string, audioStartSec: number): Promise<Uint8Array | null>;
   scanQr(path: string, localSec: number, fps: number, width: number, height: number, durationSec: number): Promise<{ result: QrResult | null; framesRead: number; framesWithCode: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;
   // Экспорт с выровненным звуком: выбрать место, сделать копии рядом с ним, записать XML.

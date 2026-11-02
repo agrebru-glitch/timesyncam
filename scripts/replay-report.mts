@@ -8,6 +8,8 @@ import { runSync } from '../src/core/sync.ts';
 import { heardCameras } from '../src/core/audioSync.ts';
 import { alignByAudio } from '../src/core/align.ts';
 import { audioFeatures, audioSamples, audioWholeFeatures } from '../src/main/audio.ts';
+// Звук клипа в отчёте — Opus, вынутый из файла: его время начинается с первого сэмпла звука.
+const reportTiming = (c: { audioStartSec?: number }) => ({ start: c.audioStartSec ?? 0, copy: true });
 import type { Camera, ClipMeta } from '../src/core/types.ts';
 
 const dir = process.argv[2];
@@ -32,9 +34,9 @@ console.log(`программа тестера ${r.app.version}, режим ${r.
 
 const coarse = runSync(cameras);
 const audio = await alignByAudio(cameras, coarse, {
-  features: (c, s, d) => audioFeatures(c.path, s, d),
-  samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch),
-  whole: (c) => audioWholeFeatures(c.path, c.durationSec),
+  features: (c, s, d) => audioFeatures(c.path, s, d, reportTiming(c)),
+  samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch, reportTiming(c)),
+  whole: (c) => audioWholeFeatures(c.path, c.durationSec, reportTiming(c)),
 }, { searchSec: 30, maxAnchors: 8, isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true, followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)) });
 const now = runSync(cameras, audio.corrections, heardCameras(audio));
 

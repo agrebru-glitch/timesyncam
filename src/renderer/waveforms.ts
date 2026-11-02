@@ -20,7 +20,7 @@ async function pump(): Promise<void> {
   while (running < CONCURRENCY && queue.length) {
     const clip = queue.shift()!;
     running++;
-    void api.waveform(clip.path).then((w) => {
+    void api.waveform(clip.path, clip.audioStartSec ?? 0).then((w) => {
       if (w) {
         waves.set(clip.id, w);
         notify();

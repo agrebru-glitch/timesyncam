@@ -140,8 +140,57 @@ test('Canon/Panasonic MOV: тайм-код из дорожки tmcd', () => {
   assert.ok(Math.abs(m.tc!.seconds - (16 * 3600 + 3 * 60 + 1 + 12 / 30)) < 0.1);
 });
 
+// Ролик телефона Android: метка com.android.version, время создания — в UTC.
+const androidProbe = (createdLocal: Date, frames: number, extra: Record<string, string> = {}): FfprobeResult => ({
+  streams: [
+    { codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', r_frame_rate: '30/1', avg_frame_rate: '30/1', nb_frames: String(frames), duration: (frames / 30).toFixed(3) },
+    { codec_type: 'audio', codec_name: 'aac', channels: 2, sample_rate: '48000' },
+  ],
+  format: { duration: (frames / 30).toFixed(3), tags: { creation_time: createdLocal.toISOString(), 'com.android.version': '16', ...extra } },
+});
+const at = (h: number, m: number, s: number) => new Date(2026, 10, 2, h, m, s);
+
+test('Android: время создания — начало записи, если согласно с именем файла (как у realme)', () => {
+  // Настоящий realme на Android 16: имя 09:26:18, время создания 09:26:17, ролик 66 с.
+  const m = buildClipMeta({ ...base, name: 'VID_20261102_092618.mp4', sony: null, probe: androidProbe(at(9, 26, 17), 1980) });
+  assert.equal(m.clock!.epochSec, at(9, 26, 17).getTime() / 1000);
+  assert.equal(m.clock!.note, undefined);
+  assert.equal(m.camera.model, 'Android');
+});
+
+test('Android: время создания — конец записи, если отстоит от имени на длину ролика', () => {
+  // Стоковый модуль записи Android ставит время при остановке: ролик 60 с, начат в 16:03:01.
+  const m = buildClipMeta({ ...base, name: 'VID_20261102_160301.mp4', sony: null, probe: androidProbe(at(16, 4, 1), 1800, { 'com.android.manufacturer': 'samsung', 'com.android.model': 'SM-S928B' }) });
+  assert.equal(m.clock!.epochSec, at(16, 3, 1).getTime() / 1000);
+  assert.equal(m.clock!.precisionSec, 2);
+  assert.match(m.clock!.note!, /конец записи/);
+  assert.equal(m.camera.model, 'samsung SM-S928B');
+  // Без времени в имени угадывать не из чего: время создания — начало, как у большинства.
+  const bare = buildClipMeta({ ...base, name: 'clip.mp4', sony: null, probe: androidProbe(at(16, 4, 1), 1800) });
+  assert.equal(bare.clock!.epochSec, at(16, 4, 1).getTime() / 1000);
+  // Пояс имени может не совпасть с поясом компьютера — сравнение по модулю 15 минут.
+  const tz = buildClipMeta({ ...base, name: 'VID_20261102_130301.mp4', sony: null, probe: androidProbe(at(16, 4, 1), 1800) });
+  assert.equal(tz.clock!.epochSec, at(16, 3, 1).getTime() / 1000);
+  // Телефон Sony — тоже Android, а не камера Sony.
+  const xperia = buildClipMeta({ ...base, name: 'C0001.MP4', sony: null, probe: androidProbe(at(16, 4, 1), 300, { 'com.android.manufacturer': 'Sony' }) });
+  assert.equal(xperia.camera.model, 'Sony');
+  assert.equal(xperia.clock!.epochSec, at(16, 4, 1).getTime() / 1000);
+});
+
+test('Android: таймлапс — частота съёмки из com.android.capture.fps', () => {
+  const m = buildClipMeta({ ...base, name: 'VID_20261102_160301.mp4', sony: null, probe: androidProbe(at(16, 3, 1), 300, { 'com.android.capture.fps': '1.000000' }) });
+  assert.equal(m.captureFps, 1);
+  assert.equal(m.recordedSec, 300);
+  // Замедленная запись в реальном времени (120 к/с в файл 120 к/с) — не таймлапс.
+  const slow = androidProbe(at(16, 3, 1), 1200, { 'com.android.capture.fps': '120.000000' });
+  Object.assign(slow.streams![0], { r_frame_rate: '120/1', avg_frame_rate: '120/1', duration: '10.000' });
+  assert.equal(buildClipMeta({ ...base, name: 'VID_20261102_160301.mp4', sony: null, probe: slow }).captureFps, null);
+});
+
 test('время в именах телефонов', () => {
-  assert.equal(timeFromFilename('PXL_20260612_160301123.mp4'), new Date(2026, 5, 12, 16, 3, 1, 123).getTime() / 1000);
+  // Pixel называет файлы по UTC, остальные телефоны — по местному времени.
+  assert.equal(timeFromFilename('PXL_20260612_160301123.mp4'), Date.UTC(2026, 5, 12, 16, 3, 1, 123) / 1000);
+  assert.equal(timeFromFilename('20260612_160301.mp4'), new Date(2026, 5, 12, 16, 3, 1).getTime() / 1000);
   assert.equal(timeFromFilename('C9151.MP4'), null);
   assert.equal(timeFromFilename('REC 2026-10-30 18.59.09.wav'), new Date(2026, 9, 30, 18, 59, 9).getTime() / 1000);
   // Петличка и часть рекордеров пишут в имя только время суток.

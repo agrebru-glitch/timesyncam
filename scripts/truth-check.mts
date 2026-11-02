@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanFolder } from '../src/main/scan.ts';
-import { audioFeatures, audioSamples, audioWholeFeatures } from '../src/main/audio.ts';
+import { audioFeatures, audioSamples, audioWholeFeatures, clipTiming } from '../src/main/audio.ts';
 import { alignByAudio } from '../src/core/align.ts';
 import { scanQr } from '../src/main/qr.ts';
 import { runSync } from '../src/core/sync.ts';
@@ -27,9 +27,9 @@ for (const [i, d] of dirs.entries()) {
   cameras.push({ id: d, name: `Камера ${i + 1}`, folders: [], clips: res.clips, manualShiftSec: 0, timecodeTrust: 'auto', excludedClipIds: [], audioAssist: true, scanning: null });
 }
 const fetchAudio = {
-  features: (c: { path: string }, s: number, d: number) => audioFeatures(c.path, s, d),
-  samples: (c: { path: string }, s: number, d: number, ch: number) => audioSamples(c.path, s, d, ch),
-  whole: (c: { path: string; durationSec: number }) => audioWholeFeatures(c.path, c.durationSec),
+  features: (c: { path: string; audioStartSec?: number }, s: number, d: number) => audioFeatures(c.path, s, d, clipTiming(c)),
+  samples: (c: { path: string; audioStartSec?: number }, s: number, d: number, ch: number) => audioSamples(c.path, s, d, ch, clipTiming(c)),
+  whole: (c: { path: string; durationSec: number; audioStartSec?: number }) => audioWholeFeatures(c.path, c.durationSec, clipTiming(c)),
 };
 // --old — прежняя сверка цепочкой (для сравнения), по умолчанию — новая: все дорожки со всеми.
 const OLD = process.argv.includes('--old');

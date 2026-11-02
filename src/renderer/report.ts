@@ -38,6 +38,7 @@ export function buildReport(state: State, issues: Issue[]): string {
         hasVideo: k.hasVideo,
         audioChannels: k.audioChannels,
         audioSampleRate: k.audioSampleRate,
+        audioStartSec: k.audioStartSec,
         tc: k.tc,
         clock: k.clock,
         camera: k.camera,

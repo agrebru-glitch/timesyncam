@@ -19,6 +19,8 @@ const { applyRelocation, planRelocation, runSync } = await import('../src/core/s
 const { alignByAudio } = await import('../src/core/align.ts');
 const { AUDIO_SEARCH_SEC, heardCameras } = await import('../src/core/audioSync.ts');
 const { audioFeatures, audioSamples, audioWholeFeatures } = await import('../src/main/audio.ts');
+// Звук клипа в отчёте — Opus, вынутый из файла: его время начинается с первого сэмпла звука.
+const reportTiming = (c: { audioStartSec?: number }) => ({ start: c.audioStartSec ?? 0, copy: true });
 type Camera = import('../src/core/types.ts').Camera;
 type FfprobeResult = import('../src/core/clipMeta.ts').FfprobeResult;
 
@@ -30,11 +32,13 @@ const source: Device[] = report.cameras.map((c: any): Device => {
   const files = c.clips.map((k: any): FileSpec => {
     const base = join(dir, safe(c.name));
     const xml = join(base, `${k.file.replace(/\.[^.]+$/, '')}M01.XML`);
+    // XML Sony изнутри MP4 — в отчёте, если рядом с клипом его не было. Варианты «потерян XML» убирают и его.
+    const nrt = join(base, `${k.file}.nrtm.xml`);
     return {
       key: `${c.name}/${k.file}`,
       name: k.file,
       probe: JSON.parse(readFileSync(join(base, `${k.file}.ffprobe.json`), 'utf8')),
-      xml: existsSync(xml) ? readFileSync(xml, 'utf8') : null,
+      xml: existsSync(xml) ? readFileSync(xml, 'utf8') : existsSync(nrt) ? readFileSync(nrt, 'utf8') : null,
       // Даты файла в отчёте нет. Для записей, где день брался из неё, ставим конец записи — так и было у тестера.
       mtimeMs: k.clock ? (k.clock.epochSec + k.recordedSec) * 1000 : 0,
       audio: join(base, `${k.file}.opus`),
@@ -254,9 +258,9 @@ async function run(v: Variant, seed: number) {
   const cameras = plan.moves.length || plan.drops.length ? applyRelocation(built.cameras, plan) : built.cameras;
   const coarse = runSync(cameras);
   const audio = await alignByAudio(cameras, coarse, {
-    features: (c, s, d) => audioFeatures(c.path, s, d),
-    samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch),
-    whole: (c) => audioWholeFeatures(c.path, c.durationSec),
+    features: (c, s, d) => audioFeatures(c.path, s, d, reportTiming(c)),
+    samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch, reportTiming(c)),
+    whole: (c) => audioWholeFeatures(c.path, c.durationSec, reportTiming(c)),
   }, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true, followers: new Set(), pre: {}, fixed: new Set(), controlClips: new Set() });
   const final = runSync(cameras, audio.corrections, heardCameras(audio));
   if (process.env.STRESS_LOG) {

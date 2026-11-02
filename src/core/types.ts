@@ -46,6 +46,9 @@ export interface ClipMeta {
   hasVideo: boolean;
   audioChannels: number;
   audioSampleRate: number | null;
+  // Где в клипе начинается звук, секунды: у части телефонов звук в файле начинается позже видео (realme — на 0,22 с).
+  // Монтажка ставит его туда же. Нет — с начала клипа.
+  audioStartSec?: number;
   tc: ClipTimecode | null;
   clock: ClipClock | null;
   camera: CameraInfo;

@@ -10,6 +10,7 @@ export interface DriftCheck {
   refId: string; // клип-опора: расхождение копии с одной и той же опорой должно быть одинаковым по всей длине
   refPath: string; // запись, звучащая в тот же момент (лучше — камера: её время и есть шкала таймлинии)
   refChannel: number;
+  refAudioStart?: number; // где в опорном клипе начинается звук (у части телефонов — позже видео)
   at: number; // момент внутри копии, секунды
   refAt: number; // где этот звук должен быть в опорной записи
 }
@@ -123,7 +124,7 @@ export function driftJobs(cameras: Camera[], sync: SyncResult, audio: AudioSyncR
       const at = Math.max(0, Math.min(length - CHECK_LEN, f * length - CHECK_LEN / 2));
       const T = start + at;
       for (const ref of mine.filter((r) => r.p.start <= T - 0.2 && r.p.start + r.clip.durationSec >= T + CHECK_LEN + 0.2).slice(0, 3)) {
-        checks.push({ refId: ref.clip.id, refPath: ref.clip.path, refChannel: 0, at, refAt: T - ref.p.start });
+        checks.push({ refId: ref.clip.id, refPath: ref.clip.path, refChannel: 0, refAudioStart: ref.clip.audioStartSec ?? 0, at, refAt: T - ref.p.start });
       }
     }
     jobs.push({ clipId: clip.id, deviceId: device, path: clip.path, ratio, ppm: d.ppm, outName, checks });

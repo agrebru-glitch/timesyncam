@@ -4,7 +4,7 @@
 // Папки только читаются. XML пишется туда, куда указано.
 import { writeFile } from 'node:fs/promises';
 import { scanFolder } from '../src/main/scan.ts';
-import { audioFeatures, audioSamples, audioWholeFeatures } from '../src/main/audio.ts';
+import { audioFeatures, audioSamples, audioWholeFeatures, clipTiming } from '../src/main/audio.ts';
 import { alignByAudio } from '../src/core/align.ts';
 import { scanQr } from '../src/main/qr.ts';
 import { applyRelocation, planRelocation, relocationIssues, runSync } from '../src/core/sync.ts';
@@ -84,9 +84,9 @@ for (const [camId, c] of control.cameras) console.log(`  ${camId}: поправ�
 if (withAudio) {
   const t = performance.now();
   const audio = await alignByAudio(cameras, r, {
-    features: (clip, s, d) => audioFeatures(clip.path, s, d),
-    samples: (clip, s, d, ch) => audioSamples(clip.path, s, d, ch),
-    whole: (clip) => audioWholeFeatures(clip.path, clip.durationSec),
+    features: (clip, s, d) => audioFeatures(clip.path, s, d, clipTiming(clip)),
+    samples: (clip, s, d, ch) => audioSamples(clip.path, s, d, ch, clipTiming(clip)),
+    whole: (clip) => audioWholeFeatures(clip.path, clip.durationSec, clipTiming(clip)),
   }, {
     searchSec: AUDIO_SEARCH_SEC,
     maxAnchors: 8,

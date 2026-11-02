@@ -18,6 +18,7 @@ export interface FfprobeStream {
   r_frame_rate?: string;
   avg_frame_rate?: string;
   nb_frames?: string;
+  start_time?: string;
   duration?: string;
   channels?: number;
   sample_rate?: string;
@@ -26,7 +27,7 @@ export interface FfprobeStream {
 
 export interface FfprobeResult {
   streams?: FfprobeStream[];
-  format?: { format_name?: string; duration?: string; tags?: Record<string, string> };
+  format?: { format_name?: string; start_time?: string; duration?: string; tags?: Record<string, string> };
 }
 
 export interface ClipInput {
@@ -58,9 +59,23 @@ function tagsLower(tags: Record<string, string> | undefined): Record<string, str
   return out;
 }
 
+// Файл записан модулем записи MP4 самого Android (камера телефона, MediaRecorder, MediaMuxer): он всегда
+// оставляет метку com.android.version, а производителя и модель — по выбору прошивки.
+function androidWriter(fmt: Record<string, string>): boolean {
+  return Object.keys(fmt).some((k) => k.startsWith('com.android.'));
+}
+
+// XAVC S и XAVC HS — форматы Sony: XML NonRealTimeMeta лежит не только рядом с клипом, но и внутри MP4.
+export function isXavc(probe: FfprobeResult | null): boolean {
+  const t = probe?.format?.tags ?? {};
+  return /XAVC/.test(`${t.major_brand ?? ''} ${t.compatible_brands ?? ''}`);
+}
+
 export function detectVendor(name: string, probe: FfprobeResult | null, sony: SonyXmlMeta | null): Vendor | null {
   if (sony) return 'sony';
   const fmt = tagsLower(probe?.format?.tags);
+  // Раньше марок: телефон Sony Xperia — это Android, а не камера Sony.
+  if (androidWriter(fmt)) return 'android';
   const streamTags = (probe?.streams ?? []).map((s) => Object.values(s.tags ?? {}).join(' ')).join(' ');
   const hay = `${Object.values(fmt).join(' ')} ${streamTags}`.toLowerCase();
   const n = name.toUpperCase();
@@ -72,7 +87,7 @@ export function detectVendor(name: string, probe: FfprobeResult | null, sony: So
   if (/blackmagic/.test(hay)) return 'blackmagic';
   if (/canon/.test(hay) || fmt.major_brand === 'CAEP') return 'canon';
   // XAVC — формат Sony: камера узнаётся и без XML, если его потеряли при копировании.
-  if (fmt.major_brand === 'XAVC') return 'sony';
+  if (isXavc(probe)) return 'sony';
   if (/panasonic|lumix/.test(hay)) return 'panasonic';
   if (/fujifilm/.test(hay)) return 'fujifilm';
   if (/nikon/.test(hay)) return 'nikon';
@@ -98,13 +113,16 @@ function localEpoch(y: number, mo: number, d: number, h: number, mi: number, s: 
   return new Date(y, mo - 1, d, h, mi, s, ms).getTime() / 1000;
 }
 
-// Время из имени файла: DJI_20260612183015_0001_D.MP4, PXL_20260612_183015123.mp4, 20260612_183015.mp4
+// Время из имени файла: DJI_20260612183015_0001_D.MP4, PXL_20260612_183015123.mp4, 20260612_183015.mp4.
+// Местное время, кроме Pixel: он называет файлы по UTC.
 export function timeFromFilename(name: string): number | null {
   const m = /(20\d{2})[-.]?(\d{2})[-.]?(\d{2})[ _T-]?(\d{2})[-.]?(\d{2})[-.]?(\d{2})(\d{3})?/.exec(name);
   if (!m) return null;
   const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number);
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return null;
-  return localEpoch(y, mo, d, h, mi, s, m[7] ? Number(m[7]) : 0);
+  const ms = m[7] ? Number(m[7]) : 0;
+  if (/^PXL_/i.test(name)) return Date.UTC(y, mo - 1, d, h, mi, s, ms) / 1000;
+  return localEpoch(y, mo, d, h, mi, s, ms);
 }
 
 // Только время суток в имени файла — так называют записи петлички и часть рекордеров: «18-52-06.wav».
@@ -114,6 +132,17 @@ export function timeOfDayFromFilename(name: string): number | null {
   if (!m) return null;
   const [h, mi, s] = m.slice(1, 4).map(Number);
   return mi > 59 || s > 59 ? null : h * 3600 + mi * 60 + s;
+}
+
+// Время в имени файла — начало записи. Время создания в файле согласно с ним, если оно тоже начало, и отстоит
+// на длину записи, если это конец. Пояс имени неизвестен, поэтому сравнение — по модулю 15 минут. Конец — только
+// с запасом: иначе, как и раньше, начало.
+function endByName(created: number, nameTime: number | null, recordedSec: number): boolean {
+  if (nameTime === null || recordedSec < 5) return false;
+  const off = (d: number) => Math.abs(d - 900 * Math.round(d / 900));
+  const asStart = off(nameTime - created);
+  const asEnd = off(nameTime - (created - recordedSec));
+  return asEnd <= 2 && asStart >= asEnd + 3;
 }
 
 // Многие камеры (GoPro, часть DJI) пишут местное время, но помечают его как UTC.
@@ -196,7 +225,10 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
   }
 
   // Замедленная (S&Q 100/120 к/с в файл 25p) или ускоренная съёмка: запись длилась не столько, сколько файл.
-  const captureFps = sony?.captureFps && fps && Math.abs(sony.captureFps - fps) > 0.5 ? sony.captureFps : null;
+  // Частоту съёмки пишут Sony (в XML) и Android (com.android.capture.fps — таймлапс и замедленная съёмка).
+  const byAndroid = androidWriter(formatTags);
+  const shotFps = sony?.captureFps ?? (byAndroid ? Number(formatTags['com.android.capture.fps']) || null : null);
+  const captureFps = shotFps && fps && Math.abs(shotFps - fps) > 0.5 ? shotFps : null;
   const recordedSec = captureFps && frames ? frames / captureFps : durationSec;
 
   // Тайм-код: Sony XML → дорожка тайм-кода в контейнере → BWF у звуковых рекордеров.
@@ -263,6 +295,17 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     const [y, mo, d] = formatTags.date.split('-').map(Number);
     const [h, mi, s] = formatTags.creation_time.split(':').map(Number);
     clock = { epochSec: localEpoch(y, mo, d, h, mi, s), precisionSec: 1, tzOffsetMin: null, source: 'container' };
+  } else if (createdValid && endByName(createdValid.epochSec, fileNameTime, recordedSec)) {
+    // Время создания — конец записи: так пишет стоковый модуль записи Android (ставит время при остановке),
+    // а realme и другие — начало. Решает имя файла: его камера даёт в начале записи. Начало — на длину записи
+    // раньше; запись файла добавляет задержку, отсюда точность 2 с.
+    clock = {
+      epochSec: createdValid.epochSec - recordedSec,
+      precisionSec: 2,
+      tzOffsetMin: null,
+      source: 'container',
+      note: 'Время в файле — конец записи (видно по имени файла): начало посчитано по длине клипа',
+    };
   } else if (createdValid) {
     clock = { epochSec: createdValid.epochSec, precisionSec: 1, tzOffsetMin: createdValid.tzOffsetMin === 0 ? null : createdValid.tzOffsetMin, source: 'container' };
   } else if (fileNameTime !== null) {
@@ -280,10 +323,14 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     clock = { epochSec: input.mtimeMs / 1000 - recordedSec, precisionSec: 3, tzOffsetMin: null, source: 'file', note: 'Время взято из даты файла — проверьте, что файлы копировались без изменений' };
   }
 
-  const make = sony?.make ?? formatTags['com.apple.quicktime.make'] ?? formatTags.make ?? (vendor ? VENDOR_NAMES[vendor] : undefined);
-  const model = sony?.model ?? formatTags['com.apple.quicktime.model'] ?? formatTags.model;
+  const make = sony?.make ?? formatTags['com.apple.quicktime.make'] ?? formatTags['com.android.manufacturer'] ?? formatTags.make ?? (vendor ? VENDOR_NAMES[vendor] : undefined);
+  const model = sony?.model ?? formatTags['com.apple.quicktime.model'] ?? formatTags['com.android.model'] ?? formatTags.model;
 
   const playable = !!video && video.codec_name === 'h264' && PLAYABLE_PIX.has(video.pix_fmt ?? '');
+
+  // Звук в файле может начинаться позже начала файла: так пишут часть телефонов (realme — на 0,22 с позже видео),
+  // и монтажка ставит звук туда же внутри клипа. Сверка отсчитывает звук от начала файла.
+  const audioStart = Number(audio[0]?.start_time) - (Number(input.probe?.format?.start_time) || 0);
 
   return {
     id: input.id,
@@ -302,6 +349,7 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     hasVideo: !!video,
     audioChannels: audio.reduce((n, s) => n + (s.channels ?? 0), 0),
     audioSampleRate: audio[0]?.sample_rate ? Number(audio[0].sample_rate) : null,
+    audioStartSec: audioStart > 0.0005 ? audioStart : 0,
     tc,
     clock,
     camera: {
