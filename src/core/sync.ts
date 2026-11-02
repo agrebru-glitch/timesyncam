@@ -6,6 +6,10 @@ import { formatDate, formatDurationHuman, formatShift, pluralRu } from './format
 const CLUSTER_TOLERANCE = 1.6; // секунды: часы камер пишут время с точностью до секунды
 const ABSOLUTE_TC_TOLERANCE = 2; // если тайм-код совпадает с часами, это реальное время
 const NUDGE_LIMIT = 1.5; // перекрытие клипов «по часам» до этой величины — погрешность часов
+// Клипы, поставленные по звуку, наползают друг на друга на ход часов: петличка с часами, спешащими на 17 ppm,
+// пишет файлы по 30 минут вплотную, а без растяжения каждый следующий начинается на 30 мс раньше конца прошлого.
+// Это не ошибка и не повод двигать клип — при экспорте выровненные копии стыкуются ровно.
+const DRIFT_OVERLAP = 0.2;
 
 export function localTzOffsetMin(): number {
   return -new Date().getTimezoneOffset();
@@ -360,10 +364,25 @@ function syncCamera(
     }
     return { start, method };
   };
-  const raw: { clip: ClipMeta; start: number; method: Placement['method']; segment?: number; ownerId?: string }[] = [];
+  const raw: { clip: ClipMeta; start: number; method: Placement['method']; segment?: number; ownerId?: string; heard?: boolean }[] = [];
   for (const c of clips) {
     const at = place(c);
-    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + dateShift + (corrections[c.id] ?? 0), method: at.method, segment: at.segment });
+    if (at) raw.push({ clip: c, start: at.start + cam.manualShiftSec + dateShift, method: at.method, segment: at.segment, heard: corrections[c.id] !== undefined });
+  }
+  // Поправки по звуку отсчитаны от грубой раскладки — той, где клипы «по часам» уже подвинуты вплотную к соседу.
+  // Поэтому и здесь они прибавляются к месту после той же подвижки, а сам клип, поставленный по звуку, дальше
+  // не двигается. Иначе петличка, чьи файлы по часам наползали на 0,12 с, уезжала на 0,12 с за каждый файл.
+  if (raw.some((r) => r.heard)) {
+    const order = [...raw].sort((a, b) => a.start - b.start);
+    const lastEnd = new Map<number, number>();
+    for (const r of order) {
+      const key = r.segment ?? -1;
+      const prev = lastEnd.get(key) ?? -Infinity;
+      const overlap = prev - r.start;
+      const base = overlap > 0.02 && r.method !== 'timecode' && overlap <= NUDGE_LIMIT ? prev : r.start;
+      if (base + r.clip.recordedSec > prev) lastEnd.set(key, base + r.clip.recordedSec);
+      if (r.heard) r.start = base + corrections[r.clip.id];
+    }
   }
   for (const gst of guests) raw.push({ clip: gst.clip, start: gst.start, method: gst.method, ownerId: gst.ownerId });
 
@@ -399,8 +418,9 @@ function syncCamera(
     const lastRecordedEnd = last?.end ?? -Infinity;
     const lastRecordedClip = last?.clip ?? null;
     const realOverlap = guest ? 0 : lastRecordedEnd - start;
-    if (realOverlap > 0.02) {
-      if (r.method !== 'timecode' && realOverlap <= NUDGE_LIMIT) {
+    const drifting = !!r.heard && realOverlap <= DRIFT_OVERLAP;
+    if (realOverlap > 0.02 && !drifting) {
+      if (r.method !== 'timecode' && realOverlap <= NUDGE_LIMIT && !r.heard) {
         start = lastRecordedEnd; // погрешность часов — ставим вплотную
       } else {
         issues.push(issue({
@@ -414,7 +434,8 @@ function syncCamera(
       }
     }
     const own = laneOfSegment.get(segKey);
-    let lane = own !== undefined && laneEnds[own] <= start + 0.02 ? own : laneEnds.findIndex((e) => e <= start + 0.02);
+    const slack = drifting ? DRIFT_OVERLAP : 0.02;
+    let lane = own !== undefined && laneEnds[own] <= start + slack ? own : laneEnds.findIndex((e) => e <= start + slack);
     if (lane === -1) lane = laneEnds.length;
     if (!guest && r.segment !== undefined) laneOfSegment.set(segKey, lane);
     const end = start + r.clip.durationSec;

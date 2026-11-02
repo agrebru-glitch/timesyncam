@@ -39,7 +39,9 @@ const NEIGHBOUR = 0.15; // пик в пределах 150 мс от лучшег
 const FINE_LEN = 8; // секунд волны в точной сверке: в гулком зале нужно больше звука
 const FINE_RANGE = 0.02; // точная сверка уточняет грубую в пределах ±20 мс: шире — может перескочить на соседнее эхо зала
 const FINE_CONFIDENCE = 6; // пик GCC-PHAT во столько раз выше фона; согласие точек проверяет общий расчёт
-const FINE_PER_CLIP = 3; // точек точной сверки на клип — в начале, середине и конце: по ним виден и ход часов
+// Точек точной сверки на клип — вдоль всего клипа: по ним виден ход часов и сбой тайм-кода. Сколько — по размеру
+// съёмки: на малой (12 клипов) по три точки не хватало, чтобы отличить сбой тайм-кода камеры от хода рекордера.
+const FINE_PER_CLIP = { min: 3, max: 12 };
 const FINE_TOTAL = 900; // и не больше 900 на всю съёмку — каждая точка читает звук с диска
 const SIGMA_FINE = 0.001;
 // Эхо: второй пик в 20–120 мс от лучшего почти той же высоты — неясно, где прямой звук. Точка по отпечатку
@@ -47,6 +49,9 @@ const SIGMA_FINE = 0.001;
 const ECHO_SPAN = 0.12;
 const ECHO_COARSE = 0.85;
 const ECHO_FINE = 0.7;
+// Отражение ближе 10 мс (от пола и стен у самого микрофона — 4–6 мс) — не эхо зала: точка берётся. У камеры
+// на штативе такое отражение почти в каждой точке, ошибиться на нём можно лишь на доли кадра.
+const NEAR_ECHO = 0.01;
 const FRAME_LIMIT = 0.035; // хуже — уже заметно глазу: точность камеры хуже кадра — предупреждаем
 const HUBER = 2.5;
 const OUTLIER = 6; // измерение дальше шести своих погрешностей от общего решения — ложное
@@ -351,10 +356,12 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   // Связи соседних клипов одного устройства.
   const splitFile = (a: Item, gap: number) => !a.clip.hasVideo && Math.abs(gap) <= 1.5 && SPLIT_SIZES.some((s) => a.clip.sizeBytes <= s && a.clip.sizeBytes >= s * 0.995);
   const links: Row[] = [];
+  const continued = new Set<string>(); // продолжения разрезанной записи: их место задаёт конец предыдущего файла
   for (const [device, list] of devices) {
     const groups = new Map<string, Item[]>();
     for (const it of list) {
-      const k = it.segment !== undefined ? `s${it.segment}` : `l${it.lane}`;
+      // Дорожки у файлов с датами копирования случайны (по датам они лежат стопкой) — их связи ищутся по всему устройству.
+      const k = it.segment !== undefined ? `s${it.segment}` : it.clip.clock?.source === 'file' ? 'file' : `l${it.lane}`;
       groups.set(k, [...(groups.get(k) ?? []), it]);
     }
     for (const g of groups.values()) {
@@ -377,12 +384,18 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
         const d0 = b.start0 - a.start0;
         const terms = [{ key: yKey(b), c: 1 }, { key: yKey(a), c: -1 }];
         if (rated.has(device)) terms.push({ key: pKey(device), c: -d0 * 1e-6 });
-        links.push({ terms, rhs: 0, sigma: LINK[kind], kind: 'link', link: { kind, a, b } });
+        // Файл, разрезанный рекордером по 2 или 4 ГБ, продолжается ровно с конца предыдущего: зазор по времени
+        // в BWF (целые секунды) ложный — на съёмке тестера из-за него вторая часть записи опаздывала на 0,9 с.
+        const rhs = splitFile(a, gap) ? -gap : 0;
+        if (rhs) continued.add(b.id);
+        links.push({ terms, rhs, sigma: LINK[kind], kind: 'link', link: { kind, a, b } });
       }
     }
   }
   const priors: Row[] = [
-    ...items.filter((it) => it.free).map((it): Row => ({ terms: [{ key: yKey(it), c: 1 }], rhs: 0, sigma: PRIOR_START[input.exactClips.has(it.id) ? 'exact' : it.clip.hasVideo ? 'video' : 'audio'], kind: 'prior' })),
+    // У продолжения разрезанной записи своё время в BWF округлено до секунды — точным оно быть не может: с точной
+    // опорой связь «с конца предыдущего» тянула бы на доли секунды всю съёмку.
+    ...items.filter((it) => it.free).map((it): Row => ({ terms: [{ key: yKey(it), c: 1 }], rhs: 0, sigma: PRIOR_START[input.exactClips.has(it.id) && !continued.has(it.id) ? 'exact' : it.clip.hasVideo ? 'video' : 'audio'], kind: 'prior' })),
     ...[...rated].map((d): Row => ({ terms: [{ key: pKey(d), c: 1 }], rhs: 0, sigma: PRIOR_PPM, kind: 'prior' })),
   ];
 
@@ -395,7 +408,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   ]);
   let lastVariance: Variance[] = [];
   const varianceOf = (terms: { key: string; c: number }[]) => lastVariance.reduce((s, f) => s + f(terms), 0);
-  const linkDev = (l: Row) => l.terms.reduce((s, t) => s + t.c * (val.get(t.key) ?? 0), 0);
+  const linkDev = (l: Row) => l.terms.reduce((s, t) => s + t.c * (val.get(t.key) ?? 0), 0) - l.rhs;
   const holdable = (l: Row) => l.link!.kind === 'tc' || l.link!.kind === 'bwf' || l.link!.kind === 'chain';
   // Сначала ведущие, потом ведомые — по уже поставленным ведущим: ведомая камера не сдвигает остальных.
   const solveStages = (rows: Row[]) => {
@@ -408,9 +421,11 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   };
   // Сначала связи свободны — видно, где клипы по звуку отходят от тайм-кода и «встык»; где отход мал, связь
   // становится жёсткой, и всё решается ещё раз.
+  let valFree = new Map<string, number>(); // решение со свободными связями — вокруг него ищет точная сверка
   const solveAll = (rows: Row[]) => {
     for (const l of links) if (holdable(l)) l.sigma = LINK[l.link!.kind];
     solveStages(rows);
+    valFree = new Map(val);
     let held = 0;
     for (const l of links) {
       if (!holdable(l)) continue;
@@ -498,18 +513,34 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     solveAll(rows);
   }
 
-  // Точная сверка по волне: у каждого клипа — точки в начале, середине и конце.
+  // Точная сверка по волне: точки ровно вдоль каждого клипа, а не только там, где прошла грубая, — волна совпадает
+  // и там, где отпечаток громкости слишком гладок. Партнёры — одна-две записи, общий звук с которыми подтвердила
+  // грубая сверка. Место ищется вокруг решения со свободными связями: в общем решении связь тайм-кода может быть
+  // удержана вопреки звуку, и сбой в 60–100 мс оказался бы за краем поиска.
+  const freeStart = (it: Item) => it.start0 + (valFree.get(yKey(it)) ?? 0);
+  const freeRate = (it: Item) => 1 + (valFree.get(pKey(it.device)) ?? 0) * 1e-6;
+  const pairKey = (a: Item, b: Item) => (a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`);
+  const pairScore = new Map<string, number>(); // лучший балл грубой сверки пары
+  for (const r of rows) if (!r.out && r.pair) pairScore.set(pairKey(r.pair[0], r.pair[1]), Math.max(pairScore.get(pairKey(r.pair[0], r.pair[1])) ?? 0, r.score!));
   const jobs: { c: Item; d: Item; u: number; score: number }[] = [];
-  for (const it of audible.filter((x) => x.free)) {
-    const own = rows.filter((r) => !r.out && r.pair && (r.pair[0] === it || r.pair[1] === it)).map((r) => {
-      const mine = r.pair![0] === it ? 0 : 1;
-      return { d: r.pair![1 - mine], u: r.at![mine] + PASSES[1].win / 2, score: r.score! };
-    });
-    for (let s = 0; s < FINE_PER_CLIP; s++) {
-      const lo = (s / FINE_PER_CLIP) * it.length;
-      const hi = ((s + 1) / FINE_PER_CLIP) * it.length;
-      const best = own.filter((o) => o.u >= lo && o.u < hi).sort((a, b) => b.score - a.score)[0];
-      if (best) jobs.push({ c: it, ...best });
+  const fineClips = audible.filter((x) => x.free);
+  const perClip = Math.max(FINE_PER_CLIP.min, Math.min(FINE_PER_CLIP.max, Math.floor(FINE_TOTAL / Math.max(1, fineClips.length))));
+  const seen = new Set<string>();
+  for (const it of fineClips) {
+    for (let s = 0; s < perClip; s++) {
+      const u = ((s + 0.5) / perClip) * it.length;
+      const T = freeStart(it) + u * freeRate(it);
+      const partners = audible
+        .filter((d) => pairScore.has(pairKey(it, d)) && T - FINE_LEN > freeStart(d) && T + FINE_LEN < freeStart(d) + d.length * freeRate(d))
+        .sort((a, b) => pairScore.get(pairKey(it, b))! - pairScore.get(pairKey(it, a))!)
+        .slice(0, 2);
+      for (const d of partners) {
+        // Пара в том же месте с другой стороны уже есть — второй такой же замер ничего не добавит.
+        const key = `${pairKey(it, d)}|${Math.round(T / STEP)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        jobs.push({ c: it, d, u, score: pairScore.get(pairKey(it, d))! });
+      }
     }
   }
   jobs.sort((a, b) => b.score - a.score);
@@ -519,12 +550,16 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   const fineOk = new Map<string, number>();
   const off = Math.round(FINE_RANGE * FINE_SR);
   const echoOff = Math.round(ECHO_SPAN * FINE_SR);
+  const failed = { edge: 0, weak: 0, echo: 0, bounds: 0 };
   await pool(jobs.slice(0, FINE_TOTAL), 4, async ({ c, d, u }) => {
-    const T = startOf(c) + u * rateOf(c);
-    const ud = (T - startOf(d)) / rateOf(d);
+    const T = freeStart(c) + u * freeRate(c);
+    const ud = (T - freeStart(d)) / freeRate(d);
     const from = u - FINE_LEN / 2;
     const dFrom = ud - FINE_LEN / 2 - ECHO_SPAN;
-    if (from < 0 || dFrom < 0 || from + FINE_LEN > c.length || dFrom + FINE_LEN + 2 * ECHO_SPAN > d.length) return;
+    if (from < 0 || dFrom < 0 || from + FINE_LEN > c.length || dFrom + FINE_LEN + 2 * ECHO_SPAN > d.length) {
+      failed.bounds++;
+      return;
+    }
     const [x, y] = await Promise.all([
       input.samples(c.clip, from, FINE_LEN, c.channel),
       input.samples(d.clip, dFrom, FINE_LEN + 2 * ECHO_SPAN, d.channel),
@@ -532,9 +567,19 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     if (!x || !y || x.length < FINE_SR * FINE_LEN * 0.9 || y.length < FINE_SR * FINE_LEN * 0.9) return;
     // Сдвиг ищется в ±20 мс от уточнённого места, соперник-отражение — в ±120 мс.
     const g = gccPhat(x, y, FINE_SR, echoOff, off, echoOff);
+    if (process.env?.TSC_REFINE_DEBUG) log(`  по волне ${c.clip.name}@${u.toFixed(0)} — ${d.clip.name}@${ud.toFixed(0)}: ${g ? `сдвиг ${(g.lag / FINE_SR * 1000).toFixed(1)} мс, уверенность ${g.confidence.toFixed(1)}, соперник ${g.rival.toFixed(2)} через ${((g.rivalLag - g.lag) / FINE_SR * 1000).toFixed(0)} мс` : 'нет'}`);
     // x[0] — момент from клипа c, совпадает с y[off + lag] — моментом dFrom + (off + lag)/sr клипа d.
-    if (!g || g.confidence < FINE_CONFIDENCE || Math.abs(g.lag) >= off) return;
-    if (g.rival >= ECHO_FINE) {
+    if (!g || g.confidence < FINE_CONFIDENCE) {
+      failed.weak++;
+      return;
+    }
+    if (Math.abs(g.lag) >= off) {
+      failed.edge++;
+      return;
+    }
+    const near = Math.abs(g.lag - g.rivalLag) / FINE_SR <= NEAR_ECHO;
+    if (g.rival >= ECHO_FINE && !near) {
+      failed.echo++;
       for (const [it, other] of [[c, d], [d, c]]) {
         echoOf.set(it.id, [...(echoOf.get(it.id) ?? []), Math.abs(g.lag - g.rivalLag) / FINE_SR]);
         echoWith.set(it.id, new Set([...(echoWith.get(it.id) ?? []), other.device]));
@@ -546,7 +591,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     fine.push(measureRow(c, d, from, dFrom + (echoOff + g.lag) / FINE_SR, SIGMA_FINE, 'fine', g.confidence));
   });
   audible.forEach(() => input.tick?.());
-  log(`уточнение по волне: точек ${fine.length} из ${Math.min(jobs.length, FINE_TOTAL)}`);
+  log(`уточнение по волне: точек ${fine.length} из ${Math.min(jobs.length, FINE_TOTAL)}; не прошли: пик у края ±${FINE_RANGE * 1000} мс — ${failed.edge}, слабый пик — ${failed.weak}, эхо — ${failed.echo}, у края записи — ${failed.bounds}`);
   rows = [...rows, ...fine];
   solveAll(rows);
 
@@ -559,10 +604,10 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     const sigmaPpm = Math.sqrt(Math.max(0, varianceOf([{ key: pKey(device), c: 1 }])));
     const mine = rows.filter((r) => !r.out && r.pair!.some((it) => it.device === device));
     const longest = Math.max(...list.filter((it) => it.feat).map((it) => it.length));
-    const span = Math.max(0, ...list.map((it) => {
-      const us = mine.flatMap((r) => r.pair!.map((q, i) => (q === it ? r.at![i] : null))).filter((u): u is number => u !== null);
-      return us.length ? Math.max(...us) - Math.min(...us) : 0;
-    }));
+    // Охват — по всей записи устройства: ход у него один на все файлы (петличка пишет по 30 минут, и точки одного
+    // файла охватывают лишь его часть, хотя ход виден по нескольким файлам точно).
+    const ts = mine.flatMap((r) => r.pair!.map((q, i) => (q.device === device ? q.start0 + r.at![i] : null))).filter((t): t is number => t !== null);
+    const span = ts.length ? Math.max(...ts) - Math.min(...ts) : 0;
     const res = mine.filter((r) => r.kind === 'fine').map((r) => r.terms.reduce((s, tm) => s + tm.c * (val.get(tm.key) ?? 0), 0) - r.rhs);
     const residualMs = res.length ? Math.sqrt(res.reduce((s, e) => s + e * e, 0) / res.length) * 1000 : Infinity;
     const edge = (Math.abs(ppm) * 1e-6 * longest) / 2;
@@ -571,7 +616,10 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   });
   const firstStats = driftStats();
   const shaky = firstStats.filter((d) => !d.reliable);
-  for (const d of shaky) priors.push({ terms: [{ key: pKey(d.device), c: 1 }], rhs: 0, sigma: 0.01, kind: 'prior' });
+  // Ход ненадёжных — ноль, надёжные остаются как измерены: ход двух записей друг относительно друга часто виден
+  // точнее, чем каждой относительно камер, и ноль у петлички переписал бы ход рекордера (на съёмке тестера — с −8
+  // на +4 ppm, вторая половина концерта уходила на 40–80 мс).
+  for (const d of firstStats) if (shaky.length) priors.push({ terms: [{ key: pKey(d.device), c: 1 }], rhs: d.reliable ? d.ppm : 0, sigma: 0.01, kind: 'prior' });
   if (shaky.length) solveAll(rows);
   const finalStats = driftStats();
 
@@ -724,7 +772,9 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   for (const first of firstStats) {
     const { device, points: count, longest, span, residualMs } = first;
     const fin = finalStats.find((d) => d.device === device)!;
-    const { ppm, sigmaPpm, edge } = first.reliable ? fin : { ppm: 0, sigmaPpm: first.sigmaPpm, edge: 0 };
+    // Погрешность — из первого решения: во втором надёжный ход закреплён и своей погрешности уже не показывает.
+    const { ppm, edge } = first.reliable ? fin : { ppm: 0, edge: 0 };
+    const sigmaPpm = first.sigmaPpm;
     const apply = first.reliable && edge > DRIFT_EFFECT;
     drift.push({ cameraId: device, ppm, sigmaPpm, points: count, longestSec: longest, edgeErrorSec: edge, apply });
     log(`ход часов ${nameOf(device)}: ${first.ppm.toFixed(1)} ± ${first.sigmaPpm.toFixed(1)} ppm, точек ${count}, охват ${span.toFixed(0)} с из ${longest.toFixed(0)}, расхождение по волне ${Number.isFinite(residualMs) ? residualMs.toFixed(1) + ' мс' : '—'}, к краям ±${(first.edge * 1000).toFixed(0)} мс — ${!first.reliable ? 'ненадёжно, решено с ходом ноль' : apply ? 'выравнивать' : 'в пределах кадра'}`);

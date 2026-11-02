@@ -459,3 +459,19 @@ test('Две камеры в одной папке и смена карты: к�
   assert.ok(y.every((c) => laneOf(c.id) === laneOf(y[0].id)), `${y.map((c) => laneOf(c.id))}`);
   assert.notEqual(laneOf(x[0].id), laneOf(y[0].id));
 });
+
+test('Клипы, поставленные по звуку, не двигаются вплотную: файлы петлички с ходом часов — на своих местах и на одной дорожке', () => {
+  // Петличка пишет по 30 минут; по именам файлы идут через 1800 с, а длятся 1800,12 с — по часам их ставят вплотную.
+  // По звуку каждый следующий начинается на 30 мс раньше конца прошлого: часы спешат на 17 ppm.
+  const files = [0, 1800, 3600].map((t) => clip({ start: T16 + t, durationSec: 1800.12, recordedSec: 1800.12, hasVideo: false, rate: null, width: null, height: null }));
+  const cams = [camera('Петличка', files)];
+  const coarse = runSync(cams);
+  const at = (r: ReturnType<typeof runSync>, i: number) => r.placements.find((p) => p.clipId === files[i].id)!;
+  const corrections = { [files[0].id]: 0, [files[1].id]: -0.03, [files[2].id]: -0.06 };
+  const s = runSync(cams, corrections);
+  for (let i = 0; i < 3; i++) {
+    assert.ok(Math.abs(at(s, i).start - (at(coarse, i).start + corrections[files[i].id])) < 1e-6, `файл ${i + 1}: ${at(s, i).start - at(coarse, i).start}`);
+    assert.equal(at(s, i).lane, 0);
+  }
+  assert.ok(!s.issues.some((i) => /накладываются/.test(i.title)), s.issues.map((i) => i.title).join('; '));
+});

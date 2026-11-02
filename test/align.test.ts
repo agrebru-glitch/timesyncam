@@ -351,3 +351,23 @@ test('Погрешность: у записи с сильным эхом точ�
   const e = errors(cams, result.corrections, truth).get(r.id)!;
   assert.ok(Math.abs(e) < 0.04, `${(e * 1000).toFixed(1)} мс`);
 });
+
+test('Рекордер разрезал запись на файлы по 2 ГБ: второй файл встаёт ровно с конца первого, а не по секундам BWF', async () => {
+  // На съёмке тестера второй файл опаздывал на 0,9 с: BWF-время округлено до секунды, а зазора между файлами нет.
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 1400, recordedSec: 1400 });
+  truth.set(a.id, T16);
+  const rec = (real: number, dur: number, size: number) => {
+    const c = clip({ start: Math.floor(real), tcSeconds: tcOf(Math.floor(real)), durationSec: dur, recordedSec: dur, hasVideo: false, rate: null, width: null, height: null, sizeBytes: size });
+    Object.assign(c, { tc: { ...c.tc!, source: 'bwf' } });
+    truth.set(c.id, real);
+    return c;
+  };
+  // Длина первого файла — с долями секунды, как у настоящего ZOOM0001 (7456,085 с): по округлённым временам между
+  // файлами выходит ложный зазор 0,6 с.
+  const z1 = rec(T16 + 30.9, 1500.4, 2147385344);
+  const z2 = rec(T16 + 1531.3, 400, 617230592); // с камерой общего звука нет — место только по стыку
+  const cams = [camera('A', [a]), camera('Zoom', [z1, z2])];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+});

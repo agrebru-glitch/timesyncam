@@ -179,7 +179,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
         onDrop={onDrop}
       >
         <div className="card-head" style={{ justifyContent: 'center' }}>
-          <span className="cam-dot" style={{ background: cameraColor(index) }} />
+          <IconCamera className="icon cam-kind" style={{ color: cameraColor(index) }} />
           <span style={{ fontWeight: 600 }}>{cam.name}</span>
           {state.cameras.length > 1 && (
             <button className="btn small ghost" aria-label="Убрать камеру" onClick={() => dispatch({ type: 'remove-camera', cameraId: cam.id })}><IconX /></button>
@@ -207,7 +207,8 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
       onDrop={onDrop}
     >
       <div className="card-head">
-        <span className="cam-dot" style={{ background: cameraColor(index) }} />
+        {/* Значок вида записи в цвете дорожки — и вид, и цвет в одном знаке, как на таймлинии. */}
+        {info.audioOnly ? <IconHeadphones className="icon cam-kind" style={{ color: cameraColor(index) }} /> : <IconCamera className="icon cam-kind" style={{ color: cameraColor(index) }} />}
         <span className="cam-name" onDoubleClick={() => setEditing(true)} title="Двойной щелчок — переименовать">
           {editing ? (
             <input
@@ -227,7 +228,6 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
       {cam.clips.length > 0 && (
         <>
           <div className="card-summary">
-            {info.audioOnly ? <IconHeadphones className="icon" /> : <IconCamera className="icon" />}
             <span className="what">{[info.model, pluralRu(info.count, 'клип', 'клипа', 'клипов'), formatDurationHuman(info.duration)].filter(Boolean).join(' · ')}</span>
           </div>
           {brief && (

@@ -92,6 +92,7 @@ interface TrackItem {
   placement: Placement;
   clip: ClipMeta;
   id: string;
+  frames?: number; // длина на таймлинии, если хвост укорочен под следующий клип
 }
 
 export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: ExportOptions): string {
@@ -205,7 +206,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
 
   const clipItemXml = (it: TrackItem, mediatype: 'video' | 'audio', channel = 1, stereo = false): string => {
     const start = toFrame(it.placement.start);
-    const dur = Math.max(1, Math.round(it.clip.durationSec * seqFps));
+    const dur = it.frames ?? Math.max(1, Math.round(it.clip.durationSec * seqFps));
     const links = (linksByClip.get(it.clip.id + it.placement.lane) ?? [])
       .map((l) => `<link><linkclipref>${l.id}</linkclipref><mediatype>${l.mediatype}</mediatype><trackindex>${l.track}</trackindex><clipindex>${l.index}</clipindex><groupindex>1</groupindex></link>`)
       .join('');
@@ -216,13 +217,19 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
       + `<start>${start}</start><end>${start + dur}</end><in>0</in><out>${dur}</out>${fileXml(it.clip)}${source}${links}</clipitem>`;
   };
 
-  // Кадры могут совпасть из-за округления — двигаем вплотную, чтобы монтажка не обрезала клип.
+  // Клипы дорожки не должны накладываться: из-за округления до кадра или хода часов (файлы с часами, спешащими
+  // на 17 ppm, по звуку наползают друг на друга на 30 мс за полчаса). Укорачивается хвост предыдущего клипа —
+  // место следующего найдено по звуку, сдвигать его нельзя.
   const fixRounding = (items: TrackItem[]) => {
-    let lastEnd = -Infinity;
+    let prev: TrackItem | null = null;
     for (const it of items) {
       const startF = toFrame(it.placement.start);
-      if (startF < lastEnd) it.placement = { ...it.placement, start: seqStartEpoch + lastEnd / seqFps };
-      lastEnd = toFrame(it.placement.start) + Math.max(1, Math.round(it.clip.durationSec * seqFps));
+      if (prev) {
+        const prevStart = toFrame(prev.placement.start);
+        const prevDur = Math.max(1, Math.round(prev.clip.durationSec * seqFps));
+        if (startF < prevStart + prevDur) prev.frames = Math.max(1, startF - prevStart);
+      }
+      prev = it;
     }
   };
   videoTracks.forEach((t) => fixRounding(t.items));

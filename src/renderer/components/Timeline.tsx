@@ -617,8 +617,9 @@ export function Timeline() {
             onDrop={(e) => onDrop(e, r.index)}
           >
             <span className="t">
-              <span className="cam-dot" style={{ background: cameraColor(r.index) }} />
-              {r.cam.clips.length > 0 && r.cam.clips.every((c) => !c.hasVideo) ? <IconHeadphones className="icon track-kind" /> : <IconCamera className="icon track-kind" />}
+              {r.cam.clips.length > 0 && r.cam.clips.every((c) => !c.hasVideo)
+                ? <IconHeadphones className="icon track-kind" style={{ color: cameraColor(r.index) }} />
+                : <IconCamera className="icon track-kind" style={{ color: cameraColor(r.index) }} />}
               {r.cam.name}
             </span>
             <span className="s">

@@ -100,3 +100,19 @@ test('Папки — ключевыми словами для смарт-кор�
   assert.match(event, /<asset-clip ref="[^"]+" start="[^"]+" duration="[^"]+" name="ZOOM0001\.WAV"[^>]*><keyword [^>]*value="Рекордер"\/><\/asset-clip>/);
   assert.match(event, /name="C0001\.MP4"[^>]*><keyword [^>]*value="Камера 1"\/>/);
 });
+
+test('Клипы дорожки, наползающие на ход часов: следующий остаётся на своём месте, укорачивается хвост предыдущего', () => {
+  const files = [0, 1800].map((t, i) => {
+    const c = clip({ start: T16 + t, durationSec: 1800.12, recordedSec: 1800.12, hasVideo: false, rate: null, width: null, height: null, audioSampleRate: 48000 });
+    Object.assign(c, { name: `REC000${i + 1}.WAV`, path: `D:\Звук\REC000${i + 1}.WAV` });
+    return c;
+  });
+  const cams = [camera('Петличка', files)];
+  const r = runSync(cams, { [files[0].id]: 0, [files[1].id]: -0.03 });
+  const xml = buildFcpxml(cams, r, { name: 'Тест', rate: { num: 25, den: 1 }, width: 1920, height: 1080 });
+  const [first] = attr(xml, 'asset-clip', 'REC0001.WAV');
+  const [second] = attr(xml, 'asset-clip', 'REC0002.WAV');
+  const start2 = r.placements.find((p) => p.clipId === files[1].id)!.start - r.start;
+  assert.ok(Math.abs(sec(get(second, 'offset')) - start2) < 1 / 25, `второй сдвинут: ${sec(get(second, 'offset'))} вместо ${start2}`);
+  assert.ok(sec(get(first, 'offset')) + sec(get(first, 'duration')) <= sec(get(second, 'offset')) + 1e-9, 'клипы накладываются');
+});

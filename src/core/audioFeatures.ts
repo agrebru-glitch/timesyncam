@@ -360,17 +360,22 @@ export function gccPhat(x: Float32Array, y: Float32Array, sr: number, off: numbe
   fft(xr, xi, true);
   let best = -Infinity;
   let bestK = -1;
-  let sum2 = 0;
-  let count = 0;
   for (let k = off - maxLag; k <= off + maxLag; k++) {
     if (k < 0 || k >= size) continue;
-    const v = xr[k];
-    sum2 += v * v;
-    count++;
-    if (v > best) {
-      best = v;
+    if (xr[k] > best) {
+      best = xr[k];
       bestK = k;
     }
+  }
+  // Фон — по всему окну, где ищется соперник: в узком окне поиска (±20 мс) лежат склоны самого пика и отражения
+  // у микрофона, фон выходил завышенным, и чёткий пик казался слабым.
+  const span = Math.max(maxLag, rivalLag);
+  let sum2 = 0;
+  let count = 0;
+  for (let k = off - span; k <= off + span; k++) {
+    if (k < 0 || k >= size) continue;
+    sum2 += xr[k] * xr[k];
+    count++;
   }
   if (bestK < 0 || best <= 0 || count === 0) return null;
   const rms = Math.sqrt(sum2 / count) || 1e-12;

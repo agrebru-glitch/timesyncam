@@ -117,10 +117,11 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
   };
 
   const items: { lane: number; offset: number; xml: string }[] = [];
+  const entries: { lane: number; offset: number; dur: number; c: ClipMeta; start: string }[] = [];
+  const lastOf = new Map<number, (typeof entries)[number]>();
   let endFrame = 0;
   for (const cam of cameras) {
     const list = result.placements.filter((p) => p.cameraId === cam.id).sort((a, b) => a.start - b.start);
-    const lastEnd = new Map<number, number>();
     for (const p of list) {
       const c = clipsById.get(p.clipId);
       if (!c) continue;
@@ -143,16 +144,22 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
         start = samples(assetStartSamples(c, sr) + trim, sr);
         durFrames = Math.max(1, Math.floor((c.durationSec - trim / sr) * seqFps + 1e-6));
       }
-      // Округление не должно наложить клипы одной дорожки друг на друга.
-      offset = Math.max(offset, lastEnd.get(l) ?? -Infinity);
-      lastEnd.set(l, offset + durFrames);
-      endFrame = Math.max(endFrame, offset + durFrames);
-      items.push({
-        lane: l,
-        offset,
-        xml: `<asset-clip ref="${assetOf(c)}" lane="${l}" offset="${frames(offset, seq)}" start="${start}" duration="${frames(durFrames, seq)}" name="${esc(c.name)}"${c.hasVideo ? ` format="${formatOf(c)}"` : ''} tcFormat="NDF">${keyword(c, start, frames(durFrames, seq))}</asset-clip>`,
-      });
+      // Клипы одной дорожки не должны накладываться — из-за округления до кадра или хода часов. Укорачивается
+      // хвост предыдущего: место следующего найдено по звуку, сдвигать его нельзя.
+      const prev = lastOf.get(l);
+      if (prev && offset < prev.offset + prev.dur) prev.dur = Math.max(1, offset - prev.offset);
+      const entry = { lane: l, offset, dur: durFrames, c, start };
+      lastOf.set(l, entry);
+      entries.push(entry);
     }
+  }
+  for (const e of entries) {
+    endFrame = Math.max(endFrame, e.offset + e.dur);
+    items.push({
+      lane: e.lane,
+      offset: e.offset,
+      xml: `<asset-clip ref="${assetOf(e.c)}" lane="${e.lane}" offset="${frames(e.offset, seq)}" start="${e.start}" duration="${frames(e.dur, seq)}" name="${esc(e.c.name)}"${e.c.hasVideo ? ` format="${formatOf(e.c)}"` : ''} tcFormat="NDF">${keyword(e.c, e.start, frames(e.dur, seq))}</asset-clip>`,
+    });
   }
   // Порядок в файле — по дорожкам: сначала звук без видео (рекордер), потом камеры сверху вниз, в каждой — по времени.
   // DaVinci раскладывает звук клипов по дорожкам в том порядке, в каком встречает их в файле: так звук каждой камеры

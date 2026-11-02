@@ -5,7 +5,7 @@ import { PREVIEW_KEY, useApp } from '../App.tsx';
 import { api, cameraColor, mediaUrl } from '../api.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
-import { IconFrameBack, IconFrameFwd, IconNext, IconPause, IconPlay, IconPrev } from '../icons.tsx';
+import { IconCamera, IconFrameBack, IconFrameFwd, IconHeadphones, IconNext, IconPause, IconPlay, IconPrev } from '../icons.tsx';
 
 interface Hit {
   placement: Placement;
@@ -162,7 +162,9 @@ function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean })
       )}
       {flag && <span className="tile-flag">{flag}</span>}
       <div className="tile-label">
-        <span className="cam-dot" style={{ background: cameraColor(index) }} />
+        {cam.clips.length > 0 && cam.clips.every((c) => !c.hasVideo)
+          ? <IconHeadphones className="icon tile-kind" style={{ color: cameraColor(index) }} />
+          : <IconCamera className="icon tile-kind" style={{ color: cameraColor(index) }} />}
         <span>{cam.name}</span>
         {hit && <span style={{ color: 'var(--text-2)' }}>{hit.clip.name}</span>}
       </div>
