@@ -4,3 +4,6 @@ release/
 bin/
 *.log
 ffmpeg-src/
+
+# Сборка TCoder (scripts/build-tcoder.mjs)
+mobile/tcoder/.build/

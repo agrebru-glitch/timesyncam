@@ -20,6 +20,7 @@
     "start": "node scripts/build.mjs && electron .",
     "dist": "node scripts/build.mjs && electron-builder --win --publish never",
     "dist:mac": "node scripts/build.mjs && electron-builder --mac --publish never",
+    "dist:tcoder": "node scripts/build-tcoder.mjs",
     "demo": "node scripts/make-demo.mjs",
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -1,0 +1,56 @@
+/* Цвета и шрифты — как в TimesynCam (src/renderer/styles.css). */
+:root {
+  --bg: #141518;
+  --surface-1: #1b1c20;
+  --surface-2: #222328;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #ececee;
+  --text-2: #a4a6ad;
+  --accent: #3d8bfd;
+  --danger: #ff5f57;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'Roboto Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body { font: 15px/1.5 var(--font); background: #fff; }
+svg { width: 20px; height: 20px; flex: none; }
+
+/* Экран синхронизации — белый, как в программе: камере нужен контрастный QR-код. */
+#sync { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2vmin; background: #fff; color: #000; }
+#qr { width: min(88vw, 72vh); height: min(88vw, 72vh); image-rendering: pixelated; }
+.clock { font: 600 min(12vw, 8vh)/1 var(--mono); }
+.hint { margin: 0 24px; max-width: 520px; text-align: center; color: #555; font-size: 13px; }
+.info-btn { position: absolute; top: 14px; right: 14px; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; color: #8a8a90; background: #f2f2f4; }
+.info-btn svg { width: 24px; height: 24px; }
+@media (orientation: landscape) {
+  #sync { flex-direction: row; gap: 4vmin; }
+  #qr { width: min(88vh, 60vw); height: min(88vh, 60vw); }
+  .hint { display: none; }
+}
+
+/* «О программе» — тёмная, как окно программы. */
+#about { display: none; min-height: 100%; padding: 12px 16px 32px; background: var(--bg); color: var(--text); }
+body.about { background: var(--bg); }
+body.about #sync { display: none; }
+body.about #about { display: block; }
+.bar { display: flex; margin-bottom: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); font: inherit; text-decoration: none; }
+.btn.ghost { border-color: transparent; background: transparent; padding-left: 4px; color: var(--text-2); }
+.btn.donate { color: var(--danger); }
+.title { display: flex; align-items: center; gap: 14px; margin: 8px 0 12px; }
+.logo svg { width: 64px; height: 64px; display: block; }
+h1 { margin: 0; font-size: 26px; line-height: 1.2; }
+.muted { color: var(--text-2); font-size: 13px; }
+.links { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 22px; }
+.group { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-2); margin: 0 0 8px; }
+details { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 8px; padding: 0 14px; }
+summary { padding: 12px 0; font-weight: 600; cursor: pointer; }
+details[open] summary { border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+details p, details ol { margin: 8px 0 12px; }
+details ol { padding-left: 20px; }
+details li { margin-bottom: 6px; }
+.path { font-family: var(--mono); font-size: 13px; background: var(--surface-2); border-radius: 4px; padding: 1px 5px; }
