@@ -293,7 +293,9 @@ ipcMain.handle('export:write', async (_e, path: string, content: string) => {
 ipcMain.handle('drift:render', (event, target: string, jobs: DriftJob[]) => {
   if (!exportTarget || target !== exportTarget) return null;
   if (jobs.some((j) => !allowedMedia.has(j.path) || j.checks.some((c) => !allowedMedia.has(c.refPath)))) return null;
-  const safe = jobs.map((j) => ({ ...j, outName: basename(j.outName).replace(/[\\/:*?"<>|]/g, '_') }));
+  // Имя копии — «Дорожка/файл.wav»: не глубже одной папки, без «..» и запрещённых знаков.
+  const segment = (x: string) => x.replace(/[\\/:*?"<>|]/g, '_').replace(/^\.+/, '_').trim() || '_';
+  const safe = jobs.map((j) => ({ ...j, outName: j.outName.split(/[\\/]/).filter(Boolean).slice(-2).map(segment).join(sep) }));
   const outDir = join(dirname(target), `${basename(target).replace(/\.[^.]+$/, '')} — выровненный звук`);
   const path = join(__dirname, 'driftWorker.cjs').replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
   const w = new Worker(path, { workerData: { tools: { ffmpeg: toolPath('ffmpeg'), ffprobe: toolPath('ffprobe') } } });

@@ -37,7 +37,10 @@ const STEP = 30; // секунд между окнами сверки
 const MIN_OVERLAP = 12; // секунд общего звука, меньше — пару не сравниваем
 const NEIGHBOUR = 0.15; // пик в пределах 150 мс от лучшего не считается соперником
 const FINE_LEN = 8; // секунд волны в точной сверке: в гулком зале нужно больше звука
-const FINE_RANGE = 0.02; // точная сверка уточняет грубую в пределах ±20 мс: шире — может перескочить на соседнее эхо зала
+// Точная сверка уточняет место в пределах ±20 мс. Шире нельзя: у записи, где отражение громче прямого звука,
+// в широком окне самым сильным становится пик эха (проверено: ±60 мс — точка встаёт на эхо 35 мс). Клип, который
+// грубая поставила дальше, находится через решение со свободными связями и порог разрыва связи.
+const FINE_RANGE = 0.02;
 const FINE_CONFIDENCE = 6; // пик GCC-PHAT во столько раз выше фона; согласие точек проверяет общий расчёт
 // Точек точной сверки на клип — вдоль всего клипа: по ним виден ход часов и сбой тайм-кода. Сколько — по размеру
 // съёмки: на малой (12 клипов) по три точки не хватало, чтобы отличить сбой тайм-кода камеры от хода рекордера.
@@ -62,11 +65,12 @@ const PRIOR_PPM = 300; // ход часов звуковых устройств 
 const MAX_PPM = 600;
 // Погрешность связи соседних клипов одного устройства — насколько их взаимному месту можно верить без звука.
 const LINK = { rigid: 0.0005, tc: 0.4, bwf: 0.6, chain: 1, clock: 2 } as const;
-// Связь держится жёстко, пока звук не покажет явный сбой: отклонение больше 60 мс и больше четырёх погрешностей.
-// Меньшее — скорее неточность измерения в гулком зале, чем настоящий сбой: тайм-код после выключения камеры
-// сбивается на доли секунды, ложное «встык» — на секунды, а запись не должна рваться от шума измерений.
+// Связь держится жёстко, пока звук не покажет явный сбой: отклонение больше 25 мс (меньше кадра) и больше четырёх
+// погрешностей — с поправкой на фактический разбор замеров, чтобы запись не рвалась от шума гулкого зала. Порог
+// был 60 мс, пока точек по волне было мало; с точками вдоль всего клипа он прятал настоящие сбои тайм-кода после
+// выключения камеры: на съёмке тестера — 37 мс у CAM 01, клип вставал то по звуку, то по тайм-коду.
 const HOLD = LINK.rigid;
-const BREAK = 0.06;
+const BREAK = 0.025;
 const DRIFT_EFFECT = 0.015; // ход часов, сдвигающий края записи больше чем на 15 мс, стоит выравнивать
 const SPLIT_SIZES = [2 ** 31, 2 ** 32]; // рекордеры режут длинную запись на файлы по 2 и 4 ГБ
 
@@ -336,6 +340,9 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
       lane: p.lane,
     });
   }
+  // Порядок — по времени, а не по порядку дорожек: от него зависит, какая сторона пары меряется по волне и в каком
+  // месте. Иначе ответ зависел бы от того, в каком порядке добавили дорожки (на съёмке тестера — до 37 мс).
+  items.sort((a, b) => a.start0 - b.start0 || a.length - b.length || (a.clip.path < b.clip.path ? -1 : a.clip.path > b.clip.path ? 1 : 0));
   const devices = new Map<string, Item[]>();
   for (const it of items) devices.set(it.device, [...(devices.get(it.device) ?? []), it]);
   const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? id;
@@ -426,10 +433,15 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     for (const l of links) if (holdable(l)) l.sigma = LINK[l.link!.kind];
     solveStages(rows);
     valFree = new Map(val);
+    // Погрешность — в масштабе фактического разброса замеров: в гулком зале точки расходятся сильнее номинальной.
+    const live = rows.filter((r) => !r.out);
+    const chi = live.reduce((s, r) => s + ((r.terms.reduce((a, t) => a + t.c * (val.get(t.key) ?? 0), 0) - r.rhs) / r.sigma) ** 2, 0);
+    const unknowns = items.filter((it) => it.free).length + rated.size;
+    const scale = Math.sqrt(Math.max(1, chi / Math.max(1, live.length - unknowns)));
     let held = 0;
     for (const l of links) {
       if (!holdable(l)) continue;
-      const sd = Math.sqrt(Math.max(0, varianceOf(l.terms)));
+      const sd = scale * Math.sqrt(Math.max(0, varianceOf(l.terms)));
       if (Math.abs(linkDev(l)) < Math.max(BREAK, 4 * sd)) {
         l.sigma = HOLD;
         held++;
@@ -526,24 +538,41 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   const fineClips = audible.filter((x) => x.free);
   const perClip = Math.max(FINE_PER_CLIP.min, Math.min(FINE_PER_CLIP.max, Math.floor(FINE_TOTAL / Math.max(1, fineClips.length))));
   const seen = new Set<string>();
-  for (const it of fineClips) {
+  // Места вдоль клипа — в порядке «каждое следующее дальше всех от уже взятых»: середина, края, четверти…
+  // Отбор равномерный: сначала у каждого клипа по первой точке, потом по второй — иначе на большой съёмке лимит
+  // FINE_TOTAL съедали сильные пары, и клипы со слабыми не получали ни одной точки.
+  const spread: number[] = [Math.floor(perClip / 2)];
+  while (spread.length < perClip) {
+    let best = -1;
+    let far = -1;
     for (let s = 0; s < perClip; s++) {
+      if (spread.includes(s)) continue;
+      const d = Math.min(...spread.map((x) => Math.abs(x - s)));
+      if (d > far) [best, far] = [s, d];
+    }
+    spread.push(best);
+  }
+  const rankOf = new Map<{ c: Item; d: Item; u: number; score: number }, number>();
+  for (const it of fineClips) {
+    for (const [order, s] of spread.entries()) {
       const u = ((s + 0.5) / perClip) * it.length;
       const T = freeStart(it) + u * freeRate(it);
       const partners = audible
         .filter((d) => pairScore.has(pairKey(it, d)) && T - FINE_LEN > freeStart(d) && T + FINE_LEN < freeStart(d) + d.length * freeRate(d))
         .sort((a, b) => pairScore.get(pairKey(it, b))! - pairScore.get(pairKey(it, a))!)
         .slice(0, 2);
-      for (const d of partners) {
+      for (const [pi, d] of partners.entries()) {
         // Пара в том же месте с другой стороны уже есть — второй такой же замер ничего не добавит.
         const key = `${pairKey(it, d)}|${Math.round(T / STEP)}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        jobs.push({ c: it, d, u, score: pairScore.get(pairKey(it, d))! });
+        const job = { c: it, d, u, score: pairScore.get(pairKey(it, d))! };
+        rankOf.set(job, pi * perClip + order);
+        jobs.push(job);
       }
     }
   }
-  jobs.sort((a, b) => b.score - a.score);
+  jobs.sort((a, b) => rankOf.get(a)! - rankOf.get(b)! || b.score - a.score);
   const fine: Row[] = [];
   const echoOf = new Map<string, number[]>(); // точки по волне, отброшенные из-за эха: на сколько отстоит отражение
   const echoWith = new Map<string, Set<string>>(); // с какими устройствами у клипа было эхо
@@ -716,9 +745,11 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   for (const list of nudges.values()) {
     const { kind, a } = list[0];
     const most = Math.max(...list.map((x) => Math.abs(x.dev)));
-    const where = list.slice(0, 5).map((x) => `${x.b.clip.name} — ${formatDurationHuman(Math.abs(x.dev))}`).join(', ') + (list.length > 5 ? '…' : '');
+    // Сбои меньше секунды — в миллисекундах: «0,0 с» вместо 37 мс ничего не говорит.
+    const small = (s: number) => (s < 1 ? `${Math.round(s * 1000)} мс` : formatDurationHuman(s));
+    const where = list.slice(0, 5).map((x) => `${x.b.clip.name} — ${small(Math.abs(x.dev))}`).join(', ') + (list.length > 5 ? '…' : '');
     const title = kind === 'tc'
-      ? `«${nameOf(a.device)}»: тайм-код сбивался после пауз — до ${formatDurationHuman(most)} (${pluralRu(list.length, 'место', 'места', 'мест')})`
+      ? `«${nameOf(a.device)}»: тайм-код сбивался после пауз — до ${small(most)} (${pluralRu(list.length, 'место', 'места', 'мест')})`
       : kind === 'bwf'
         ? `«${nameOf(a.device)}»: время в файлах рекордера записано целыми секундами`
         : list.length === 1
@@ -745,12 +776,15 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     const lone = list.filter((it) => it.free && it.feat && !measured.has(it.id));
     if (!lone.length) continue;
     const names = lone.slice(0, 5).map((it) => it.clip.name).join(', ') + (lone.length > 5 ? '…' : '');
+    // Стоит проверить, только если у этой же камеры звук уже нашёл сбой тайм-кода после паузы: тогда и клипы без
+    // звука могли встать на десятые доли секунды мимо. Иначе тайм-код у камеры непрерывный — это для сведения.
+    const slipped = lone.some((it) => it.clip.hasVideo) && nudges.has(`${device}|tc`);
     issues.push(issue({
-      severity: 'info',
+      severity: slipped ? 'warning' : 'info',
       cameraId: device,
       clipId: lone[0].id,
       title: `«${nameOf(device)}»: ${lone.length === 1 ? 'у клипа нет' : `у ${pluralRu(lone.length, 'клипа', 'клипов', 'клипов')} нет`} общего звука с другими записями`,
-      details: `${names}. ${lone.length === 1 ? 'Он стоит' : 'Они стоят'} по тайм-коду и часам соседних клипов этого устройства. Если между ними камеру выключали, место может быть неточным — проверьте по хлопку.`,
+      details: `${names}. ${lone.length === 1 ? 'Он стоит' : 'Они стоят'} по тайм-коду и часам соседних клипов этого устройства. ${slipped ? 'У этой камеры тайм-код уже сбивался после пауз — место может быть неточным, проверьте по хлопку.' : 'Если между ними камеру выключали, место может быть неточным — проверьте по хлопку.'}`,
       actions: [{ kind: 'show-clip', clipId: lone[0].id }, { kind: 'open-faq', anchor: 'manual-sync' }],
     }));
   }

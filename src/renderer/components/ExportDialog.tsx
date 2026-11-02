@@ -105,11 +105,13 @@ export function ExportDialog() {
     setBusy(false);
     if (!saved) return;
     const ok = (done ?? []).filter((r) => r.ok).length;
+    // Почему не выровнено — первая причина: не прошла проверку по звуку, не записалась копия или сбой потока.
+    const why = done === null ? 'выравнивание прервалось' : done.find((r) => !r.ok)?.reason;
     dispatch({ type: 'export-open', open: false });
     dispatch({
       type: 'toast',
       text: ok < jobs.length
-        ? `Таймлиния сохранена. Выровнено записей: ${ok} из ${jobs.length} — остальные не прошли проверку по звуку, в XML их оригиналы`
+        ? `Таймлиния сохранена. Выровнено записей: ${ok} из ${jobs.length}, у остальных в XML оригиналы${why ? ` (${why})` : ''}`
         : `Таймлиния сохранена, звук выровнен: ${ok} ${ok === 1 ? 'запись' : ok < 5 ? 'записи' : 'записей'}`,
       revealPath: path,
     });
@@ -159,7 +161,7 @@ export function ExportDialog() {
             <div className="hint">
               {drifting.map((d) => `«${state.cameras.find((c) => c.id === d.cameraId)?.name}»: часы ${d.ppm > 0 ? 'отстают' : 'спешат'} на ${Math.abs(d.ppm).toFixed(0)} ppm — за ${formatDurationHuman(d.longestSec)} это ${formatDurationHuman(2 * d.edgeErrorSec)}`).join('; ')}.
               {driftOn
-                ? ` Программа сделает выровненные копии (${jobs.length} ${jobs.length === 1 ? 'файл' : jobs.length < 5 ? 'файла' : 'файлов'}, около ${formatSize(copiesSize)}) в папке «${name.trim() || 'TimesynCam'} — выровненный звук» рядом с XML, проверит каждую по звуку и поставит в таймлинию их. Оригиналы не меняются.`
+                ? ` Программа сделает выровненные копии (${jobs.length} ${jobs.length === 1 ? 'файл' : jobs.length < 5 ? 'файла' : 'файлов'}, около ${formatSize(copiesSize)}) в папке «${name.trim() || 'TimesynCam'} — выровненный звук» рядом с XML, по папкам дорожек, проверит каждую по звуку и поставит в таймлинию их. Оригиналы и их папки не меняются.`
                 : ' Без выравнивания записи стоят по середине: к краям звук расходится с видео на половину этого.'}
             </div>
           </div>

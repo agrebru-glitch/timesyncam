@@ -2,19 +2,17 @@
 // Копия пишется под временным именем и получает настоящее только после проверки — неудачная удаляется,
 // исходные файлы не меняются никогда.
 import { once } from 'node:events';
-import { rename, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { Stretcher } from '../core/resample.ts';
 import { FINE_SR, gccPhat } from '../core/audioFeatures.ts';
-import { CHECK_LEN } from '../core/driftExport.ts';
-import type { DriftCheck, DriftJob, DriftRendered } from '../core/driftExport.ts';
+import { CHECK_LEN, CHECK_OFFSET, judgeCopy } from '../core/driftExport.ts';
+import type { CheckVerdict, DriftCheck, DriftJob, DriftRendered } from '../core/driftExport.ts';
 import { audioSamples } from './audio.ts';
 import { probe, spawnTool } from './ffmpeg.ts';
 
-const CHECK_RANGE = 0.06; // копию ищем в ±60 мс от расчётного места: так видна и ошибка хода часов
 const ECHO_SPAN = 0.12;
-const CHECK_TOLERANCE = 0.008; // копия годится, если расхождение везде меньше четверти кадра
-const CHECK_MIN = 2; // и если её удалось проверить хотя бы в двух местах
+const NEAR_ECHO = 0.01; // отражение у самого микрофона (4–6 мс) — не повод отбрасывать место, как и в сверке
 
 // PCM той же разрядности, что у оригинала; сжатый звук — в 24 бита.
 function pcmCodec(codec: string | undefined): string {
@@ -67,42 +65,105 @@ async function render(job: DriftJob, outPath: string, onProgress: (frac: number)
   return { durationSec: Stretcher.outputFrames(frames, job.ratio) / sr };
 }
 
-// Проверка копии по звуку: в каждом месте она должна совпасть с опорой там, где рассчитано.
-export async function verifyCopy(path: string, checks: DriftCheck[]): Promise<{ checked: number; worst: number | null }> {
+const CHECK_CONFIDENCE = 8; // для проверки — строже, чем в сверке: пики 6–7 в гулком зале бывают ложными
+
+// Только что записанную копию антивирус Windows может ещё держать открытой — тогда ffmpeg её не прочтёт.
+async function readFresh(path: string, at: number): Promise<Float32Array | null> {
+  for (let i = 0; i < 4; i++) {
+    const x = await audioSamples(path, at, CHECK_LEN, 0);
+    if (x) return x;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return null;
+}
+
+// Проверка копии по звуку: в каждом месте — насколько копия расходится со своей опорой. Опор в месте может
+// быть несколько (по порядку предпочтения): берётся первая, с которой звук совпал чисто.
+export async function verifyCopy(path: string, checks: DriftCheck[]): Promise<{ refId: string; at: number; lag: number }[]> {
   const off = Math.round(ECHO_SPAN * FINE_SR);
-  const residuals: number[] = [];
+  const lags: { refId: string; at: number; lag: number }[] = [];
+  const done = new Set<number>();
   for (const c of checks) {
-    if (c.refAt - ECHO_SPAN < 0) continue;
+    if (done.has(c.at) || c.refAt - ECHO_SPAN < 0) continue;
     const [x, y] = await Promise.all([
-      audioSamples(path, c.at, CHECK_LEN, 0),
+      readFresh(path, c.at),
       audioSamples(c.refPath, c.refAt - ECHO_SPAN, CHECK_LEN + 2 * ECHO_SPAN, c.refChannel),
     ]);
     if (!x || !y || x.length < FINE_SR * CHECK_LEN * 0.9 || y.length < FINE_SR * CHECK_LEN * 0.9) continue;
-    const g = gccPhat(x, y, FINE_SR, off, Math.round(CHECK_RANGE * FINE_SR), off);
-    if (!g || g.confidence < 6 || g.rival >= 0.7) continue;
-    residuals.push(Math.abs(g.lag) / FINE_SR);
+    const g = gccPhat(x, y, FINE_SR, off, Math.round(CHECK_OFFSET * FINE_SR), off);
+    if (!g || g.confidence < CHECK_CONFIDENCE) continue;
+    if (g.rival >= 0.7 && Math.abs(g.lag - g.rivalLag) / FINE_SR > NEAR_ECHO) continue; // эхо зала: неясно, где прямой звук
+    lags.push({ refId: c.refId, at: c.at, lag: g.lag / FINE_SR });
+    done.add(c.at);
   }
-  return { checked: residuals.length, worst: residuals.length ? Math.max(...residuals) : null };
+  return lags;
+}
+
+// В Windows только что записанный файл бывает занят ещё долю секунды — антивирусом или уходящим ffmpeg:
+// переименование тогда падает с EBUSY/EPERM. Пробуем ещё раз, до двух секунд.
+async function settle(op: () => Promise<void>): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      return await op();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (i >= 10 || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES')) throw e;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+}
+
+interface Pending {
+  job: DriftJob;
+  part: string;
+  outPath: string;
+  durationSec?: number;
+  verdict: CheckVerdict;
+  error?: string;
+}
+
+// Все копии: растянуть, проверить, решить, переименовать или удалить. Копия файла без общего звука с камерами
+// (продолжение разрезанной записи) проверке недоступна — её принимают, если копия другого файла того же
+// устройства с тем же ходом часов проверку прошла.
+export async function renderDriftCopies(jobs: DriftJob[], outDir: string, onProgress: (done: number) => void): Promise<DriftRendered[]> {
+  const pending: Pending[] = [];
+  for (const [i, job] of jobs.entries()) {
+    const outPath = join(outDir, job.outName);
+    const part = `${outPath}.part`;
+    try {
+      await mkdir(dirname(outPath), { recursive: true });
+      const { durationSec } = await render(job, part, (f) => onProgress(i + f * 0.9));
+      const verdict = judgeCopy(await verifyCopy(part, job.checks));
+      pending.push({ job, part, outPath, durationSec, verdict });
+    } catch (e) {
+      await rm(part, { force: true }).catch(() => {});
+      pending.push({ job, part, outPath, verdict: { ok: false, checked: 0, worst: null, spread: null }, error: e instanceof Error ? e.message : String(e) });
+    }
+    onProgress(i + 1);
+  }
+  const verified = new Set(pending.filter((p) => p.verdict.ok).map((p) => `${p.job.deviceId}|${p.job.ratio}`));
+  const results: DriftRendered[] = [];
+  for (const p of pending) {
+    const bySibling = !p.verdict.ok && !p.error && p.verdict.checked === 0 && verified.has(`${p.job.deviceId}|${p.job.ratio}`);
+    const ok = (p.verdict.ok || bySibling) && p.durationSec !== undefined;
+    const base = { clipId: p.job.clipId, checked: p.verdict.checked, residualMs: p.verdict.worst === null ? null : p.verdict.worst * 1000, spreadMs: p.verdict.spread === null ? null : p.verdict.spread * 1000 };
+    if (!ok) {
+      await rm(p.part, { force: true }).catch(() => {});
+      results.push({ ...base, ok: false, reason: p.error ? `ffmpeg: ${p.error}` : p.verdict.reason });
+      continue;
+    }
+    try {
+      await settle(() => rm(p.outPath, { force: true }));
+      await settle(() => rename(p.part, p.outPath));
+      results.push({ ...base, ok: true, outPath: p.outPath, durationSec: p.durationSec, ...(bySibling ? { reason: 'общего звука с камерами нет — ход часов проверен по другой записи того же устройства' } : {}) });
+    } catch (e) {
+      await rm(p.part, { force: true }).catch(() => {});
+      results.push({ ...base, ok: false, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return results;
 }
 
 export async function renderDriftCopy(job: DriftJob, outDir: string, onProgress: (frac: number) => void): Promise<DriftRendered> {
-  const outPath = join(outDir, job.outName);
-  const part = `${outPath}.part`;
-  try {
-    const { durationSec } = await render(job, part, (f) => onProgress(f * 0.9));
-    const { checked, worst } = await verifyCopy(part, job.checks);
-    onProgress(1);
-    // Непроверенную копию в таймлинию не ставим: неверный коэффициент как раз и не даёт её сверить.
-    if (worst === null || checked < CHECK_MIN || worst > CHECK_TOLERANCE) {
-      await rm(part, { force: true });
-      const reason = worst !== null && worst > CHECK_TOLERANCE ? `копия расходится с видео на ${Math.round(worst * 1000)} мс` : 'копию не удалось проверить по звуку';
-      return { clipId: job.clipId, ok: false, checked, residualMs: worst === null ? null : worst * 1000, reason };
-    }
-    await rm(outPath, { force: true });
-    await rename(part, outPath);
-    return { clipId: job.clipId, ok: true, outPath, durationSec, checked, residualMs: worst === null ? null : worst * 1000 };
-  } catch (e) {
-    await rm(part, { force: true }).catch(() => {});
-    return { clipId: job.clipId, ok: false, checked: 0, residualMs: null, reason: e instanceof Error ? e.message : String(e) };
-  }
+  return (await renderDriftCopies([job], outDir, onProgress))[0];
 }

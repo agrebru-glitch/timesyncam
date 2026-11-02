@@ -371,3 +371,44 @@ test('Рекордер разрезал запись на файлы по 2 ГБ
   const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
   for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
 });
+
+test('Уточнение: сбой тайм-кода после паузы меньше кадра (40 мс) тоже находится, и результат не зависит от порядка дорожек', async () => {
+  // На съёмке тестера CAM 01 после антракта сбилась на 37 мс; при пороге 60 мс клип вставал то по звуку, то по
+  // тайм-коду — в зависимости от того, в каком порядке добавили дорожки.
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 1500, recordedSec: 1500 });
+  truth.set(a.id, T16);
+  const b1 = clip({ start: T16 + 100, tcSeconds: tcOf(T16 + 100, 5000), durationSec: 400, recordedSec: 400 });
+  const b2 = clip({ start: T16 + 700, tcSeconds: tcOf(T16 + 700, 5000.04), durationSec: 400, recordedSec: 400 });
+  truth.set(b1.id, T16 + 100);
+  truth.set(b2.id, T16 + 700);
+  const rec = clip({ start: T16 + 50, durationSec: 1300, recordedSec: 1300, hasVideo: false, rate: null, width: null, height: null });
+  truth.set(rec.id, T16 + 50);
+  const forward = [camera('A', [a]), camera('B', [b1, b2]), camera('Рекордер', [rec])];
+  const backward = [camera('Рекордер', [rec]), camera('B', [b2, b1]), camera('A', [a])];
+  const res1 = await alignByAudio(forward, runSync(forward), fakeAudio(truth), opts);
+  const res2 = await alignByAudio(backward, runSync(backward), fakeAudio(truth), opts);
+  const e1 = errors(forward, res1.corrections, truth);
+  const e2 = errors([backward[2], backward[1], backward[0]], res2.corrections, truth);
+  for (const [id, e] of e1) {
+    assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+    assert.ok(Math.abs(e - e2.get(id)!) < 0.0005, `${id}: ${(e * 1000).toFixed(2)} и ${(e2.get(id)! * 1000).toFixed(2)} мс при другом порядке`);
+  }
+});
+
+test('BWF-время целыми секундами — часы рекордера: случайно совпав с тайм-кодом камеры, оно не становится общим тайм-кодом', async () => {
+  // Рекордер Zoom пишет время начала по своим часам целыми секундами; оно совпало с тайм-кодом камеры до 10 мс.
+  // Раньше программа принимала их за общий генератор и переставала уточнять рекордер: второй файл — на 0,15 с мимо.
+  const truth = new Map<string, number>();
+  const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 1500, recordedSec: 1500 });
+  truth.set(a.id, T16);
+  const z1 = clip({ start: T16 + 20, tcSeconds: tcOf(T16 + 20), durationSec: 700.6, recordedSec: 700.6, hasVideo: false, rate: null, width: null, height: null, sizeBytes: 1e8 });
+  const z2 = clip({ start: T16 + 721, tcSeconds: tcOf(T16 + 721), durationSec: 500, recordedSec: 500, hasVideo: false, rate: null, width: null, height: null });
+  for (const z of [z1, z2]) Object.assign(z, { tc: { ...z.tc!, source: 'bwf' } });
+  truth.set(z1.id, T16 + 20.01); // BWF 20 с, на деле 20,01 — совпадение с тайм-кодом камеры до 10 мс
+  truth.set(z2.id, T16 + 720.85); // второй файл после паузы: BWF 721 — округлено
+  const cams = [camera('A', [a]), camera('Zoom', [z1, z2])];
+  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
+  assert.ok(!(result.log ?? []).some((l) => /общий тайм-код/.test(l)), (result.log ?? []).filter((l) => /общий/.test(l)).join("; "));
+  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+});

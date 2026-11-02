@@ -231,7 +231,9 @@ function buildPieces(cameras: Camera[], coarse: SyncResult, opts: AudioOptions):
         prior: pre(first),
         length,
         trust,
-        exact: trust === 'clock' && cs?.timeSource === 'timecode',
+        // BWF-время целыми секундами у всех файлов — это часы рекордера, округлённые до секунды (Zoom H-серии),
+        // а не тайм-код генератора: точным оно не бывает и общим тайм-кодом с камерой может совпасть лишь случайно.
+        exact: trust === 'clock' && cs?.timeSource === 'timecode' && !members.every((m) => m.clip.tc?.source === 'bwf' && Math.abs(m.clip.tc.seconds - Math.round(m.clip.tc.seconds)) < 1e-6),
         fileClock: fileOnly,
         clockOnly: cs?.timeSource === 'clock',
         recorder: members.every((m) => !m.clip.hasVideo),
