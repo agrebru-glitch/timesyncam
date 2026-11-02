@@ -9,6 +9,8 @@ import type { Viewport } from '../state.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { isMac } from '../platform.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
+import { driftJobs } from '../../core/driftExport.ts';
+import type { DriftJob } from '../../core/driftExport.ts';
 
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
@@ -155,6 +157,11 @@ export function Timeline() {
 
   const errorClips = useMemo(() => new Set(issues.filter((i) => i.severity === 'error' && i.clipId).map((i) => i.clipId!)), [issues]);
   const speedClips = useMemo(() => new Set(state.cameras.flatMap((c) => c.clips.filter((x) => x.captureFps !== null).map((x) => x.id))), [state.cameras]);
+  // Записи с ходом часов: в таймлинию монтажки вместо них встанут выровненные копии — оригиналы не меняются.
+  const driftClips = useMemo(
+    () => new Map<string, DriftJob>(synced && state.sync ? driftJobs(state.cameras, state.sync, state.audio).map((j) => [j.clipId, j]) : []),
+    [synced, state.cameras, state.sync, state.audio],
+  );
 
   // Отрисовка.
   useEffect(() => {
@@ -274,6 +281,29 @@ export function Timeline() {
           }
         }
 
+        // Выравнивание хода часов: в таймлинию монтажки вместо этой записи встанет выровненная копия. Штриховка
+        // по нижнему краю — та же запись, растянутая; в подписи — имя копии.
+        const drift = driftClips.get(p.clipId);
+        if (drift && w > 3) {
+          const band = Math.min(7, h / 3);
+          g.save();
+          g.clip();
+          g.fillStyle = 'rgba(0,0,0,0.38)';
+          g.fillRect(x0, y0 + h - band, w, band);
+          g.strokeStyle = 'rgba(255,255,255,0.85)';
+          g.lineWidth = 1.5;
+          g.beginPath();
+          for (let sx = Math.floor(x0 / 7) * 7 - band; sx < x0 + w; sx += 7) {
+            g.moveTo(sx, y0 + h);
+            g.lineTo(sx + band, y0 + h - band);
+          }
+          g.stroke();
+          g.restore();
+          // Контур клипа — снова текущий путь: по нему ниже рисуются рамки ошибки и выделения.
+          g.beginPath();
+          g.roundRect(x0, y0, w, h, Math.min(4, w / 2));
+        }
+
         // Клип с контрольным кадром до синхронизации светится в цвет камеры.
         if (!synced && keyClips.has(p.clipId) && !isSpeed) {
           g.save();
@@ -301,7 +331,8 @@ export function Timeline() {
           g.rect(x0 + 6, y0, w - 10, h);
           g.clip();
           g.fillStyle = colored || isSpeed ? 'rgba(0,0,0,0.78)' : '#e0e1e5';
-          g.fillText(isSpeed ? `S&Q · ${clip?.name ?? ''}` : clip?.name ?? '', x0 + 6, y0 + 13);
+          const copyName = drift?.outName.split('/').pop();
+          g.fillText(isSpeed ? `S&Q · ${clip?.name ?? ''}` : copyName ? `${clip?.name ?? ''} → ${copyName}` : clip?.name ?? '', x0 + 6, y0 + 13);
           g.restore();
         }
       }
@@ -393,7 +424,7 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, speedClips, tz, showWaves, waveVersion]);
+  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, speedClips, driftClips, tz, showWaves, waveVersion]);
 
   // Мышь: щелчок ставит курсор и выделяет клип, по линейке можно водить.
   const timeAt = (clientX: number) => {

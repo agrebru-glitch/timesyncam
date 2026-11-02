@@ -239,6 +239,38 @@ test('Одноимённые записи разных камер — не ко�
   assert.deepEqual([...findDuplicates([camera('A', [a]), camera('B', [copy])]).keys()], ['B|copy']);
 });
 
+test('Копия, растянутая при выравнивании хода часов, — копия той же записи: в сверку идёт оригинал', () => {
+  // Как у тестера: папка рекордера вместе с подпапкой PluralEyes — та же запись, растянутая на 265 ppm.
+  const wav = (name: string, durationSec: number, history: string[], tcSeconds: number | undefined = 64692) => ({
+    ...clip({ start: T16 + 1000, tcSeconds, durationSec, recordedSec: durationSec, hasVideo: false, rate: null, frames: null, width: null, height: null }),
+    name,
+    codec: 'pcm_s24le',
+    bwfHistory: history,
+  });
+  const zoom = ['A=PCM,F=48000,W=24,M=stereo,T=ZOOM Handy Recorder H5'];
+  const orig = wav('ZOOM0003.WAV', 6689.349, zoom);
+  const pe = wav('ZOOM0003_drift_corrected+1.774.wav', 6691.123, [...zoom, 'A=PCM,F=48000']);
+  // Своя копия программы, перетащенная вместе с папкой XML, — на другой дорожке.
+  const ours = wav('ZOOM0003_drift+0.029s.wav', 6689.378, [...zoom, 'A=PCM,F=48000,T=TimesynCam drift 4.30 ppm']);
+  // Петличка без BWF: копию выдают имя и растяжение.
+  const lav = wav('18-52-06.wav', 1800.12, [], undefined);
+  const lavCopy = wav('18-52-06_drift-0.030s.wav', 1800.09, [], undefined);
+  // Дорожки многоканального рекордера — одной длины и с похожими именами, но это разные записи.
+  const mix = wav('ZOOM0005.WAV', 600, zoom, 70000);
+  const track = wav('ZOOM0005_Tr1.WAV', 600, zoom, 70000);
+  const cams = [camera('H5', [orig, pe, mix, track]), camera('Петличка', [lav, lavCopy]), camera('Выровненный звук', [ours])];
+  const plan = planRelocation(cams);
+  assert.deepEqual(plan.drops.map((d) => `${d.cameraId}:${d.clipId}→${d.keptClipId}${d.stretched ? ' растянута' : ''}`).sort(),
+    [`H5:${pe.id}→${orig.id} растянута`, `Петличка:${lavCopy.id}→${lav.id} растянута`, `Выровненный звук:${ours.id}→${orig.id} растянута`].sort());
+  const issues = relocationIssues(cams, plan);
+  assert.ok(issues.some((i) => /ZOOM0003_drift_corrected\+1\.774\.wav — копия записи, растянутая при выравнивании хода часов/.test(i.title)));
+  assert.ok(issues.some((i) => i.cameraId === 'Выровненный звук' && /оригинал с дорожки «H5»/.test(i.details ?? '')));
+  const after = applyRelocation(cams, plan);
+  assert.deepEqual(after[0].clips.map((c) => c.name), ['ZOOM0003.WAV', 'ZOOM0005.WAV', 'ZOOM0005_Tr1.WAV']);
+  // Если оригинала нет, копия — обычная запись.
+  assert.equal(findDuplicates([camera('H5', [pe])]).size, 0);
+});
+
 test('Перенос по дорожкам: клип другой камеры переезжает на её дорожку, копия уходит к оригиналу', () => {
   const a = freeRunClips([T16 + 10, T16 + 100, T16 + 200]);
   const b = freeRunClips([T16 + 20, T16 + 300], 1000);

@@ -331,6 +331,7 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
   // Звук в файле может начинаться позже начала файла: так пишут часть телефонов (realme — на 0,22 с позже видео),
   // и монтажка ставит звук туда же внутри клипа. Сверка отсчитывает звук от начала файла.
   const audioStart = Number(audio[0]?.start_time) - (Number(input.probe?.format?.start_time) || 0);
+  const history = (formatTags.coding_history ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
   return {
     id: input.id,
@@ -350,6 +351,7 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     audioChannels: audio.reduce((n, s) => n + (s.channels ?? 0), 0),
     audioSampleRate: audio[0]?.sample_rate ? Number(audio[0].sample_rate) : null,
     audioStartSec: audioStart > 0.0005 ? audioStart : 0,
+    ...(history.length ? { bwfHistory: history } : {}),
     tc,
     clock,
     camera: {

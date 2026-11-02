@@ -161,6 +161,8 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const accText = au?.accuracySec != null ? accuracyText(au.accuracySec) : undefined;
   const placedBySound = au && (au.status === 'applied' || au.status === 'confirmed');
   const brief = qt ?? (at ? { title: placedBySound && at.tone !== 'warn' ? 'Встала по звуку' : at.title, sub: accText, tone: at.tone } : synced ? { title: ts.title, sub: undefined, tone: undefined } : null);
+  // Ход часов выравнивается при экспорте: на таймлинии такие записи заштрихованы снизу.
+  const drift = synced && info.audioOnly ? state.audio?.drift?.find((d) => d.cameraId === cam.id && d.apply) : undefined;
   const toneColor = (tone?: 'warn' | 'ok') => (tone === 'warn' ? 'var(--warning)' : tone === 'ok' ? 'var(--success)' : undefined);
 
   const onDrop = (e: React.DragEvent) => {
@@ -236,6 +238,12 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             </div>
           )}
           {info.speedActive > 0 && <div className="card-line" style={{ color: 'var(--danger)' }}>S&Q: {pluralRu(info.speedActive, 'клип', 'клипа', 'клипов')} — помечены красным</div>}
+          {drift && (
+            <div className="card-line">
+              Часы {drift.ppm > 0 ? 'отстают' : 'спешат'} на {Math.abs(drift.ppm).toFixed(1).replace('.', ',')} ppm
+              <span className="muted"> · при экспорте вместо записей встанут выровненные копии (на таймлинии — штриховка), оригиналы не меняются</span>
+            </div>
+          )}
           {cam.follower && (
             <div className="card-line">
               Ведомая — встаёт по звуку других и их не сдвигает{' '}

@@ -144,6 +144,26 @@ export interface Duplicate {
   clipId: string;
   keptCameraId: string; // где лежит копия, которая берётся в синхронизацию
   keptClipId: string;
+  stretched?: boolean; // копия растянута при выравнивании хода часов (PluralEyes, сама программа и другие)
+}
+
+// Растянутая копия той же записи: её делает выравнивание хода часов — PluralEyes («_drift_corrected+1.774»),
+// сама программа («_drift+0.029s») и другие. Тот же формат, длина отличается не больше чем на 0,1 %, а копию
+// выдаёт имя (продолжает имя оригинала) вместе с растяжением или историей обработки BWF: она повторяет историю
+// оригинала и добавляет свою строку. Записи равной длины с похожими именами (дорожки многоканального рекордера)
+// копиями не считаются. В сверку идёт оригинал: ход часов программа измеряет сама.
+function stretchedCopy(copy: ClipMeta, orig: ClipMeta): boolean {
+  if (copy.hasVideo || orig.hasVideo || !copy.audioChannels || copy.audioChannels !== orig.audioChannels || copy.audioSampleRate !== orig.audioSampleRate) return false;
+  const d = copy.durationSec - orig.durationSec;
+  if (Math.abs(d) > orig.durationSec * 1e-3 + 0.002) return false;
+  // Тайм-код (BWF) у копии — оригинала; другой — это другая запись.
+  if (copy.tc && orig.tc && Math.abs(copy.tc.seconds - orig.tc.seconds) > 0.001) return false;
+  const stem = (n: string) => n.replace(/\.[^.]+$/, '').toUpperCase();
+  const tail = stem(copy.name).startsWith(stem(orig.name)) ? stem(copy.name).slice(stem(orig.name).length) : '';
+  const named = /^[^\p{L}\p{N}]/u.test(tail);
+  const own = orig.bwfHistory ?? [];
+  const history = (copy.bwfHistory?.length ?? 0) > own.length && own.every((line, i) => copy.bwfHistory![i] === line);
+  return named ? Math.abs(d) >= 0.001 || history : history && !!copy.tc && !!orig.tc;
 }
 
 const copyKey = (cameraId: string, clipId: string) => `${cameraId}|${clipId}`;
@@ -197,6 +217,12 @@ export function findDuplicates(cameras: Camera[]): Map<string, Duplicate> {
         out.set(copyKey(x.cameraId, x.clip.id), { cameraId: x.cameraId, clipId: x.clip.id, keptCameraId: keep.cameraId, keptClipId: keep.clip.id });
       }
     }
+  }
+  // Растянутые копии: оригинал — тот экземпляр, что остался после поиска одинаковых файлов.
+  const sound = [...groups.values()].flat().filter((x) => !x.clip.hasVideo && !out.has(copyKey(x.cameraId, x.clip.id))).sort((a, b) => a.order - b.order);
+  for (const x of sound) {
+    const orig = sound.find((o) => o !== x && !out.has(copyKey(o.cameraId, o.clip.id)) && stretchedCopy(x.clip, o.clip) && !stretchedCopy(o.clip, x.clip));
+    if (orig) out.set(copyKey(x.cameraId, x.clip.id), { cameraId: x.cameraId, clipId: x.clip.id, keptCameraId: orig.cameraId, keptClipId: orig.clip.id, stretched: true });
   }
   return out;
 }
@@ -605,10 +631,18 @@ export function relocationIssues(cameras: Camera[], plan: Relocation): Issue[] {
     }));
   }
   const drops = new Map<string, Duplicate[]>();
-  for (const d of plan.drops) drops.set(`${d.cameraId}|${d.keptCameraId}`, [...(drops.get(`${d.cameraId}|${d.keptCameraId}`) ?? []), d]);
+  for (const d of plan.drops) {
+    const key = `${d.cameraId}|${d.keptCameraId}|${d.stretched ? 's' : ''}`;
+    drops.set(key, [...(drops.get(key) ?? []), d]);
+  }
   for (const group of drops.values()) {
     const { cameraId: from, keptCameraId: kept } = group[0];
     const names = list(group.map((d) => clipName(from, d.clipId)));
+    if (group[0].stretched) {
+      const text = stretchedText(names, group.length, from === kept ? null : nameOf(kept));
+      out.push(issue({ severity: 'info', cameraId: from, title: `«${nameOf(from)}»: ${text.title}`, details: text.details, actions: [] }));
+      continue;
+    }
     out.push(issue({
       severity: 'info',
       cameraId: from,
@@ -624,16 +658,33 @@ export function relocationIssues(cameras: Camera[], plan: Relocation): Issue[] {
   return out;
 }
 
+// Растянутая копия: что это и почему в синхронизацию идёт оригинал. kept — дорожка оригинала, если она другая.
+function stretchedText(names: string, count: number, kept: string | null): { title: string; details: string } {
+  const one = count === 1;
+  return {
+    title: `${names} — ${one ? 'копия записи, растянутая' : 'копии записей, растянутые'} при выравнивании хода часов`,
+    details: `Такие копии делает выравнивание хода часов — PluralEyes, сама программа при экспорте и другие: та же запись, только растянутая во времени. В синхронизацию берётся оригинал${kept ? ` с дорожки «${kept}»` : ''}: ход часов программа измеряет по звуку сама и при экспорте выравнивает заново. ${one ? 'Файл' : 'Файлы'} на диске ${one ? 'остался' : 'остались'}.`,
+  };
+}
+
 // Одно замечание на пару «камера — дорожка, где лежит оригинал».
 function duplicateIssues(cameras: Camera[], copies: Map<string, Duplicate>): Issue[] {
   const out: Issue[] = [];
   const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? '';
   const byPair = new Map<string, Duplicate[]>();
-  for (const d of copies.values()) byPair.set(`${d.cameraId}|${d.keptCameraId}`, [...(byPair.get(`${d.cameraId}|${d.keptCameraId}`) ?? []), d]);
+  for (const d of copies.values()) {
+    const key = `${d.cameraId}|${d.keptCameraId}|${d.stretched ? 's' : ''}`;
+    byPair.set(key, [...(byPair.get(key) ?? []), d]);
+  }
   for (const list of byPair.values()) {
     const cam = cameras.find((c) => c.id === list[0].cameraId)!;
     const names = list.slice(0, 4).map((d) => cam.clips.find((c) => c.id === d.clipId)!.name).join(', ') + (list.length > 4 ? '…' : '');
     const same = list[0].keptCameraId === cam.id;
+    if (list[0].stretched) {
+      const text = stretchedText(names, list.length, same ? null : nameOf(list[0].keptCameraId));
+      out.push(issue({ severity: 'info', cameraId: cam.id, title: `«${cam.name}»: ${text.title}`, details: text.details, actions: [{ kind: 'exclude-clips', cameraId: cam.id, clipIds: list.map((d) => d.clipId) }] }));
+      continue;
+    }
     out.push(issue({
       severity: 'warning',
       cameraId: cam.id,

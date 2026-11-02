@@ -49,6 +49,9 @@ export interface ClipMeta {
   // Где в клипе начинается звук, секунды: у части телефонов звук в файле начинается позже видео (realme — на 0,22 с).
   // Монтажка ставит его туда же. Нет — с начала клипа.
   audioStartSec?: number;
+  // История обработки BWF (coding_history): строка на каждый шаг. Копия, растянутая при выравнивании хода часов,
+  // повторяет историю оригинала и добавляет свою строку.
+  bwfHistory?: string[];
   tc: ClipTimecode | null;
   clock: ClipClock | null;
   camera: CameraInfo;
