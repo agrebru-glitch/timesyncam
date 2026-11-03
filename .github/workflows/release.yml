@@ -1,6 +1,6 @@
 name: Релиз
 
-# Собирает программу для Windows и macOS (Apple Silicon и Intel) с FFmpeg под LGPL
+# Собирает программу для Windows и macOS (Apple Silicon) с FFmpeg под LGPL
 # и прикладывает сборки к релизу на GitHub.
 #
 # - Метка вида v0.4.0 — сборка и релиз. Метка с дефисом (v0.4.0-rc.1) — черновик релиза.
@@ -75,10 +75,9 @@ jobs:
     strategy:
       matrix:
         include:
+          # С 0.4.0 — только Apple Silicon; для Mac с Intel последняя сборка — 0.3.6.
           - arch: arm64
             runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     env:
       FFMPEG_VERSION: n9.0.2
