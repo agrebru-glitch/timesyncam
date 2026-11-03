@@ -373,11 +373,27 @@ function centered(a: Piece, b: Piece, checks: Check[], d: number): { d: number; 
 // Проверка сдвига по клипам. Слабое, но настоящее совпадение — трансляция с голосами комментаторов против
 // микрофона камеры на трибуне — окна по 20 с почти не проходят порог, а у камеры из сотни коротких клипов
 // большинство окон попадает в паузы и на стыки. Зато каждый клип в отдельности находится на своём месте:
-// клип ищется в ±30 с вокруг места по кандидату, и случайно в ±1 с пик попадает с вероятностью около 3%.
-// Пять и больше попаданий из большинства клипов — не случайность (на матче пользователя — 23 из 27).
-const MEMBER_SEARCH = 30;
+// клип ищется в ±60 с вокруг места по кандидату, и попадание засчитывается в ±20 с (это законный разброс сбоев тайм-кода).
+// Пять и больше попаданий, которые случайно не набрать (на матче пользователя — 14 из 19), — не случайность.
+const MEMBER_SEARCH = 60;
 const MEMBER_AGREE = 1;
+// Попадание клипа на своё место — в ±20 с: внутри одного отрезка тайм-кода клипы законно расходятся на сбои после
+// выключения камеры (тайм-код пересчитывается по часам — от долей секунды до десятков секунд), и проверка не должна
+// требовать одного сдвига на весь кусок. Поиск — в ±60 с, поэтому случайно клип попадает с вероятностью 1/3, и
+// проверка на случайность требует соответственно больше согласных клипов. Сами сбои потом разбирает memberSlips.
+const MEMBER_SLIP = 20;
 const MEMBER_PROBES = 20;
+// Вероятность хотя бы k успехов из n при вероятности успеха p (хвост биномиального распределения).
+function chance(k: number, n: number, p: number): number {
+  let term = Math.pow(1 - p, n);
+  let sum = k === 0 ? term : 0;
+  for (let i = 1; i <= n; i++) {
+    term *= ((n - i + 1) / i) * (p / (1 - p));
+    if (i >= k) sum += term;
+  }
+  return Math.min(1, sum);
+}
+
 function memberAgreement(a: Piece, b: Piece, d: number): { hits: number; tested: number; d: number } {
   const locals: number[] = [];
   let tested = 0;
@@ -395,7 +411,7 @@ function memberAgreement(a: Piece, b: Piece, d: number): { hits: number; tested:
       const mm = correlate(t, r, MEMBER_SEARCH * RATE, MEMBER_SEARCH * RATE);
       if (!mm) continue;
       tested++;
-      if (Math.abs(mm.lag / RATE) <= MEMBER_AGREE) locals.push(d + (sign * mm.lag) / RATE);
+      if (Math.abs(mm.lag / RATE) <= MEMBER_SLIP) locals.push(d + (sign * mm.lag) / RATE);
     }
   };
   if (a.members.length >= b.members.length) probe(a, b, (u) => u - d, -1);
@@ -406,7 +422,7 @@ function memberAgreement(a: Piece, b: Piece, d: number): { hits: number; tested:
 // Сбои тайм-кода внутри куска по клипам. Камера держит тайм-код между клипами, но после выключения (смена
 // аккумулятора) пересчитывает его по часам — и дальше все клипы сдвинуты на доли или целые секунды. Обычно это
 // находит уточнение, но при слабом общем звуке (трансляция с комментаторами) короткие клипы его порог не проходят.
-// Здесь каждый клип ищется сам в ±30 с, и ряд их сдвигов делится на участки — сбой виден как ступенька,
+// Здесь каждый клип ищется сам в ±60 с, и ряд их сдвигов делится на участки — сбой виден как ступенька,
 // подтверждённая несколькими клипами подряд. Одиночное несогласие — шум, его не слушаем.
 // На матче пользователя: до 78-й минуты 0, потом +0,38 с, со 101-й — +2,3 с.
 function memberSlips(a: Piece, b: Piece, d: number): Map<string, number> {
@@ -428,13 +444,14 @@ function memberSlips(a: Piece, b: Piece, d: number): Map<string, number> {
   });
   // Ряд сдвигов по порядку клипов делится на участки с постоянным сдвигом (динамическое программирование):
   // каждый лишний участок стоит штраф, отклонение точки от медианы участка учитывается не больше 0,3 с. Так
-  // новый участок появляется, только если его подтверждают несколько клипов подряд (каждый сберегает до 0,3,
-  // а штраф — 1), а одиночные ложные пики остаются выбросами внутри своего участка.
+  // новый участок появляется, только если его подтверждают несколько клипов подряд (каждый сберегает до 0,3, а штраф — 0,5: хватает двух),
+  // а одиночные ложные пики остаются выбросами внутри своего участка.
   const n = found.length;
   const shifts = new Map<string, number>();
   if (n < 4) return shifts;
   const CAP = 0.3;
-  const PENALTY = 1;
+  const PENALTY = 0.5; // два согласных клипа подряд (до 0,3 каждый) уже оправдывают участок: случайно два соседних
+  // клипа сходятся в 0,3 с при поиске в ±60 с реже чем в 0,5% случаев, а однородный ряд от низкого штрафа не дробится
   const segCost = (j: number, k: number) => {
     const med = median(found.slice(j, k + 1).map((f) => f.lag));
     let c = 0;
@@ -494,8 +511,13 @@ function memberSlips(a: Piece, b: Piece, d: number): Map<string, number> {
       // Свои клипы участка: если ни один не подтверждает доставшийся сдвиг, а совместный поиск согласен с ними,
       // хватает и слабого совпадения — оно подтверждено дважды (на матче: клип +0,09 с, участок целиком +0,19 с).
       const own = found.filter((f) => f.i >= runStart && f.i < i).map((f) => f.lag);
-      const ownSays = own.length > 0 && own.every((v) => Math.abs(v - here) > 1) && Math.abs(joint - median(own)) <= 0.3;
-      if (mm && Math.abs(joint - here) > 0.5 && ((mm.score >= 0.04 && mm.ratio >= 1.3) || (ownSays && mm.score >= 0.02 && mm.ratio >= 1.25))) {
+      // Ложный пик среди своих (при поиске в ±60 с они бывают) не должен ничего решать: достаточно, чтобы хоть один
+      // свой клип совпал с совместным поиском и ни один не подтвердил доставшийся сдвиг.
+      const ownSays = own.some((v) => Math.abs(v - joint) <= 0.3) && !own.some((v) => Math.abs(v - here) <= 0.3);
+      // Только если разбиение не разделило участок само: иначе совместный поиск усреднил бы разные сдвиги и стёр
+      // найденный сбой на короткой паузе внутри.
+      const uniform = assigned.slice(runStart, i).every((v) => Math.abs(v - here) < 0.05);
+      if (mm && uniform && Math.abs(joint - here) > 0.5 && ((mm.score >= 0.04 && mm.ratio >= 1.3) || (ownSays && mm.score >= 0.02 && mm.ratio >= 1.25))) {
         for (let k = runStart; k < i; k++) assigned[k] = joint;
       }
     }
@@ -507,12 +529,48 @@ function memberSlips(a: Piece, b: Piece, d: number): Map<string, number> {
   return shifts;
 }
 
+// Кандидаты голосованием клипов. Сравнение кусков целиком тонет, когда у одной записи поверх общего звука громкий
+// посторонний (голоса комментаторов в трансляции), а у другой — клипы с паузами: верный пик не попадает и в шесть
+// лучших. Каждый из двадцати самых длинных клипов ищется по всей другой записи (пять лучших мест у каждого); сдвиг, на который независимо
+// указали три и больше клипа, — кандидат (случайно три клипа в одной секунде из часов записи не сходятся).
+const MEMBER_VOTERS = 20;
+function memberVotes(a: Piece, b: Piece): number[] {
+  const multi = a.members.length >= b.members.length ? a : b;
+  const other = multi === a ? b : a;
+  if (multi.members.length < 4) return [];
+  const votes: { d: number; clip: string }[] = [];
+  for (const m of [...multi.members].sort((x, y) => y.clip.durationSec - x.clip.durationSec).slice(0, MEMBER_VOTERS)) {
+    const L = Math.min(m.clip.durationSec, 60);
+    if (L < 15) continue;
+    const t = slice(multi.coarse!, Math.round((m.at * RATE) / POOL), Math.round((L * RATE) / POOL));
+    if (!active(t)) continue;
+    const table = xcorrFeatures(t, other.coarse!, Math.round((L * 0.6 * RATE) / POOL));
+    if (!table) continue;
+    // t[0] — момент m.at куска multi, совпадает с кадром k другого куска (момент k·POOL/RATE).
+    for (const k of peaks(table, t.frames, other.coarse!.frames, 5, (PEAK_GUARD * RATE) / POOL)) {
+      const atOther = (k * POOL) / RATE;
+      votes.push({ d: multi === a ? m.at - atOther : atOther - m.at, clip: m.clip.id });
+    }
+  }
+  votes.sort((x, y) => x.d - y.d);
+  const out: number[] = [];
+  for (let i = 0; i < votes.length; ) {
+    let j = i;
+    while (j + 1 < votes.length && votes[j + 1].d - votes[i].d <= MEMBER_AGREE) j++;
+    const group = votes.slice(i, j + 1);
+    if (new Set(group.map((v) => v.clip)).size >= 3) out.push(median(group.map((v) => v.d)));
+    i = j + 1;
+  }
+  return out;
+}
+
 // Сравнение пары кусков: лучший проверенный сдвиг или null.
 function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguous: boolean } {
   const table = xcorrFeatures(a.coarse!, b.coarse!, Math.round((MIN_OVERLAP * RATE) / POOL));
   if (!table) return { edge: null, ambiguous: false };
   // table: a[0] совпадает с b[k] — значит, начало b на k кадров раньше начала a.
   const cands = peaks(table, a.coarse!.frames, b.coarse!.frames, CANDIDATES, (PEAK_GUARD * RATE) / POOL).map((k) => (-k * POOL) / RATE);
+  for (const d of memberVotes(a, b)) if (!cands.some((c) => Math.abs(c - d) <= PEAK_GUARD)) cands.push(d);
   const tried = cands.map((d) => {
     const checks = verify(a, b, d);
     const ok = checks.filter((c) => c.agree);
@@ -523,7 +581,28 @@ function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguo
   const second = tried.find((x) => x !== best && Math.abs(x.d - best.d) > PEAK_GUARD);
   log(`пара ${a.cameraId}#${a.id} — ${b.cameraId}#${b.id}:`);
   for (const x of tried) log(`    сдвиг ${x.d.toFixed(2)} с: совпало ${x.support} из ${x.tested}, балл ${x.score.toFixed(2)}`);
-  if (!best || best.support === 0) return { edge: null, ambiguous: false };
+  // Окна не подтвердили — проверка по клипам: у кого из кандидатов клипы сами находятся на своих местах.
+  const byClips = (): { edge: Edge | null; ambiguous: boolean } => {
+    const byMembers = tried.map((x) => ({ x, ...memberAgreement(a, b, x.d) })).sort((p, q) => q.hits - p.hits);
+    const top = byMembers[0];
+    const next = byMembers.find((m) => Math.abs(m.d - top.d) > PEAK_GUARD);
+    for (const m of byMembers) if (m.tested) log(`    по клипам ${m.x.d.toFixed(2)}: на своём месте ${m.hits} из ${m.tested}`);
+    // Не случайность ли: клип в ±MEMBER_SLIP при поиске в ±MEMBER_SEARCH попадает случайно с вероятностью 1/3.
+    // Вероятность набрать столько попаданий случайно (хвост биномиального) — меньше одной десятитысячной.
+    if (top && top.hits >= 5 && chance(top.hits, top.tested, MEMBER_SLIP / MEMBER_SEARCH) < 1e-4 && (!next || next.hits * 2 <= top.hits)) {
+      log(`    итог: ${top.d.toFixed(3)} с (по клипам)`);
+      const checks = verify(a, b, top.d);
+      const c = centered(a, b, checks, top.d);
+      return {
+        edge: { a: a.id, b: b.id, d: c.d, weight: top.hits * 0.05, support: top.hits, tested: top.tested, checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span, slips: memberSlips(a, b, top.d) },
+        ambiguous: false,
+      };
+    }
+    log('    итог: уверенного совпадения нет');
+    return { edge: null, ambiguous: false };
+  };
+  if (!best) return { edge: null, ambiguous: false };
+  if (best.support === 0) return byClips();
   // Соперники — кандидаты, подтверждённые почти так же. Лучший должен выиграть у каждого очно: на тех же
   // местах записи совпасть лучше хотя бы в трёх окнах и не проиграть заметно. Иначе — неоднозначно, не угадываем.
   let winner = best;
@@ -547,31 +626,16 @@ function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguo
   // совпасть не могут). Короткая общая часть (одно-два окна): все окна согласны и соперника нет.
   const strong = winner.support >= 3 && (share >= 0.5 || (winner.support >= 8 && winner.support >= 2 * runnerUp));
   const short = winner.tested <= 2 && winner.support === winner.tested && (!second || second.support === 0 || winner !== best) && winner.score >= 0.25;
-  if (!strong && !short) {
-    // Окна не подтвердили — проверка по клипам: у кого из кандидатов клипы сами находятся на своих местах.
-    const byMembers = tried.map((x) => ({ x, ...memberAgreement(a, b, x.d) })).sort((p, q) => q.hits - p.hits);
-    const top = byMembers[0];
-    const next = byMembers.find((m) => Math.abs(m.d - top.d) > PEAK_GUARD);
-    for (const m of byMembers) if (m.tested) log(`    по клипам ${m.x.d.toFixed(2)}: на своём месте ${m.hits} из ${m.tested}`);
-    if (top && top.hits >= 5 && top.hits >= 0.5 * top.tested && (!next || next.hits * 2 <= top.hits)) {
-      log(`    итог: ${top.d.toFixed(3)} с (по клипам)`);
-      const checks = verify(a, b, top.d);
-      const c = centered(a, b, checks, top.d);
-      return {
-        edge: { a: a.id, b: b.id, d: c.d, weight: top.hits * 0.05, support: top.hits, tested: top.tested, checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span, slips: memberSlips(a, b, top.d) },
-        ambiguous: false,
-      };
-    }
-    log('    итог: уверенного совпадения нет');
-    return { edge: null, ambiguous: false };
-  }
+  if (!strong && !short) return byClips();
   const chosen = winner;
   log(`    итог: ${chosen.d.toFixed(3)} с${strong ? '' : ' (короткая общая часть)'}`);
   // Проверочные окна заново — уже вокруг уточнённого сдвига, чтобы точки сверки стояли точно.
   const checks = verify(a, b, chosen.d);
   const c = centered(a, b, checks, chosen.d);
   return {
-    edge: { a: a.id, b: b.id, d: c.d, weight: chosen.support * chosen.score * (strong ? 1 : 0.3), support: chosen.support, tested: chosen.tested, checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span },
+    // Сбои тайм-кода внутри куска разбираются при любом найденном совпадении, а не только при слабом: окна могут
+    // подтвердить сдвиг большинства клипов, а уточнение при слабом звуке сбоев не поймает.
+    edge: { a: a.id, b: b.id, d: c.d, weight: chosen.support * chosen.score * (strong ? 1 : 0.3), support: chosen.support, tested: chosen.tested, checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span, slips: memberSlips(a, b, chosen.d) },
     ambiguous: false,
   };
 }

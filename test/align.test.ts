@@ -4,7 +4,10 @@ import { agreeingClocks, alignByAudio } from '../src/core/align.ts';
 import { runSync } from '../src/core/sync.ts';
 import type { Camera, ClipMeta } from '../src/core/types.ts';
 import { camera, clip, T16 } from './fixtures.ts';
-import { fakeAudio, rng } from './sound.ts';
+import { fakeAudio, record, rng } from './sound.ts';
+import { peakDb, SILENCE_DB } from '../src/core/audioSync.ts';
+import type { AudioFetch } from '../src/core/audioSync.ts';
+import { FEAT_SR, FINE_SR, pickChannel } from '../src/core/audioFeatures.ts';
 import type { Burst } from './sound.ts';
 
 const tcOf = (epoch: number, offset = 0) => (((epoch + 3 * 3600 + offset) % 86400) + 86400) % 86400;
@@ -411,4 +414,65 @@ test('BWF-время целыми секундами — часы рекорде
   const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), opts);
   assert.ok(!(result.log ?? []).some((l) => /общий тайм-код/.test(l)), (result.log ?? []).filter((l) => /общий/.test(l)).join("; "));
   for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
+});
+
+// Трансляция: звук площадки тихий, поверх него громкий посторонний (комментаторы); камера — короткие клипы с паузами.
+function weakScene(sharedGain: number) {
+  const burstsFrom = (seed: number, gap: [number, number], amp: [number, number]): Burst[] => {
+    const r = rng(seed);
+    const out: Burst[] = [];
+    for (let t = T16 - 200; t < T16 + 1500; t += gap[0] + r() * (gap[1] - gap[0])) {
+      out.push({ t, amp: amp[0] + r() * (amp[1] - amp[0]), freqs: Array.from({ length: 6 }, () => 300 + r() * 5500), phases: Array.from({ length: 6 }, () => r() * Math.PI * 2) });
+    }
+    return out;
+  };
+  const shared = burstsFrom(31, [0.4, 2.4], [0.3, 0.9]);
+  const talk = burstsFrom(37, [0.12, 0.5], [0.6, 1.2]);
+  const truth = new Map<string, number>();
+  const r = rng(5);
+  const clips: ClipMeta[] = [];
+  let t = T16 + 40;
+  let slip = 0;
+  for (let i = 0; i < 22; i++) {
+    const dur = 15 + r() * 35;
+    // После десятого клипа камеру выключали: тайм-код сбился на 1,3 с.
+    if (i === 10) slip = 1.3;
+    const c = clip({ start: Math.floor(t), tcSeconds: tcOf(t, 1000 + slip), durationSec: dur, recordedSec: dur });
+    truth.set(c.id, t);
+    clips.push(c);
+    t += dur + (i === 9 ? 90 : 3 + r() * 15);
+  }
+  const bc = clip({ start: Math.floor(T16 + 20 + 95), durationSec: 1300, recordedSec: 1300 }); // время из контейнера — на 95 с мимо
+  truth.set(bc.id, T16 + 20);
+  const gen = (c: ClipMeta, start: number, dur: number, sr: number) => {
+    const len = Math.min(dur, c.durationSec - start);
+    const from = truth.get(c.id)! + start;
+    if (c !== bc) return record(from, len, sr, 0.8, (c.id.length * 7919 + Math.round(start * 1000)) >>> 0, { bursts: shared });
+    const a = record(from, len, sr, sharedGain, 11, { bursts: shared, noise: 0 });
+    const b = record(from, len, sr, 0.9, 13 + Math.round(start), { bursts: talk });
+    return a.map((v, i) => v + b[i]);
+  };
+  const audio: AudioFetch = {
+    features: async (c, start, dur) => {
+      const s = gen(c, start, dur, FEAT_SR);
+      const picked = pickChannel([s, s], FEAT_SR, peakDb, SILENCE_DB);
+      return { feat: picked.feat, peakDb: picked.peakDb, channel: picked.channel };
+    },
+    samples: async (c, start, dur) => gen(c, start, dur, FINE_SR),
+  };
+  return { cams: [camera('Камера', clips), camera('Трансляция', [bc])], truth, audio, clips, bc };
+}
+
+test('Слабый общий звук (трансляция с комментаторами): совпадение находится голосованием клипов, сбой тайм-кода камеры после паузы поправлен', async () => {
+  const { cams, truth, audio, clips, bc } = weakScene(0.25);
+  const result = await alignByAudio(cams, runSync(cams), audio, opts);
+  const errs = errors([cams[1], cams[0]], result.corrections, truth);
+  for (const c of clips) assert.ok(Math.abs(errs.get(c.id)!) < 0.05, `${c.name}: ${(errs.get(c.id)! * 1000).toFixed(0)} мс; ${(result.log ?? []).filter((l) => /итог|по клипам/.test(l)).join(' | ')}`);
+  assert.ok(errs.has(bc.id));
+});
+
+test('Без общего звука клипы не «находятся» случайно: ни совпадения, ни сдвига', async () => {
+  const { cams, audio } = weakScene(0);
+  const result = await alignByAudio(cams, runSync(cams), audio, opts);
+  assert.ok(!(result.log ?? []).some((l) => /итог: -?\d/.test(l)), (result.log ?? []).filter((l) => /итог/.test(l)).join(' | '));
 });
