@@ -29,6 +29,7 @@
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 и 11">
   <img src="https://img.shields.io/badge/macOS-12%2B-555555" alt="macOS 12 и новее">
   <a href="#поддержать-проект"><img src="https://img.shields.io/badge/%D0%BF%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C-CloudTips-6496dc" alt="Поддержать проект"></a>
+  <a href="https://t.me/timesyncam"><img src="https://img.shields.io/badge/Telegram-%40timesyncam-26a5e4?logo=telegram&logoColor=white" alt="Telegram-канал @timesyncam"></a>
 </p>
 
 ![Главное окно: пять камер на таймлинии, мультивью и карточки камер](docs/images/main.png)
@@ -207,6 +208,8 @@ TimesynCam бесплатный и с открытым кодом. Если пр
 </p>
 
 Наведите камеру телефона на QR-код или откройте ссылку: [pay.cloudtips.ru/p/17376eab](https://pay.cloudtips.ru/p/17376eab). В программе — кнопка «Поддержать проект» в верхней панели.
+
+Новости, новые версии и вопросы — в Telegram-канале [@timesyncam](https://t.me/timesyncam).
 
 ## Лицензия
 
