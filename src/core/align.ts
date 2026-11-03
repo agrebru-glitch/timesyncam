@@ -101,6 +101,7 @@ interface Edge {
   span: number; // сколько секунд общей записи между крайними согласными окнами
   hard?: boolean; // связь по контрольным кадрам и точному тайм-коду, не по звуку
   sound?: number; // общий тайм-код: сдвиг, который показал звук (d — по тайм-коду)
+  slips?: Map<string, number>; // сбои тайм-кода внутри куска, найденные по клипам: клип → на сколько перенести
 }
 
 let issueSeq = 0;
@@ -369,6 +370,110 @@ function centered(a: Piece, b: Piece, checks: Check[], d: number): { d: number; 
   return { d: my + slope * (mid - mx), slope, mid, span };
 }
 
+// Проверка сдвига по клипам. Слабое, но настоящее совпадение — трансляция с голосами комментаторов против
+// микрофона камеры на трибуне — окна по 20 с почти не проходят порог, а у камеры из сотни коротких клипов
+// большинство окон попадает в паузы и на стыки. Зато каждый клип в отдельности находится на своём месте:
+// клип ищется в ±30 с вокруг места по кандидату, и случайно в ±1 с пик попадает с вероятностью около 3%.
+// Пять и больше попаданий из большинства клипов — не случайность (на матче пользователя — 23 из 27).
+const MEMBER_SEARCH = 30;
+const MEMBER_AGREE = 1;
+const MEMBER_PROBES = 20;
+function memberAgreement(a: Piece, b: Piece, d: number): { hits: number; tested: number; d: number } {
+  const locals: number[] = [];
+  let tested = 0;
+  // Клипы куска p ищутся в куске q; sign — как найденное отклонение переводится в сдвиг «начало b минус начало a».
+  const probe = (p: Piece, q: Piece, toQ: (u: number) => number, sign: number) => {
+    const longest = [...p.members].sort((x, y) => y.clip.durationSec - x.clip.durationSec).slice(0, MEMBER_PROBES);
+    for (const m of longest) {
+      const L = Math.min(m.clip.durationSec, 60);
+      if (L < 10) continue;
+      const pos = toQ(m.at);
+      if (pos - MEMBER_SEARCH < 0 || pos + L + MEMBER_SEARCH > q.length) continue;
+      const t = slice(p.feat!, Math.round(m.at * RATE), Math.round(L * RATE));
+      const r = slice(q.feat!, Math.round((pos - MEMBER_SEARCH) * RATE), Math.round((L + 2 * MEMBER_SEARCH) * RATE));
+      if (!active(t) || !active(r)) continue;
+      const mm = correlate(t, r, MEMBER_SEARCH * RATE, MEMBER_SEARCH * RATE);
+      if (!mm) continue;
+      tested++;
+      if (Math.abs(mm.lag / RATE) <= MEMBER_AGREE) locals.push(d + (sign * mm.lag) / RATE);
+    }
+  };
+  if (a.members.length >= b.members.length) probe(a, b, (u) => u - d, -1);
+  else probe(b, a, (u) => u + d, 1);
+  return { hits: locals.length, tested, d: locals.length ? median(locals) : d };
+}
+
+// Сбои тайм-кода внутри куска по клипам. Камера держит тайм-код между клипами, но после выключения (смена
+// аккумулятора) пересчитывает его по часам — и дальше все клипы сдвинуты на доли или целые секунды. Обычно это
+// находит уточнение, но при слабом общем звуке (трансляция с комментаторами) короткие клипы его порог не проходят.
+// Здесь каждый клип ищется сам в ±30 с, и ряд их сдвигов делится на участки — сбой виден как ступенька,
+// подтверждённая несколькими клипами подряд. Одиночное несогласие — шум, его не слушаем.
+// На матче пользователя: до 78-й минуты 0, потом +0,38 с, со 101-й — +2,3 с.
+function memberSlips(a: Piece, b: Piece, d: number): Map<string, number> {
+  const multi = a.members.length >= b.members.length ? a : b;
+  const other = multi === a ? b : a;
+  const toOther = (u: number) => (multi === a ? u - d : u + d);
+  const found: { i: number; lag: number }[] = [];
+  multi.members.forEach((m, i) => {
+    const L = Math.min(m.clip.durationSec, 60);
+    if (L < 8) return;
+    const pos = toOther(m.at);
+    if (pos - MEMBER_SEARCH < 0 || pos + L + MEMBER_SEARCH > other.length) return;
+    const t = slice(multi.feat!, Math.round(m.at * RATE), Math.round(L * RATE));
+    const r = slice(other.feat!, Math.round((pos - MEMBER_SEARCH) * RATE), Math.round((L + 2 * MEMBER_SEARCH) * RATE));
+    if (!active(t) || !active(r)) return;
+    const mm = correlate(t, r, MEMBER_SEARCH * RATE, MEMBER_SEARCH * RATE);
+    if (!mm || mm.score < 0.035 || Math.abs(mm.lag / RATE) > MEMBER_SEARCH - 1.5) return;
+    found.push({ i, lag: mm.lag / RATE });
+  });
+  // Ряд сдвигов по порядку клипов делится на участки с постоянным сдвигом (динамическое программирование):
+  // каждый лишний участок стоит штраф, отклонение точки от медианы участка учитывается не больше 0,3 с. Так
+  // новый участок появляется, только если его подтверждают несколько клипов подряд (каждый сберегает до 0,3,
+  // а штраф — 1), а одиночные ложные пики остаются выбросами внутри своего участка.
+  const n = found.length;
+  const shifts = new Map<string, number>();
+  if (n < 4) return shifts;
+  const CAP = 0.3;
+  const PENALTY = 1;
+  const segCost = (j: number, k: number) => {
+    const med = median(found.slice(j, k + 1).map((f) => f.lag));
+    let c = 0;
+    for (let x = j; x <= k; x++) c += Math.min(Math.abs(found[x].lag - med), CAP);
+    return { c, med };
+  };
+  const best = new Array<number>(n + 1).fill(Infinity);
+  const from = new Array<number>(n + 1).fill(0);
+  best[0] = 0;
+  for (let k = 1; k <= n; k++) {
+    for (let j = 0; j < k; j++) {
+      const v = best[j] + segCost(j, k - 1).c + (j > 0 ? PENALTY : 0);
+      if (v < best[k]) [best[k], from[k]] = [v, j];
+    }
+  }
+  const segs: { j: number; k: number; med: number }[] = [];
+  for (let k = n; k > 0; k = from[k]) segs.unshift({ j: from[k], k: k - 1, med: segCost(from[k], k - 1).med });
+  // Граница между участками — на самой длинной паузе между их крайними клипами: там камеру и выключали.
+  const cut: number[] = [];
+  for (let s2 = 1; s2 < segs.length; s2++) {
+    const lo = found[segs[s2 - 1].k].i;
+    const hi = found[segs[s2].j].i;
+    let at = hi;
+    let gap = -1;
+    for (let i = lo + 1; i <= hi; i++) {
+      const g = multi.members[i].at - (multi.members[i - 1].at + multi.members[i - 1].clip.durationSec);
+      if (g > gap) [gap, at] = [g, i];
+    }
+    cut.push(at);
+  }
+  multi.members.forEach((m, i) => {
+    let s2 = 0;
+    while (s2 < cut.length && i >= cut[s2]) s2++;
+    const shift = segs[s2].med;
+    if (Math.abs(shift) > 0.1) shifts.set(m.clip.id, shift);
+  });
+  return shifts;
+}
+
 // Сравнение пары кусков: лучший проверенный сдвиг или null.
 function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguous: boolean } {
   const table = xcorrFeatures(a.coarse!, b.coarse!, Math.round((MIN_OVERLAP * RATE) / POOL));
@@ -410,6 +515,20 @@ function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguo
   const strong = winner.support >= 3 && (share >= 0.5 || (winner.support >= 8 && winner.support >= 2 * runnerUp));
   const short = winner.tested <= 2 && winner.support === winner.tested && (!second || second.support === 0 || winner !== best) && winner.score >= 0.25;
   if (!strong && !short) {
+    // Окна не подтвердили — проверка по клипам: у кого из кандидатов клипы сами находятся на своих местах.
+    const byMembers = tried.map((x) => ({ x, ...memberAgreement(a, b, x.d) })).sort((p, q) => q.hits - p.hits);
+    const top = byMembers[0];
+    const next = byMembers.find((m) => Math.abs(m.d - top.d) > PEAK_GUARD);
+    for (const m of byMembers) if (m.tested) log(`    по клипам ${m.x.d.toFixed(2)}: на своём месте ${m.hits} из ${m.tested}`);
+    if (top && top.hits >= 5 && top.hits >= 0.5 * top.tested && (!next || next.hits * 2 <= top.hits)) {
+      log(`    итог: ${top.d.toFixed(3)} с (по клипам)`);
+      const checks = verify(a, b, top.d);
+      const c = centered(a, b, checks, top.d);
+      return {
+        edge: { a: a.id, b: b.id, d: c.d, weight: top.hits * 0.05, support: top.hits, tested: top.tested, checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span, slips: memberSlips(a, b, top.d) },
+        ambiguous: false,
+      };
+    }
     log('    итог: уверенного совпадения нет');
     return { edge: null, ambiguous: false };
   }
@@ -799,6 +918,24 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     if (votes.length) placed.set(p.id, weightedMedian(votes));
   }
 
+  // Сбои тайм-кода внутри кусков, найденные по клипам.
+  const slipOf = new Map<string, number>();
+  for (const e of edges) for (const [id, v] of e.slips ?? []) slipOf.set(id, v);
+  for (const e of edges) {
+    if (!e.slips?.size) continue;
+    const p = pieces[pieces[e.a].members.length >= pieces[e.b].members.length ? e.a : e.b];
+    const most = Math.max(...[...e.slips.values()].map(Math.abs));
+    log(`сбои тайм-кода ${p.cameraId}#${p.id} по клипам: ${e.slips.size} клипов, до ${most.toFixed(2)} с`);
+    issues.push(issue({
+      severity: 'info',
+      cameraId: p.cameraId,
+      clipId: [...e.slips.keys()][0],
+      title: `«${nameOf(p.cameraId)}»: тайм-код сбивался после пауз — до ${most < 1 ? `${Math.round(most * 1000)} мс` : `${most.toFixed(1).replace('.', ',')} с`}`,
+      details: `${e.slips.size} ${e.slips.size === 1 ? 'клип' : 'клипов'} после сбоя поставлены по звуку: каждый клип найден отдельно, и подряд идущие клипы согласно показали сдвиг. Так бывает, когда камеру выключали — при включении она пересчитывает тайм-код по часам.`,
+      actions: [{ kind: 'show-clip', clipId: [...e.slips.keys()][0] }],
+    }));
+  }
+
   // Поправки клипов: от раскладки по часам до найденного места.
   const corrections: Record<string, number> = { ...(opts.pre ?? {}) };
   const pieceCorr = new Map<number, number>();
@@ -806,7 +943,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     if (!placed.has(p.id) || !opts.isEnabled(p.cameraId)) continue;
     const c = placed.get(p.id)! - p.prior;
     pieceCorr.set(p.id, c);
-    for (const m of p.members) corrections[m.clip.id] = placed.get(p.id)! + m.at - m.p.start;
+    for (const m of p.members) corrections[m.clip.id] = placed.get(p.id)! + m.at - m.p.start + (slipOf.get(m.clip.id) ?? 0);
   }
   // Кусок, не нашедший пары по звуку, берёт поправку соседей своей камеры: между двумя — по времени от одного
   // к другому, с одной стороны — как у ближайшего. Часы камеры ошибаются примерно одинаково весь день.
@@ -826,7 +963,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     const errors: ClockError[] = known.map((p) => ({ at: p.prior, c: pieceCorr.get(p.id)!, len: soloLength(p) }));
     const put = (p: Piece, start: number) => {
       startOf.set(p.id, start);
-      for (const m of p.members) corrections[m.clip.id] = start + m.at - m.p.start;
+      for (const m of p.members) corrections[m.clip.id] = start + m.at - m.p.start + (slipOf.get(m.clip.id) ?? 0);
       if (p.trust !== 'none' && p.trust !== 'weak') return;
       const g = guessed.get(cam.id) ?? { names: [], chained };
       g.names.push(...p.members.map((m) => m.clip.name));
