@@ -24,5 +24,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Часть тестов пишет и читает настоящие файлы (выравнивание звука, сдвиг звука в MP4) — нужен ffmpeg.
+      - name: FFmpeg
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then choco install ffmpeg -y --no-progress > /dev/null; else brew install ffmpeg > /dev/null; fi
+          ffmpeg -version | head -n 1
       - run: npm test
       - run: npm run build

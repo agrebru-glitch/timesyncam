@@ -45,7 +45,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
 
       - name: FFmpeg (LGPL, BtbN)
         shell: pwsh
@@ -59,6 +58,13 @@ jobs:
           $v = & bin/ffprobe.exe -version
           if ($v -match '--enable-gpl|--enable-nonfree') { throw 'Сборка FFmpeg не LGPL' }
           $v | Select-Object -First 1
+
+      # Тесты — после FFmpeg: часть из них пишет и читает настоящие файлы (выравнивание звука, сдвиг звука в MP4).
+      - name: Тесты
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWDin;$env:PATH"
+          npm test
 
       - run: npm run dist
 
@@ -89,7 +95,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
 
       # FFmpeg собирается из исходников (для macOS нет готовой LGPL-сборки без сторонних библиотек)
       # и кэшируется: пересборка — только при смене версии или скрипта.
@@ -118,6 +123,10 @@ jobs:
           if bin/ffprobe -version | grep -qE -- '--enable-(gpl|nonfree)'; then echo 'Сборка FFmpeg не LGPL'; exit 1; fi
           want=$([ "${{ matrix.arch }}" = arm64 ] && echo arm64 || echo x86_64)
           for f in bin/ffmpeg bin/ffprobe; do [ "$(lipo -archs "$f")" = "$want" ] || { echo "$f: не та архитектура"; exit 1; }; done
+
+      # Тесты — после FFmpeg: часть из них пишет и читает настоящие файлы.
+      - name: Тесты
+        run: PATH="$PWD/bin:$PATH" npm test
 
       # Короткая съёмка двух «камер» с тайм-кодом — для проверки готовой программы.
       - name: Тестовые клипы
