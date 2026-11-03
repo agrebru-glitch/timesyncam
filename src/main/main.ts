@@ -118,6 +118,16 @@ function createWindow(): void {
           win!.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
           await new Promise((r) => setTimeout(r, Number(process.env.SYNC_CLICK_WAIT ?? 1500)));
         }
+        // Для снимков: прокрутка колёсиком в заданной точке окна («x,y,шаг»).
+        const wh = /^(\d+),(\d+),(-?\d+)(,alt)?$/.exec(process.env.SYNC_WHEEL ?? '');
+        if (wh) {
+          const x = Number(wh[1]);
+          const y = Number(wh[2]);
+          const modifiers: ('alt')[] = wh[4] ? ['alt'] : [];
+          win!.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
+          win!.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: 0, deltaY: Number(wh[3]), modifiers });
+          await new Promise((r) => setTimeout(r, 600));
+        }
         const img = await win!.webContents.capturePage();
         await writeFile(shot, img.toPNG());
         app.quit();

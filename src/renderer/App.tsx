@@ -339,7 +339,7 @@ export function App() {
         // Масштаб таймлинии для проверки: применяется после сверки по звуку.
         const apply = () => {
           const s = stateRef.current;
-          if (!s.sync || s.audioRun) return setTimeout(apply, 300);
+          if (!s.sync || s.audioRun || s.qrRun) return setTimeout(apply, 300);
           const tzSec = s.sync.displayTzOffsetMin * 60;
           const dayStart = Math.floor((s.sync.start + tzSec) / 86400) * 86400 - tzSec;
           const a = dayStart + Number(v[1]) * 3600 + Number(v[2]) * 60 + Number(v[3]);

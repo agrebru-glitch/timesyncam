@@ -1028,7 +1028,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       cameraId: p.cameraId,
       clipId: [...e.slips.keys()][0],
       title: `«${nameOf(p.cameraId)}»: тайм-код сбивался после пауз — до ${most < 1 ? `${Math.round(most * 1000)} мс` : `${most.toFixed(1).replace('.', ',')} с`}`,
-      details: `${e.slips.size} ${e.slips.size === 1 ? 'клип' : 'клипов'} после сбоя поставлены по звуку: каждый клип найден отдельно, и подряд идущие клипы согласно показали сдвиг. Так бывает, когда камеру выключали — при включении она пересчитывает тайм-код по часам.`,
+      details: `${pluralRu(e.slips.size, 'клип', 'клипа', 'клипов')} после сбоя поставлены по звуку: каждый клип найден отдельно, и подряд идущие клипы согласно показали сдвиг. Так бывает, когда камеру выключали — при включении она пересчитывает тайм-код по часам.`,
       actions: [{ kind: 'show-clip', clipId: [...e.slips.keys()][0] }],
     }));
   }
@@ -1210,7 +1210,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         severity: 'warning',
         cameraId: cam.id,
         title: `«${cam.name}» найдена по звуку на ${formatDurationHuman(Math.abs(r.correction))} ${r.correction > 0 ? 'позже' : 'раньше'}, чем показывают её часы`,
-        details: `Часы этой камеры были сбиты${tz ? ' — похоже, на ней другой часовой пояс' : ''}. Звук совпал с другими камерами в ${confirmed} местах по всей общей записи — это не случайность. Проверьте стыковку по картинке; отключить поправку можно в карточке камеры.`,
+        details: `Часы этой камеры были сбиты${tz ? ' — похоже, на ней другой часовой пояс' : ''}. Звук совпал с другими камерами в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи — это не случайность. Проверьте стыковку по картинке; отключить поправку можно в карточке камеры.`,
         actions,
       }));
     } else if ((r.status === 'applied' || r.status === 'confirmed') && own.some((p) => p.trust === 'none')) {
@@ -1218,7 +1218,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         severity: 'info',
         cameraId: cam.id,
         title: `«${cam.name}» встала по звуку`,
-        details: `Дате на устройстве программа не верит, поэтому место найдено только по звуку: совпадение подтверждено в ${confirmed} местах по всей общей записи.`,
+        details: `Дате на устройстве программа не верит, поэтому место найдено только по звуку: совпадение подтверждено в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи.`,
         actions,
       }));
     } else if ((r.status === 'applied' || r.status === 'confirmed') && r.correction !== null && Math.abs(r.correction) > 1.5 && !own.some((p) => p.trust === 'none' || p.trust === 'anchor')) {
@@ -1228,7 +1228,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         severity: 'info',
         cameraId: cam.id,
         title: `Часы «${cam.name}» ${r.correction > 0 ? 'отстают' : 'спешат'} на ${formatDurationHuman(Math.abs(r.correction))} относительно остальных камер`,
-        details: `По звуку «${cam.name}» поставлена точно: совпадение подтверждено в ${confirmed} местах по всей общей записи. Расхождение — в часах самого устройства. Перед съёмкой выставляйте время на всех камерах и рекордерах по одним часам.`,
+        details: `По звуку «${cam.name}» поставлена точно: совпадение подтверждено в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи. Расхождение — в часах самого устройства. Перед съёмкой выставляйте время на всех камерах и рекордерах по одним часам.`,
         actions,
       }));
     } else if (r.status === 'no-match') {
