@@ -63,7 +63,7 @@ jobs:
       - name: Тесты
         shell: pwsh
         run: |
-          $env:PATH = "$PWDin;$env:PATH"
+          $env:PATH = "$PWD/bin;$env:PATH"
           npm test
 
       - run: npm run dist
