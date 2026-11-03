@@ -12,3 +12,9 @@ test('Имя дорожки — по папке, которую назвал о�
   // Карта целиком, без папки с именем — имени нет, дорожка остаётся «Камера N».
   assert.equal(folderTitle(String.raw`E:\DCIM\100MSDCF`), null);
 });
+
+test('Папки «001», «002» — имена камер от оператора, а не служебные папки карты', () => {
+  assert.equal(folderTitle(String.raw`D:\2026 10 27 Съёмка\001`), '001');
+  assert.equal(folderTitle(String.raw`D:\2026 10 27 Съёмка\002\PRIVATE\M4ROOT\CLIP`), '002');
+  assert.equal(folderTitle(String.raw`E:\Panasonic\DCIM\100_PANA`), 'Panasonic');
+});
