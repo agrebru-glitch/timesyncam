@@ -24,5 +24,35 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+
+      # Часть тестов готовит клипы и звук через ffmpeg: программа и тесты ищут его в bin, потом в PATH.
+      - name: FFmpeg для тестов (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_ASSET: ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip
+        run: |
+          gh release download latest -R BtbN/FFmpeg-Builds -p $env:FFMPEG_ASSET -D ffmpeg-dl
+          Expand-Archive ffmpeg-dl/$env:FFMPEG_ASSET -DestinationPath ffmpeg-dl/x
+          $src = Get-ChildItem ffmpeg-dl/x -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force bin | Out-Null
+          Get-ChildItem "$($src.FullName)/bin" | Where-Object Name -ne 'ffplay.exe' | Copy-Item -Destination bin
+          bin/ffmpeg.exe -version | Select-Object -First 1
+      # На Mac — сборка FFmpeg из кэша релиза (тот же ключ, что в release.yml), иначе Homebrew.
+      - name: FFmpeg для тестов (macOS, кэш релиза)
+        id: ffmpeg-cache
+        if: runner.os == 'macOS'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            bin/ffmpeg
+            bin/ffprobe
+            build/licenses/FFmpeg-LGPL-2.1.txt
+          key: ffmpeg-macos-arm64-n9.0.2-${{ hashFiles('scripts/build-ffmpeg-mac.sh') }}
+      - name: FFmpeg для тестов (macOS, Homebrew)
+        if: runner.os == 'macOS' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: brew install ffmpeg
+
       - run: npm test
       - run: npm run build

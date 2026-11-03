@@ -45,7 +45,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
 
       - name: FFmpeg (LGPL, BtbN)
         shell: pwsh
@@ -60,6 +59,8 @@ jobs:
           if ($v -match '--enable-gpl|--enable-nonfree') { throw 'Сборка FFmpeg не LGPL' }
           $v | Select-Object -First 1
 
+      # Часть тестов готовит клипы и звук через ffmpeg — после того, как он лёг в bin.
+      - run: npm test
       - run: npm run dist
 
       - uses: actions/upload-artifact@v5
@@ -89,7 +90,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
 
       # FFmpeg собирается из исходников (для macOS нет готовой LGPL-сборки без сторонних библиотек)
       # и кэшируется: пересборка — только при смене версии или скрипта.
@@ -118,6 +118,9 @@ jobs:
           if bin/ffprobe -version | grep -qE -- '--enable-(gpl|nonfree)'; then echo 'Сборка FFmpeg не LGPL'; exit 1; fi
           want=$([ "${{ matrix.arch }}" = arm64 ] && echo arm64 || echo x86_64)
           for f in bin/ffmpeg bin/ffprobe; do [ "$(lipo -archs "$f")" = "$want" ] || { echo "$f: не та архитектура"; exit 1; }; done
+
+      # Часть тестов готовит клипы и звук через ffmpeg — после того, как он лёг в bin.
+      - run: npm test
 
       # Короткая съёмка двух «камер» с тайм-кодом — для проверки готовой программы.
       - name: Тестовые клипы
