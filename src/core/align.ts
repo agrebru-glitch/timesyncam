@@ -465,11 +465,44 @@ function memberSlips(a: Piece, b: Piece, d: number): Map<string, number> {
     }
     cut.push(at);
   }
-  multi.members.forEach((m, i) => {
+  const assigned = multi.members.map((_, i) => {
     let s2 = 0;
     while (s2 < cut.length && i >= cut[s2]) s2++;
-    const shift = segs[s2].med;
-    if (Math.abs(shift) > 0.1) shifts.set(m.clip.id, shift);
+    return segs[s2].med;
+  });
+  // Клипы между двумя долгими паузами (камеру выключали — тайм-код между ними непрерывен) ищутся вместе одним
+  // длинным окном: так совпадение сильнее, чем у каждого клипа в отдельности. Если весь такой участок ясно стоит
+  // в другом месте, чем ему досталось по разбиению, — он переносится. На матче: последние клипы после паузы 83 с,
+  // где трансляция почти кончилась и поодиночке клипы совпадали слабо, — 2 с мимо.
+  const LONG_PAUSE = 60;
+  let runStart = 0;
+  for (let i = 1; i <= multi.members.length; i++) {
+    const m = multi.members[i];
+    const prev = multi.members[i - 1];
+    if (i < multi.members.length && m.at - (prev.at + prev.clip.durationSec) <= LONG_PAUSE) continue;
+    const first = multi.members[runStart];
+    const last = prev;
+    const from = first.at;
+    const pos = toOther(from);
+    const L = Math.min(last.at + last.clip.durationSec - from, other.length - pos - MEMBER_SEARCH);
+    if (L >= 30 && pos - MEMBER_SEARCH >= 0) {
+      const t = slice(multi.feat!, Math.round(from * RATE), Math.round(L * RATE));
+      const r = slice(other.feat!, Math.round((pos - MEMBER_SEARCH) * RATE), Math.round((L + 2 * MEMBER_SEARCH) * RATE));
+      const mm = active(t) && active(r) ? correlate(t, r, MEMBER_SEARCH * RATE, MEMBER_SEARCH * RATE) : null;
+      const here = assigned[runStart];
+      const joint = mm ? mm.lag / RATE : NaN;
+      // Свои клипы участка: если ни один не подтверждает доставшийся сдвиг, а совместный поиск согласен с ними,
+      // хватает и слабого совпадения — оно подтверждено дважды (на матче: клип +0,09 с, участок целиком +0,19 с).
+      const own = found.filter((f) => f.i >= runStart && f.i < i).map((f) => f.lag);
+      const ownSays = own.length > 0 && own.every((v) => Math.abs(v - here) > 1) && Math.abs(joint - median(own)) <= 0.3;
+      if (mm && Math.abs(joint - here) > 0.5 && ((mm.score >= 0.04 && mm.ratio >= 1.3) || (ownSays && mm.score >= 0.02 && mm.ratio >= 1.25))) {
+        for (let k = runStart; k < i; k++) assigned[k] = joint;
+      }
+    }
+    runStart = i;
+  }
+  multi.members.forEach((m, i) => {
+    if (Math.abs(assigned[i]) > 0.1) shifts.set(m.clip.id, assigned[i]);
   });
   return shifts;
 }
