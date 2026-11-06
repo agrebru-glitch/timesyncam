@@ -40,7 +40,7 @@ const api = {
     return () => ipcRenderer.removeListener('report:progress', listener);
   },
   reveal: (path: string) => ipcRenderer.invoke('shell:reveal', path),
-  openLink: (name: 'support' | 'github' | 'release') => ipcRenderer.invoke('shell:open-link', name),
+  openLink: (name: 'support' | 'github' | 'release' | 'telegram') => ipcRenderer.invoke('shell:open-link', name),
   tools: (): Promise<{ ffprobe: boolean; ffmpeg: boolean }> => ipcRenderer.invoke('app:tools'),
   checkUpdate: (): Promise<{ version: string } | null> => ipcRenderer.invoke('app:update'),
   pathForFile: (file: File): string => webUtils.getPathForFile(file),

@@ -99,3 +99,14 @@ export function resolutionLabel(w: number | null, h: number | null): string | nu
   if (h >= 720) return 'HD';
   return `${w}×${h}`;
 }
+
+// Деления линейки таймлинии: minor — пятая часть шага, каждое пятое деление крупное. Считается по целому номеру деления:
+// сложение дробного шага к секундам эпохи копит ошибку округления, и при сильном приближении крупные деления переставали
+// узнаваться — справа пропадали подписи и сетка.
+export function rulerTicks(from: number, to: number, step: number, tzMin: number): { t: number; major: boolean }[] {
+  const minor = step / 5;
+  const tz = tzMin * 60;
+  const out: { t: number; major: boolean }[] = [];
+  for (let k = Math.floor((from + tz) / minor); k * minor - tz <= to; k++) out.push({ t: k * minor - tz, major: k % 5 === 0 });
+  return out;
+}

@@ -56,6 +56,11 @@ button, input, select { font: inherit; color: inherit; }
 .tab.tab-support { display: inline-flex; align-items: center; gap: 6px; color: #ff8fa3; }
 .tab.tab-support:hover { background: rgba(140, 40, 60, 0.4); color: #ffb3c1; }
 .tab.tab-support .icon { width: 15px; height: 15px; }
+.tab.tab-telegram { display: inline-flex; align-items: center; gap: 6px; color: #7cc4f0; }
+.tab.tab-telegram:hover { background: rgba(40, 110, 160, 0.4); color: #a9dcfb; }
+.tab.tab-telegram .icon { width: 15px; height: 15px; }
+.link.link-icon { display: inline-flex; align-items: center; gap: 4px; vertical-align: bottom; }
+.link.link-icon .icon { width: 14px; height: 14px; color: #7cc4f0; }
 .tabs { display: flex; gap: 2px; background: var(--bg); padding: 3px; border-radius: 9px; }
 .tab {
   border: 0; background: transparent; padding: 5px 14px; border-radius: 6px; cursor: pointer; color: var(--text-2);

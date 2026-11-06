@@ -134,6 +134,39 @@ export function timeOfDayFromFilename(name: string): number | null {
   return mi > 59 || s > 59 ? null : h * 3600 + mi * 60 + s;
 }
 
+// Дата, минута начала и номер записи в имени: 20260612_1918_0353_32Float_ABCD.wav (так называет файлы Rode Wireless).
+// Номер обязателен: 20260612_0001.mp4 — это дата и счётчик, а не время.
+export function recordingFromName(name: string): { epochSec: number; seq: number; source: string } | null {
+  const m = /^(20\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})_(\d{3,})(?:_(.*))?\.[^.]+$/.exec(name);
+  if (!m) return null;
+  const [y, mo, d, h, mi] = m.slice(1, 6).map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return null;
+  return { epochSec: localEpoch(y, mo, d, h, mi, 0, 0), seq: Number(m[6]), source: m[7] ?? '' };
+}
+
+// Время только до минуты (из имени файла) — места по нему не определить, как и по дате файла.
+export const roughClock = (clock: { source: string; precisionSec: number } | null | undefined): boolean =>
+  !!clock && (clock.source === 'file' || (clock.source === 'filename' && clock.precisionSec >= 60));
+
+// Дата файла — время записи, если начало по ней попадает в минуту из имени (пояс имени неизвестен — по модулю 15 минут,
+// и не дальше суток). Иначе это время копирования, а верное время — в имени.
+export function nameCorrectsDate(name: string, dateStart: number): number | null {
+  const rec = recordingFromName(name);
+  if (!rec) return null;
+  const off = dateStart - rec.epochSec;
+  const r = ((off % 900) + 900) % 900;
+  return Math.abs(off) <= 86400 && (r <= 63 || r >= 897) ? null : rec.epochSec;
+}
+
+// Следующий файл той же записи: то же устройство, следующий номер, начало — там, где кончился предыдущий (с точностью до минуты в имени).
+// Только когда время взято из имени: верная дата файла видит и настоящую паузу в секунду-две между записями.
+export function continuesByName(a: { name: string; recordedSec: number; clock?: ClipClock | null }, b: { name: string; clock?: ClipClock | null }): boolean {
+  if (a.clock?.source !== 'filename' || b.clock?.source !== 'filename' || a.clock.precisionSec < 60 || b.clock.precisionSec < 60) return false;
+  const ra = recordingFromName(a.name);
+  const rb = recordingFromName(b.name);
+  return !!ra && !!rb && ra.source === rb.source && rb.seq === ra.seq + 1 && Math.abs(rb.epochSec - ra.epochSec - a.recordedSec) <= 61;
+}
+
 // Время в имени файла — начало записи. Время создания в файле согласно с ним, если оно тоже начало, и отстоит
 // на длину записи, если это конец. Пояс имени неизвестен, поэтому сравнение — по модулю 15 минут. Конец — только
 // с запасом: иначе, как и раньше, начало.
@@ -318,6 +351,8 @@ export function buildClipMeta(input: ClipInput): ClipMeta {
     let start = localEpoch(end.getFullYear(), end.getMonth() + 1, end.getDate(), 0, 0, 0) + tod;
     if (start > input.mtimeMs / 1000 + 3600) start -= 86400;
     clock = { epochSec: start, precisionSec: 1, tzOffsetMin: null, source: 'filename', note: 'Время начала взято из имени файла, день — из даты файла' };
+  } else if (input.mtimeMs > 0 && nameCorrectsDate(input.name, input.mtimeMs / 1000 - recordedSec) !== null) {
+    clock = { epochSec: nameCorrectsDate(input.name, input.mtimeMs / 1000 - recordedSec)!, precisionSec: 60, tzOffsetMin: null, source: 'filename', note: 'Дата файла не совпала с именем — время взято из имени файла, с точностью до минуты' };
   } else if (input.mtimeMs > 0) {
     // Дата изменения файла обычно совпадает с концом записи, но меняется при неаккуратном копировании.
     clock = { epochSec: input.mtimeMs / 1000 - recordedSec, precisionSec: 3, tzOffsetMin: null, source: 'file', note: 'Время взято из даты файла — проверьте, что файлы копировались без изменений' };

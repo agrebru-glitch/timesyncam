@@ -23,7 +23,6 @@ const cameras: Camera[] = r.cameras.map((c: any) => ({
   timecodeTrust: c.timecodeTrust,
   excludedClipIds: c.excludedClipIds,
   audioAssist: c.audioAssist,
-  follower: c.follower,
   scanning: null,
   clips: c.clips.map((k: any): ClipMeta => {
     const audio = join(dir, safe(c.name), `${k.file}.opus`);
@@ -37,7 +36,7 @@ const audio = await alignByAudio(cameras, coarse, {
   features: (c, s, d) => audioFeatures(c.path, s, d, reportTiming(c)),
   samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch, reportTiming(c)),
   whole: (c) => audioWholeFeatures(c.path, c.durationSec, reportTiming(c)),
-}, { searchSec: 30, maxAnchors: 8, isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true, followers: new Set(cameras.filter((c) => c.follower).map((c) => c.id)) });
+}, { searchSec: 30, maxAnchors: 8, isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true });
 const now = runSync(cameras, audio.corrections, heardCameras(audio));
 
 for (const line of audio.log ?? []) console.log(line);

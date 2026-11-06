@@ -60,7 +60,7 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1480,
     height: 920,
-    minWidth: 1100,
+    minWidth: 1140,
     minHeight: 700,
     backgroundColor: '#17181b',
     autoHideMenuBar: true,
@@ -330,6 +330,7 @@ const LINKS: Record<string, string> = {
   support: 'https://pay.cloudtips.ru/p/17376eab',
   github: 'https://github.com/agrebru-glitch/timesyncam',
   release: 'https://github.com/agrebru-glitch/timesyncam/releases/latest',
+  telegram: 'https://t.me/timesyncam',
 };
 ipcMain.handle('shell:open-link', (_e, name: string) => {
   const url = LINKS[name];

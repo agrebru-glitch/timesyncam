@@ -16,7 +16,6 @@ export function buildReport(state: State, issues: Issue[]): string {
       id: c.id,
       name: c.name,
       folders: c.folders.map(base),
-      follower: !!c.follower,
       audioAssist: c.audioAssist,
       manualShiftSec: c.manualShiftSec,
       timecodeTrust: c.timecodeTrust,

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agreeingClocks, alignByAudio } from '../src/core/align.ts';
+import { agreeingClocks, alignByAudio, chanceOfWindows } from '../src/core/align.ts';
 import { runSync } from '../src/core/sync.ts';
 import type { Camera, ClipMeta } from '../src/core/types.ts';
 import { camera, clip, T16 } from './fixtures.ts';
@@ -88,23 +88,6 @@ test('Камера с тишиной в звуке: прямое предупр�
   assert.equal(result.cameras[1].status, 'silent');
   assert.equal(result.corrections[b.id] ?? 0, 0);
   assert.ok(result.issues.some((i) => i.cameraId === 'B' && /тишина/.test(i.title)));
-});
-
-test('Ведомая: встаёт по остальным, но ни одна камера по ней не сверяется', async () => {
-  const truth = new Map<string, number>();
-  const mk = (realStart: number, dur: number, clockError: number, extra: Partial<ClipMeta> = {}) => {
-    const c = clip({ start: Math.floor(realStart + clockError), durationSec: dur, recordedSec: dur, ...extra });
-    truth.set(c.id, realStart);
-    return c;
-  };
-  const a = camera('A', [mk(T16 + 10, 120, 0.3), mk(T16 + 400, 120, 0.3)]);
-  const b = camera('B', [mk(T16 + 40, 120, -1.7), mk(T16 + 430, 120, -1.7)]);
-  const rec = camera('Рекордер', [mk(T16, 700, 1.2, { hasVideo: false, rate: null, width: null, height: null })], { follower: true });
-  const cams = [a, b, rec];
-  const result = await alignByAudio(cams, runSync(cams), fakeAudio(truth), { ...opts, followers: new Set(['Рекордер']) });
-  for (const [id, e] of errors(cams, result.corrections, truth)) assert.ok(Math.abs(e) < 0.002, `${id}: ${(e * 1000).toFixed(2)} мс`);
-  const used = result.cameras.flatMap((c) => c.anchors.filter((x) => x.role === 'confirm'));
-  assert.ok(used.filter((x) => x.cameraId !== 'Рекордер').every((x) => x.refCameraId !== 'Рекордер' || x.cameraId === 'Рекордер'));
 });
 
 // Музыка: фраза из 40 звуков на 30 секунд. plan — порядок частей пьесы: A — повторяющаяся фраза, остальные
@@ -475,4 +458,111 @@ test('Без общего звука клипы не «находятся» сл
   const { cams, audio } = weakScene(0);
   const result = await alignByAudio(cams, runSync(cams), audio, opts);
   assert.ok(!(result.log ?? []).some((l) => /итог: -?\d/.test(l)), (result.log ?? []).filter((l) => /итог/.test(l)).join(' | '));
+});
+
+// Петличка у человека на сцене: зал она слышит лишь местами, остальное — свой голос. Камера с петличкой совпадает в семи окнах
+// из сорока, у всех соперников — ни в одном.
+function sparseScene(heard: number) {
+  const burstsFrom = (seed: number, gap: [number, number], amp: [number, number]): Burst[] => {
+    const r = rng(seed);
+    const out: Burst[] = [];
+    for (let t = T16 - 200; t < T16 + 1700; t += gap[0] + r() * (gap[1] - gap[0])) {
+      out.push({ t, amp: amp[0] + r() * (amp[1] - amp[0]), freqs: Array.from({ length: 6 }, () => 300 + r() * 5500), phases: Array.from({ length: 6 }, () => r() * 6.28) });
+    }
+    return out;
+  };
+  const hall = burstsFrom(41, [0.4, 2.4], [0.3, 0.9]);
+  const voice = burstsFrom(43, [0.12, 0.5], [0.6, 1.2]);
+  const stretches = Array.from({ length: heard }, (_, i) => T16 + 60 + ((i + 0.5) / heard) * 1200);
+  const audible = hall.filter((b) => stretches.some((s) => b.t >= s && b.t < s + 45));
+  const cam = clip({ start: T16, durationSec: 1300, recordedSec: 1300 });
+  const mic = clip({ start: T16 + 20 + 95, durationSec: 1300, recordedSec: 1300, hasVideo: false, rate: null, width: 0, height: 0 });
+  const truth = new Map([[cam.id, T16], [mic.id, T16 + 20]]);
+  const gen = (c: ClipMeta, start: number, dur: number, sr: number) => {
+    const len = Math.min(dur, c.durationSec - start);
+    const from = truth.get(c.id)! + start;
+    if (c === cam) return record(from, len, sr, 0.8, 3 + Math.round(start), { bursts: hall });
+    const a = record(from, len, sr, 0.5, 11, { bursts: audible, noise: 0 });
+    const b = record(from, len, sr, 0.9, 13 + Math.round(start), { bursts: voice });
+    return a.map((v, i) => v + b[i]);
+  };
+  const audio: AudioFetch = {
+    features: async (c, start, dur) => {
+      const s = gen(c, start, dur, FEAT_SR);
+      const picked = pickChannel([s, s], FEAT_SR, peakDb, SILENCE_DB);
+      return { feat: picked.feat, peakDb: picked.peakDb, channel: picked.channel };
+    },
+    samples: async (c, start, dur) => gen(c, start, dur, FINE_SR),
+  };
+  return { cams: [camera('Камера', [cam]), camera('Петличка', [mic])], truth, audio, cam, mic };
+}
+
+test('Совпадение по вероятности: сколько окон случайно не наберётся', () => {
+  const zero = Array.from({ length: 5 }, () => ({ support: 0, tested: 40 }));
+  // Семь окон из сорока при нуле у соперников (петличка в концерте) — не случайность, три — ещё может быть.
+  assert.ok(chanceOfWindows({ support: 7, tested: 40 }, zero) < 1e-7);
+  assert.ok(chanceOfWindows({ support: 5, tested: 40 }, zero) < 1e-5);
+  assert.ok(chanceOfWindows({ support: 3, tested: 40 }, zero) > 1e-3);
+  // У соперников окна тоже совпадают (музыка повторяется) — семи окон мало.
+  assert.ok(chanceOfWindows({ support: 7, tested: 40 }, [{ support: 6, tested: 40 }, { support: 4, tested: 40 }, ...zero.slice(2)]) > 1e-5);
+  // У соперников почти нет окон — о случайности судить не по чему.
+  assert.ok(chanceOfWindows({ support: 7, tested: 40 }, [{ support: 0, tested: 6 }, { support: 0, tested: 4 }]) > 1e-5);
+});
+
+test('Запись без общего звука с камерой по вероятности не принимается', async () => {
+  const { cams, audio } = sparseScene(0);
+  const result = await alignByAudio(cams, runSync(cams), audio, opts);
+  assert.ok(!(result.log ?? []).some((l) => /итог: -?\d/.test(l)), (result.log ?? []).filter((l) => /итог/.test(l)).join(' | '));
+});
+
+// Устройство с двумя записями: первая слышит зал хорошо, вторая — едва. Часы у обеих одни, ошибка на 40 с.
+function secondPassScene(gain: number) {
+  const bursts = (seed: number, gap: [number, number], amp: [number, number]): Burst[] => {
+    const r = rng(seed);
+    const out: Burst[] = [];
+    for (let t = T16 - 200; t < T16 + 2500; t += gap[0] + r() * (gap[1] - gap[0])) {
+      out.push({ t, amp: amp[0] + r() * (amp[1] - amp[0]), freqs: Array.from({ length: 6 }, () => 300 + r() * 5500), phases: Array.from({ length: 6 }, () => r() * 6.28) });
+    }
+    return out;
+  };
+  const hall = bursts(51, [0.4, 2.4], [0.3, 0.9]);
+  const voice = bursts(53, [0.12, 0.5], [0.6, 1.2]);
+  const cam = clip({ start: T16, durationSec: 2200, recordedSec: 2200 });
+  const audioClip = (at: number, dur: number) => clip({ start: Math.floor(at + 40), durationSec: dur, recordedSec: dur, hasVideo: false, rate: null, width: 0, height: 0 });
+  const m1 = audioClip(T16 + 30, 900);
+  const m2 = audioClip(T16 + 1100, 900);
+  const truth = new Map([[cam.id, T16], [m1.id, T16 + 30], [m2.id, T16 + 1100]]);
+  const gen = (c: ClipMeta, start: number, dur: number, sr: number) => {
+    const len = Math.min(dur, c.durationSec - start);
+    const from = truth.get(c.id)! + start;
+    if (c === cam) return record(from, len, sr, 0.8, 3 + Math.round(start), { bursts: hall });
+    if (c === m1) return record(from, len, sr, 0.8, 5 + Math.round(start), { bursts: hall });
+    const a = gain ? record(from, len, sr, gain, 11, { bursts: hall, noise: 0 }) : new Float32Array(Math.round(len * sr));
+    const b = record(from, len, sr, 0.9, 13 + Math.round(start), { bursts: voice });
+    return a.map((v: number, i: number) => v + b[i]);
+  };
+  const audio: AudioFetch = {
+    features: async (c, start, dur) => {
+      const s = gen(c, start, dur, FEAT_SR);
+      const picked = pickChannel([s, s], FEAT_SR, peakDb, SILENCE_DB);
+      return { feat: picked.feat, peakDb: picked.peakDb, channel: picked.channel };
+    },
+    samples: async (c, start, dur) => gen(c, start, dur, FINE_SR),
+  };
+  return { cams: [camera('Камера', [cam]), camera('Петличка', [m1, m2])], truth, audio, m2 };
+}
+
+test('Второй проход: слабая запись устройства находится в узком поле и встаёт точно', async () => {
+  const { cams, truth, audio, m2 } = secondPassScene(0.12);
+  const result = await alignByAudio(cams, runSync(cams), audio, opts);
+  const log = (result.log ?? []).filter((l) => /второй проход|кусок встал/.test(l)).join(' | ');
+  assert.match(log, /кусок встал/, log);
+  const errs = errors(cams, result.corrections, truth);
+  assert.ok(Math.abs(errs.get(m2.id)!) < 0.05, `${(errs.get(m2.id)! * 1000).toFixed(0)} мс; ${log}`);
+});
+
+test('Второй проход: без общего звука запись не «находится»', async () => {
+  const { cams, audio } = secondPassScene(0);
+  const result = await alignByAudio(cams, runSync(cams), audio, opts);
+  assert.ok(!(result.log ?? []).some((l) => /кусок встал/.test(l)), (result.log ?? []).filter((l) => /второй проход/.test(l)).join(' | '));
 });

@@ -10,7 +10,8 @@ test('ссылки на скачивание в README — на текущую �
   const version = full;
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const links = [...readme.matchAll(/releases\/download\/(v[^/]+)\/([^")\s]+)/g)];
-  assert.ok(links.length >= 4, 'в README нет ссылок на файлы релиза');
+  // Кнопка macOS до сборки на Mac ведёт на страницу прошлого релиза (docs/release-mac.md) — поэтому файлов может быть три.
+  assert.ok(links.length >= 3, 'в README нет ссылок на файлы релиза');
   for (const [, tag, file] of links) {
     assert.equal(tag, `v${version}`, `ссылка на ${file} ведёт в релиз ${tag}`);
     assert.ok(file.includes(version), `${file}: в имени не версия ${version}`);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Camera, Placement } from '../../core/types.ts';
-import { formatClockTime, formatDate, pluralRu } from '../../core/format.ts';
+import { formatClockTime, formatDate, pluralRu, rulerTicks } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
 import { IconCamera, IconHeadphones, IconPlus } from '../icons.tsx';
@@ -72,7 +72,6 @@ export function Timeline() {
   });
   const waveVersion = useWaveformVersion();
   const [menu, setMenu] = useState<{ x: number; y: number; clipId: string; cameraId: string; localSec: number } | null>(null);
-  const [trackMenu, setTrackMenu] = useState<{ x: number; y: number; cameraId: string } | null>(null);
   const tz = state.sync?.displayTzOffsetMin ?? -new Date().getTimezoneOffset();
 
   const lanesByCam = useMemo(() => {
@@ -209,11 +208,9 @@ export function Timeline() {
     const ticks = (t1 - t0) / minor;
     g.font = '11px "Cascadia Mono", ui-monospace, Menlo, Consolas, monospace';
     g.textBaseline = 'middle';
-    const wallStart = Math.floor((t0 + rulerTz * 60) / minor) * minor - rulerTz * 60;
-    for (let t = wallStart; t <= t1 && ticks < size.w * 2; t += minor) {
+    for (const { t, major: isMajor } of ticks < size.w * 2 ? rulerTicks(t0, t1, step, rulerTz) : []) {
       if (!synced && t < -1e-6) continue;
       const xx = Math.round(x(t)) + 0.5;
-      const isMajor = Math.abs(((t + rulerTz * 60) / step) - Math.round((t + rulerTz * 60) / step)) < 1e-6;
       g.fillStyle = isMajor ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.12)';
       g.fillRect(xx, isMajor ? 14 : 22, 1, isMajor ? RULER_H - 14 : RULER_H - 22);
       if (isMajor) {
@@ -477,10 +474,9 @@ export function Timeline() {
   };
 
   useEffect(() => {
-    if (!menu && !trackMenu) return;
+    if (!menu) return;
     const close = () => {
       setMenu(null);
-      setTrackMenu(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close();
@@ -493,18 +489,7 @@ export function Timeline() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('blur', close);
     };
-  }, [menu, trackMenu]);
-
-  const setFollower = (cameraId: string, on: boolean) => {
-    const name = state.cameras.find((c) => c.id === cameraId)?.name ?? 'Камера';
-    dispatch({ type: 'set-follower', cameraId, on });
-    dispatch({
-      type: 'toast',
-      text: on
-        ? `«${name}» теперь ведомая: сверяется по другим камерам с допуском и их не сдвигает. Нажмите «Синхронизировать».`
-        : `«${name}» снова ведущая: по её звуку сверяются и другие камеры. Нажмите «Синхронизировать».`,
-    });
-  };
+  }, [menu]);
 
   // Delete — удалить выделенный клип с таймлинии. На клавиатуре Mac эта клавиша приходит как Backspace.
   useEffect(() => {
@@ -637,12 +622,6 @@ export function Timeline() {
             className={`tl-head ${dropRow === r.index ? 'drop' : ''}`}
             style={{ height: r.h }}
             onClick={() => dispatch({ type: 'view-mode', mode: state.viewMode, cameraId: r.cam.id })}
-            onContextMenu={(e) => {
-              // Меню дорожки: ведомая или ведущая. Меню стоит у курсора и не выходит за окно.
-              e.preventDefault();
-              setMenu(null);
-              setTrackMenu({ x: Math.min(e.clientX, window.innerWidth - 300), y: Math.min(e.clientY, window.innerHeight - 140), cameraId: r.cam.id });
-            }}
             onDragOver={(e) => { e.stopPropagation(); onDragOver(e, r.index); }}
             onDragLeave={() => setDropRow(null)}
             onDrop={(e) => onDrop(e, r.index)}
@@ -657,7 +636,7 @@ export function Timeline() {
               {r.cam.scanning
                 ? `Читаю ${r.cam.scanning.done} из ${r.cam.scanning.total || '…'}`
                 : r.cam.clips.length
-                  ? `${trackInfo(r.cam)}${r.cam.follower ? ' · ведомая' : ''}`
+                  ? trackInfo(r.cam)
                   : 'Перетащите папку или файлы'}
             </span>
           </div>
@@ -695,26 +674,6 @@ export function Timeline() {
           const top = r ? r.y : tracksBottom;
           const height = r ? r.h : Math.max(44, size.h - tracksBottom);
           return <div className={`tl-drop ${r ? '' : 'new'}`} style={{ top, height }}>{r ? '' : 'Новая дорожка'}</div>;
-        })()}
-        {trackMenu && (() => {
-          const cam = state.cameras.find((c) => c.id === trackMenu.cameraId);
-          if (!cam) return null;
-          return (
-            <div className="ctx-menu" style={{ position: 'fixed', left: trackMenu.x, top: trackMenu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
-              <div className="ctx-title">{cam.name}</div>
-              {cam.follower ? (
-                <button role="menuitem" className="ctx-item" onClick={() => { setFollower(cam.id, false); setTrackMenu(null); }}>
-                  Сделать дорожку ведущей
-                  <span className="ctx-hint">по её звуку снова сверяются другие камеры</span>
-                </button>
-              ) : (
-                <button role="menuitem" className="ctx-item" onClick={() => { setFollower(cam.id, true); setTrackMenu(null); }}>
-                  Сделать дорожку ведомой
-                  <span className="ctx-hint">встанет по другим камерам с допуском и не сдвинет их</span>
-                </button>
-              )}
-            </div>
-          );
         })()}
         {menu && (() => {
           const clip = state.cameras.find((c) => c.id === menu.cameraId)?.clips.find((c) => c.id === menu.clipId);

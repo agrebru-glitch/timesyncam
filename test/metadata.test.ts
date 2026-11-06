@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSonyXml, decodeSonyLtc, parseFps } from '../src/core/sonyXml.ts';
-import { buildClipMeta, timeFromFilename, timeOfDayFromFilename } from '../src/core/clipMeta.ts';
+import { buildClipMeta, continuesByName, nameCorrectsDate, recordingFromName, timeFromFilename, timeOfDayFromFilename } from '../src/core/clipMeta.ts';
 import type { FfprobeResult } from '../src/core/clipMeta.ts';
 import { SONY_XML_25P, SONY_XML_50P, SONY_XML_SQ } from './fixtures.ts';
 
@@ -199,4 +199,33 @@ test('время в именах телефонов', () => {
   assert.equal(timeOfDayFromFilename('C9151.MP4'), null);
   assert.equal(timeOfDayFromFilename('ZOOM0001.WAV'), null);
   assert.equal(timeOfDayFromFilename('25-61-00.wav'), null);
+});
+
+test('Имя записи Rode: дата, минута и номер; дата файла остаётся, если она не противоречит имени', () => {
+  const start = new Date(2026, 5, 12, 19, 18).getTime() / 1000;
+  const rec = recordingFromName('20260612_1918_0353_32Float_ABCD.wav');
+  assert.deepEqual(rec, { epochSec: start, seq: 353, source: '32Float_ABCD' });
+  assert.equal(recordingFromName('20260612_1805_0309_IJKL.wav')?.source, 'IJKL');
+  // Дата и счётчик — не время; секунды разбирает другой шаблон.
+  assert.equal(recordingFromName('20260612_0001.mp4'), null);
+  assert.equal(recordingFromName('20260612_160301.mp4'), null);
+  assert.equal(recordingFromName('C9151.MP4'), null);
+  // Дата файла точнее минуты в имени, пока она с ним согласна; другой пояс — тоже согласие.
+  assert.equal(nameCorrectsDate('20260612_1918_0353_32Float_ABCD.wav', start + 41), null);
+  assert.equal(nameCorrectsDate('20260612_1918_0353_32Float_ABCD.wav', start + 3 * 3600 + 41), null);
+  // Дата копирования — через пять дней: верить имени.
+  assert.equal(nameCorrectsDate('20260612_1918_0353_32Float_ABCD.wav', start + 5 * 86400 + 200), start);
+  assert.equal(nameCorrectsDate('C9151.MP4', start), null);
+});
+
+test('Время из имени: файлы встык — по номеру и длине, разные устройства и даты файлов — нет', () => {
+  const byName = { source: 'filename' as const, precisionSec: 60, epochSec: 0, tzOffsetMin: null };
+  const a = { name: '20260612_1848_0352_32Float_ABCD.wav', recordedSec: 1800.15, clock: byName };
+  assert.ok(continuesByName(a, { name: '20260612_1918_0353_32Float_ABCD.wav', clock: byName }));
+  assert.ok(!continuesByName(a, { name: '20260612_1918_0355_32Float_ABCD.wav', clock: byName }));
+  assert.ok(!continuesByName(a, { name: '20260612_1918_0353_32Float_EFGH.wav', clock: byName }));
+  assert.ok(!continuesByName(a, { name: '20260612_2023_0353_32Float_ABCD.wav', clock: byName }));
+  // Верная дата файла видит настоящую паузу между записями — склейка по имени не нужна.
+  const byDate = { source: 'file' as const, precisionSec: 3, epochSec: 0, tzOffsetMin: null };
+  assert.ok(!continuesByName({ ...a, clock: byDate }, { name: '20260612_1918_0353_32Float_ABCD.wav', clock: byDate }));
 });

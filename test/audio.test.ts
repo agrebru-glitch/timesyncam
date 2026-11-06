@@ -247,31 +247,6 @@ test('Рекордеру хватает одного видеофайла с х�
   assert.ok(!result.issues.some((i) => i.severity !== 'info'), result.issues.map((i) => i.title).join('; '));
 });
 
-test('Ведомая камера: сверяется по остальным, но опорой не становится и других не двигает', async () => {
-  const truth = new Map<string, number>();
-  const mk = (realStart: number, dur: number, clockError: number, opts: Partial<ClipMeta> = {}) => {
-    const c = clip({ start: Math.floor(realStart + clockError), durationSec: dur, recordedSec: dur, ...opts });
-    truth.set(c.id, realStart);
-    return c;
-  };
-  // Без тайм-кода у всех; больше всего общего звука у рекордера, но он ведомый.
-  const a = camera('A', [mk(T16 + 10, 120, 0.3), mk(T16 + 400, 120, 0.3)]);
-  const b = camera('B', [mk(T16 + 40, 120, -1.7), mk(T16 + 430, 120, -1.7)]);
-  const rec = camera('Рекордер', [mk(T16, 700, 1.2, { hasVideo: false, rate: null, width: 0, height: 0 })], { follower: true });
-  const cams = [a, b, rec];
-  const coarse = runSync(cams);
-  const result = await refineByAudio(cams, coarse, fakeAudio(truth), { searchSec: 10, maxAnchors: 6, isEnabled: () => true, followers: new Set(['Рекордер']) });
-  const byId = new Map(result.cameras.map((c) => [c.cameraId, c]));
-  assert.notEqual(byId.get('Рекордер')!.status, 'reference');
-  // Ни одна камера не сверялась по ведомой.
-  assert.ok(result.cameras.filter((c) => c.cameraId !== 'Рекордер').every((c) => c.anchors.every((x) => x.refCameraId !== 'Рекордер')));
-  // А сама ведомая встала по остальным.
-  const final = runSync(cams, result.corrections);
-  const off = (camId: string) => final.placements.filter((p) => p.cameraId === camId).map((p) => p.start - truth.get(p.clipId)!);
-  const refOff = off(byId.get('A')!.status === 'reference' ? 'A' : 'B')[0];
-  for (const camId of ['A', 'B', 'Рекордер']) for (const e of off(camId)) assert.ok(Math.abs(e - refOff) < 0.002, `${camId}: ${e - refOff}`);
-});
-
 test('Широкий поиск: случайное слабое совпадение не перебивает сильное', () => {
   // Конец записи уверенно совпал с камерой, середина — случайно и слабо с другим клипом (как MP3 рекордера на демо).
   assert.deepEqual(pickWideShift([{ shift: -12000000, score: 0.87, ratio: 3.01 }, { shift: -11999170, score: 0.4, ratio: 2.36 }]), { shift: -12000000, probes: 1 });

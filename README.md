@@ -10,15 +10,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TimesynCam-Setup-0.4.0.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.1/TimesynCam-Setup-0.4.1.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TimesynCam-0.4.0-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.4.0"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TCoder-0.4.0.apk">TCoder — экран синхронизации на Android</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.1/TCoder-0.4.1.apk">TCoder — экран синхронизации на Android</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.3.6">Mac с процессором Intel (0.3.6)</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TimesynCam-0.4.0-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.1/TimesynCam-0.4.1-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 
@@ -47,7 +47,7 @@ TimesynCam делает эту работу за вас. Перетащите п
 - **Точность до кадра там, где это возможно.** Если тайм-код камеры идёт непрерывно (Free Run), паузы между клипами точны до кадра, даже когда сам тайм-код не совпадает с реальным временем.
 - **Сверка по звуку.** После раскладки по тайм-коду программа сверяет камеры по общему звуку: точки зацепки по ходу съёмки поправляют клипы, а камеры со сбитыми часами или чужим часовым поясом находятся по звуку во всей записи. Режим выбирается по кнопке «Синхронизировать».
 - **Контрольный кадр.** Экран синхронизации в программе показывает QR-код с точным временем, который меняется каждую секунду. Снимите его каждой камерой 5–10 секунд — до или после съёмки, не важно — и камеры встанут по нему с точностью до четверти кадра, даже без общего звука.
-- **Рекордер и ведомая дорожка.** Длинная запись рекордера сверяется в нескольких местах, штатный ход его часов учитывается как допуск, а не как ошибка. Правая кнопка по дорожке → «Сделать дорожку ведомой»: она встанет по остальным камерам и никого не сдвинет.
+- **Рекордер.** Длинная запись рекордера сверяется в нескольких местах, штатный ход его часов учитывается как допуск, а не как ошибка.
 - **Волна звука на клипах.** Приблизьте таймлинию — хлопки разных камер встанут на одну вертикаль, стыковку видно глазами.
 - **Ручная подгонка.** Сдвиг всех клипов камеры сразу — по кадру или по секунде.
 - **Мультивью и одна камера.** Экранов ровно столько, сколько камер. Без прокси клипы показываются стоп-кадрами, у рекордера вместо видео — волна звука вокруг курсора. Предпросмотр можно выключить — на слабом ноутбуке программа станет легче.

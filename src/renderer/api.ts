@@ -34,7 +34,7 @@ export interface Api {
   saveExtendedReport(defaultName: string, clips: { camera: string; path: string; audioChannels: number }[], report: string): Promise<string | null>;
   onReportProgress(cb: (p: { done: number; total: number }) => void): () => void;
   reveal(path: string): Promise<void>;
-  openLink(name: 'support' | 'github' | 'release'): Promise<void>;
+  openLink(name: 'support' | 'github' | 'release' | 'telegram'): Promise<void>;
   tools(): Promise<{ ffprobe: boolean; ffmpeg: boolean }>;
   checkUpdate(): Promise<{ version: string } | null>;
   pathForFile(file: File): string;

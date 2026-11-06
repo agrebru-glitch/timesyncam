@@ -20,6 +20,7 @@
 // Модель: момент u внутри клипа (секунды файла) звучит на таймлинии в момент S + u·(1 + p·10⁻⁶), где S — начало
 // клипа, p — ход часов его устройства в миллионных. Окно, где момент uc клипа c совпал с моментом ud клипа d, —
 // уравнение Sd − Sc + pd·ud·10⁻⁶ − pc·uc·10⁻⁶ = uc − ud, линейное по неизвестным.
+import { roughClock } from './clipMeta.ts';
 import type { Camera, ClipMeta, Issue, SyncResult } from './types.ts';
 import { FEAT_RATE, FINE_SR, gccPhat, hasAttacks, poolFeatures, sliceFeatures } from './audioFeatures.ts';
 import type { Features } from './audioFeatures.ts';
@@ -34,6 +35,7 @@ const PASSES = [
   { pool: 1, search: 0.25, win: 20, maxWindows: 10, sigma: 0.006, consistency: 0.03, score: 0.1, ratio: 1.35 },
 ];
 const STEP = 30; // секунд между окнами сверки
+const KEEP_AGREE = 0.03; // окна грубого замера, который остаётся после узкого прохода, согласны в этих пределах
 const MIN_OVERLAP = 12; // секунд общего звука, меньше — пару не сравниваем
 const NEIGHBOUR = 0.15; // пик в пределах 150 мс от лучшего не считается соперником
 const FINE_LEN = 8; // секунд волны в точной сверке: в гулком зале нужно больше звука
@@ -84,7 +86,6 @@ interface Item {
   start0: number; // начало клипа после сборки
   length: number;
   free: boolean;
-  follower: boolean;
   feat: Features | null;
   coarse: Features | null;
   channel: number;
@@ -111,7 +112,6 @@ export interface RefineInput {
   feats: Map<string, AudioPiece | null>;
   samples: AudioFetch['samples'];
   isEnabled: (cameraId: string) => boolean;
-  followers: Set<string>;
   fixedClips: Set<string>; // клипы с жёсткой опорой: контрольный кадр, тайм-код, отмеченный точным, общий тайм-код
   exactClips: Set<string>; // клипы с тайм-кодом по часам устройства — время суток по ним точнее
   log: Log;
@@ -332,7 +332,6 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
       start0: p.start + (corrections[clip.id] ?? 0),
       length: clip.durationSec,
       free: input.isEnabled(device) && !input.fixedClips.has(clip.id),
-      follower: input.followers.has(device),
       feat,
       coarse: feat ? poolFeatures(feat, PASSES[0].pool) : null,
       channel: a?.channel ?? 0,
@@ -357,8 +356,6 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     const longest = [...rated].sort((a, b) => devices.get(b)!.reduce((s, it) => s + it.length, 0) - devices.get(a)!.reduce((s, it) => s + it.length, 0))[0];
     rated.delete(longest);
   }
-  const followerItems = new Set(items.filter((it) => it.follower).map((it) => it.id));
-  const followerKey = (key: string) => (key.startsWith('p:') ? input.followers : followerItems).has(key.slice(2));
 
   // Связи соседних клипов одного устройства.
   const splitFile = (a: Item, gap: number) => !a.clip.hasVideo && Math.abs(gap) <= 1.5 && SPLIT_SIZES.some((s) => a.clip.sizeBytes <= s && a.clip.sizeBytes >= s * 0.995);
@@ -368,7 +365,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     const groups = new Map<string, Item[]>();
     for (const it of list) {
       // Дорожки у файлов с датами копирования случайны (по датам они лежат стопкой) — их связи ищутся по всему устройству.
-      const k = it.segment !== undefined ? `s${it.segment}` : it.clip.clock?.source === 'file' ? 'file' : `l${it.lane}`;
+      const k = it.segment !== undefined ? `s${it.segment}` : roughClock(it.clip.clock) ? 'file' : `l${it.lane}`;
       groups.set(k, [...(groups.get(k) ?? []), it]);
     }
     for (const g of groups.values()) {
@@ -385,7 +382,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
           kind = splitFile(a, gap) ? 'rigid' : 'chain';
         } else {
           // Даты файлов при копировании меняются — взаимному месту таких клипов без звука верить нельзя.
-          if (a.clip.clock?.source === 'file' || b.clip.clock?.source === 'file') continue;
+          if (roughClock(a.clip.clock) || roughClock(b.clip.clock)) continue;
           kind = 'clock';
         }
         const d0 = b.start0 - a.start0;
@@ -409,22 +406,15 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   const val = new Map<string, number>();
   const startOf = (it: Item) => it.start0 + (val.get(yKey(it)) ?? 0);
   const rateOf = (it: Item) => 1 + (val.get(pKey(it.device)) ?? 0) * 1e-6;
-  const freeKeys = (followers: boolean) => new Set([
-    ...items.filter((it) => it.free && it.follower === followers).map(yKey),
-    ...[...rated].filter((d) => input.followers.has(d) === followers).map(pKey),
-  ]);
-  let lastVariance: Variance[] = [];
-  const varianceOf = (terms: { key: string; c: number }[]) => lastVariance.reduce((s, f) => s + f(terms), 0);
+  const freeKeys = new Set([...items.filter((it) => it.free).map(yKey), ...[...rated].map(pKey)]);
+  let lastVariance: Variance | null = null;
+  const varianceOf = (terms: { key: string; c: number }[]) => lastVariance?.(terms) ?? 0;
   const linkDev = (l: Row) => l.terms.reduce((s, t) => s + t.c * (val.get(t.key) ?? 0), 0) - l.rhs;
   const holdable = (l: Row) => l.link!.kind === 'tc' || l.link!.kind === 'bwf' || l.link!.kind === 'chain';
-  // Сначала ведущие, потом ведомые — по уже поставленным ведущим: ведомая камера не сдвигает остальных.
   const solveStages = (rows: Row[]) => {
-    const all = [...rows, ...links, ...priors];
-    const lead = solve(freeKeys(false), all.filter((r) => !r.terms.some((t) => followerKey(t.key))), val);
-    for (const [k, v] of lead.x) val.set(k, v);
-    const fol = solve(freeKeys(true), all.filter((r) => r.terms.some((t) => followerKey(t.key))), val);
-    for (const [k, v] of fol.x) val.set(k, v);
-    lastVariance = [lead.variance, fol.variance];
+    const r = solve(freeKeys, [...rows, ...links, ...priors], val);
+    for (const [k, v] of r.x) val.set(k, v);
+    lastVariance = r.variance;
   };
   // Сначала связи свободны — видно, где клипы по звуку отходят от тайм-кода и «встык»; где отход мал, связь
   // становится жёсткой, и всё решается ещё раз.
@@ -463,7 +453,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     for (let j = i + 1; j < audible.length; j++) {
       const c = audible[i];
       const d = audible[j];
-      if (c.device === d.device || (!c.free && !d.free) || (c.follower && d.follower)) continue;
+      if (c.device === d.device || (!c.free && !d.free)) continue;
       pairs.push([c, d]);
     }
   }
@@ -520,8 +510,24 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   };
 
   let rows: Row[] = [];
+  // Узкий проход не находит того, что слабо звучит: замер первого прохода для такой пары остаётся. Иначе клип, у которого
+  // есть только грубый замер, возвращается к соседу: пауза 0,64 с в Rec Run сначала находилась, а потом забывалась.
+  const pairOf = (r: Row) => (r.pair![0].id < r.pair![1].id ? `${r.pair![0].id}|${r.pair![1].id}` : `${r.pair![1].id}|${r.pair![0].id}`);
   for (const pass of PASSES) {
-    rows = measure(pass);
+    const found = measure(pass);
+    const covered = new Set(found.map(pairOf));
+    // Остаётся только согласный замер: хотя бы два окна пары в пределах 30 мс. При поиске в ±3 с случайно так не сходится,
+    // а одиночный ложный пик в слабом звуке унёс бы запись на секунды.
+    const left = new Map<string, Row[]>();
+    for (const r of rows) if (!covered.has(pairOf(r))) left.set(pairOf(r), [...(left.get(pairOf(r)) ?? []), r]);
+    const kept = [...left.values()].flatMap((list) => {
+      const m = median(list.map((r) => r.rhs));
+      const near = list.filter((r) => Math.abs(r.rhs - m) <= KEEP_AGREE);
+      const ok = near.length >= 2 && near.length * 2 >= list.length;
+      log(`грубый замер ${ok ? 'остаётся' : 'отброшен'}: ${list[0].pair![0].clip.name} — ${list[0].pair![1].clip.name}, окон ${near.length} из ${list.length}, поправка ${m.toFixed(3)} с, балл ${Math.max(...list.map((r) => r.score!)).toFixed(2)}`);
+      return ok ? near : [];
+    });
+    rows = [...found, ...kept];
     solveAll(rows);
   }
 
@@ -671,45 +677,43 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   const accuracy: Record<string, number> = {};
   const VAR_LIMIT = 600; // точная дисперсия — решение системы на клип; на больших съёмках — для первых 600
   let counted = 0;
-  for (const follower of [false, true]) {
-    const group = items.filter((it) => it.free && it.follower === follower && measured.has(it.id));
-    for (const it of items.filter((x) => x.free && x.follower === follower)) {
-      let stat = NaN;
-      if (counted++ < VAR_LIMIT) {
-        const terms = [{ key: yKey(it), c: 1 }, ...group.filter((g) => g !== it).map((g) => ({ key: yKey(g), c: -1 / Math.max(1, group.length - 1) }))];
-        stat = scale * Math.sqrt(Math.max(0, varianceOf(terms)));
-      }
-      // Куда клипу пришлось бы сдвинуться ради каждого партнёра-устройства.
-      const byPartner = new Map<string, { s: number; n: number }>();
-      for (const r of used) {
-        if (!r.pair!.includes(it)) continue;
-        const partner = r.pair![0] === it ? r.pair![1] : r.pair![0];
-        const move = (r.pair![0] === it ? 1 : -1) * residualOf(r);
-        const acc = byPartner.get(partner.device) ?? { s: 0, n: 0 };
-        acc.s += move;
-        acc.n += 1;
-        byPartner.set(partner.device, acc);
-      }
-      let partner = 0;
-      if (byPartner.size >= 2) {
-        const means = [...byPartner.values()].map((a) => ({ m: a.s / a.n, n: a.n }));
-        const total = means.reduce((s, x) => s + x.n, 0);
-        const avg = means.reduce((s, x) => s + x.m * x.n, 0) / total;
-        partner = Math.sqrt(means.reduce((s, x) => s + x.n * (x.m - avg) ** 2, 0) / total);
-      }
-      const edge = rated.has(it.device) && !applied.has(it.device) ? Math.abs(rateOf(it) - 1) * it.length / 2 : 0;
-      // Эхо: если точка по волне чаще упиралась в отражение, чем находила прямой звук, место может стоять где угодно
-      // между ними — погрешность в половину задержки отражения. По одной паре не скажешь, у кого из двух эхо:
-      // виноват клип, у которого эхо с двумя и больше устройствами, или партнёр всего один, или чистых точек
-      // по волне нет ни одной, а у партнёров они с другими записями есть.
-      const echoes = echoOf.get(it.id) ?? [];
-      const partners = [...(echoWith.get(it.id) ?? [])];
-      const cleanElsewhere = partners.every((dev) => items.some((x) => x.device === dev && (fineOk.get(x.id) ?? 0) > 0));
-      const blamed = partners.length >= 2 || byPartner.size <= 1 || ((fineOk.get(it.id) ?? 0) === 0 && cleanElsewhere);
-      const echo = echoes.length > (fineOk.get(it.id) ?? 0) && blamed ? median(echoes) / 2 : 0;
-      if (echo) log(`эхо ${nameOf(it.device)} / ${it.clip.name}: точек по волне с отражением ${echoes.length}, чистых ${fineOk.get(it.id) ?? 0}, отражение через ${(median(echoes) * 1000).toFixed(0)} мс`);
-      accuracy[it.id] = Math.sqrt((Number.isFinite(stat) ? stat : 0) ** 2 + partner ** 2 + edge ** 2 + echo ** 2);
+  const group = items.filter((it) => it.free && measured.has(it.id));
+  for (const it of items.filter((x) => x.free)) {
+    let stat = NaN;
+    if (counted++ < VAR_LIMIT) {
+      const terms = [{ key: yKey(it), c: 1 }, ...group.filter((g) => g !== it).map((g) => ({ key: yKey(g), c: -1 / Math.max(1, group.length - 1) }))];
+      stat = scale * Math.sqrt(Math.max(0, varianceOf(terms)));
     }
+    // Куда клипу пришлось бы сдвинуться ради каждого партнёра-устройства.
+    const byPartner = new Map<string, { s: number; n: number }>();
+    for (const r of used) {
+      if (!r.pair!.includes(it)) continue;
+      const partner = r.pair![0] === it ? r.pair![1] : r.pair![0];
+      const move = (r.pair![0] === it ? 1 : -1) * residualOf(r);
+      const acc = byPartner.get(partner.device) ?? { s: 0, n: 0 };
+      acc.s += move;
+      acc.n += 1;
+      byPartner.set(partner.device, acc);
+    }
+    let partner = 0;
+    if (byPartner.size >= 2) {
+      const means = [...byPartner.values()].map((a) => ({ m: a.s / a.n, n: a.n }));
+      const total = means.reduce((s, x) => s + x.n, 0);
+      const avg = means.reduce((s, x) => s + x.m * x.n, 0) / total;
+      partner = Math.sqrt(means.reduce((s, x) => s + x.n * (x.m - avg) ** 2, 0) / total);
+    }
+    const edge = rated.has(it.device) && !applied.has(it.device) ? Math.abs(rateOf(it) - 1) * it.length / 2 : 0;
+    // Эхо: если точка по волне чаще упиралась в отражение, чем находила прямой звук, место может стоять где угодно
+    // между ними — погрешность в половину задержки отражения. По одной паре не скажешь, у кого из двух эхо:
+    // виноват клип, у которого эхо с двумя и больше устройствами, или партнёр всего один, или чистых точек
+    // по волне нет ни одной, а у партнёров они с другими записями есть.
+    const echoes = echoOf.get(it.id) ?? [];
+    const partners = [...(echoWith.get(it.id) ?? [])];
+    const cleanElsewhere = partners.every((dev) => items.some((x) => x.device === dev && (fineOk.get(x.id) ?? 0) > 0));
+    const blamed = partners.length >= 2 || byPartner.size <= 1 || ((fineOk.get(it.id) ?? 0) === 0 && cleanElsewhere);
+    const echo = echoes.length > (fineOk.get(it.id) ?? 0) && blamed ? median(echoes) / 2 : 0;
+    if (echo) log(`эхо ${nameOf(it.device)} / ${it.clip.name}: точек по волне с отражением ${echoes.length}, чистых ${fineOk.get(it.id) ?? 0}, отражение через ${(median(echoes) * 1000).toFixed(0)} мс`);
+    accuracy[it.id] = Math.sqrt((Number.isFinite(stat) ? stat : 0) ** 2 + partner ** 2 + edge ** 2 + echo ** 2);
   }
   const deviceAccuracy = new Map<string, number>();
   for (const [device, list] of devices) {

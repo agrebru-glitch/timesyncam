@@ -1,7 +1,7 @@
 // Сверка камер по звуку — вспомогательный шаг после раскладки по тайм-коду и часам.
 // Два этапа: грубый — по многополосному отпечатку атак звука (хлопки, удары, начала слов),
 // точный — по самой волне на 48 кГц (GCC-PHAT). Канал и полосы частот программа выбирает сама.
-import type { Camera, ClipMeta, Issue, IssueAction, Placement, SyncResult, TimeSource } from './types.ts';
+import type { Camera, ClipMeta, Issue, Placement, SyncResult, TimeSource } from './types.ts';
 import { formatClockTime, formatDurationHuman } from './format.ts';
 import { FEAT_RATE, FINE_SR, gccPhat, xcorrFeatures } from './audioFeatures.ts';
 import type { Features } from './audioFeatures.ts';
@@ -269,7 +269,6 @@ export interface AudioOptions {
   pre?: Record<string, number>; // поправки по контрольным кадрам
   fixed?: Set<string>; // камеры с контрольным кадром — опорные
   controlClips?: Set<string>; // клипы, в которых снят экран синхронизации
-  followers?: Set<string>; // ведомые камеры: сверяются по остальным, но опорой ни для кого не служат
 }
 
 // Задание сверки для фонового потока: то же, что AudioOptions, только без функций — их через поток не передать.
@@ -279,7 +278,6 @@ export interface AudioJob {
   searchSec: number;
   maxAnchors: number;
   enabled: string[]; // камеры, которым можно поправлять время по звуку
-  followers: string[];
   pre: Record<string, number>;
   fixed: string[];
   controlClips: string[];
@@ -446,9 +444,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   // Клипы камер без тайм-кода, которые не подтвердил ни звук, ни экран: их место — догадка,
   // поэтому другие камеры по ним не равняются.
   const untrusted = new Set<string>();
-  // Ведомые камеры ни для кого не служат образцом: их звук не сдвигает другие камеры.
-  const isFollower = (id: string) => !!opts.followers?.has(id);
-  const refsOf = (ids: string[]) => ids.filter((id) => !isFollower(id)).flatMap((id) => placementsOf(id)).filter((p) => !untrusted.has(p.clipId));
+  const refsOf = (ids: string[]) => ids.flatMap((id) => placementsOf(id)).filter((p) => !untrusted.has(p.clipId));
   const markUntrusted = (camId: string, anchors: AudioAnchor[], applied: boolean) => {
     if (sourceOf.get(camId) !== 'clock') return;
     for (const p of allOf(camId)) {
@@ -483,12 +479,11 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
 
   // Опора: камеры с контрольным кадром; если их нет — камеры с точным тайм-кодом;
   // иначе — камера с видео, у которой больше всего общего звука с остальными: длинная запись рекордера
-  // опорой сама не становится, чтобы ход её часов не уводил всю таймлинию. Ведомые камеры опорой не бывают.
+  // опорой сама не становится, чтобы ход её часов не уводил всю таймлинию.
   // Устройство с чужой датой (часы не выставлены) опорой не бывает: его время — догадка, место найдёт звук.
   const outliers = new Set(coarse.cameras.filter((c) => c.dateOutlierSec !== null).map((c) => c.cameraId));
   const trusted = withAudio.map((c) => c.id).filter((id) => !outliers.has(id));
-  const leaders = trusted.filter((id) => !isFollower(id));
-  const candidates = leaders.length ? leaders : trusted.length ? trusted : withAudio.map((c) => c.id);
+  const candidates = trusted.length ? trusted : withAudio.map((c) => c.id);
   const fromControl = opts.fixed ? candidates.filter((id) => opts.fixed!.has(id)) : [];
   const absolute = fromControl.length ? [] : candidates.filter((id) => sourceOf.get(id) === 'timecode');
   const withVideo = candidates.filter((id) => !allOf(id).every((p) => !clipById.get(p.clipId)!.hasVideo));
@@ -513,16 +508,6 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     return { camId, pairs, segments, checkOnly };
   };
   const isRecorder = (camId: string) => allOf(camId).every((p) => !clipById.get(p.clipId)!.hasVideo);
-  // Сверка с записью рекордера даёт сбои — предлагаем сделать рекордер ведомым: он встанет по камерам
-  // с допуском и перестанет их тревожить. Это и для замечаний самого рекордера, и для камер, сверенных по нему.
-  const followerAction = (camId: string, anchors: AudioAnchor[]): IssueAction[] => {
-    if (isFollower(camId)) return [];
-    if (isRecorder(camId)) return [{ kind: 'make-follower', cameraId: camId }];
-    // Сверялась в основном по рекордеру — по удачным точкам, а если удачных нет — по всем попыткам.
-    const ok = anchors.some((a) => a.accepted) ? anchors.filter((a) => a.accepted) : anchors;
-    const byRecorder = ok.filter((a) => isRecorder(a.refCameraId) && !isFollower(a.refCameraId));
-    return byRecorder.length && byRecorder.length * 2 >= ok.length ? [{ kind: 'make-follower', cameraId: byRecorder[0].refCameraId }] : [];
-  };
 
   // Ход работы: сколько сверок сделано и сколько примерно осталось у каждой камеры. Оставшееся оцениваем
   // заранее по всем камерам, а не только по начатым, — иначе полоса на кнопке доходит до конца
@@ -620,7 +605,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
       role: 'weak',
       fine,
       fineConfidence,
-      drift: !tClip.hasVideo || !rClip.hasVideo || isFollower(pair.target.cameraId),
+      drift: !tClip.hasVideo || !rClip.hasVideo,
     };
   };
 
@@ -680,7 +665,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   const detailBudget = (camId: string) => wideProbes(camId, true).length + placementsOf(camId).length * 4;
   // Запас на вторую попытку: камера, которой не с кем было сверяться, сверяется ещё раз, когда встанут остальные.
   const retryKey = (id: string) => `${id}\u0000retry`;
-  const canRetry = (id: string) => opts.isEnabled(id) && !isFollower(id) && !opts.fixed?.has(id);
+  const canRetry = (id: string) => opts.isEnabled(id) && !opts.fixed?.has(id);
   for (const id of queue) {
     left.set(id, sizeOf(planFor(id, all.filter((x) => x !== id), false)) || wideBudget(id));
     if (canRetry(id)) left.set(retryKey(id), sourceOf.get(id) === 'clock' && !isRecorder(id) ? detailBudget(id) : wideBudget(id));
@@ -737,10 +722,9 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
 
   // Остальные камеры — по очереди, начиная с той, у которой больше общего звука с уже выровненными.
   // Камеры без тайм-кода — после камер с тайм-кодом: так каждому их клипу есть с чем сравниться.
-  // Ведомые — в самом конце, когда все остальные камеры уже стоят.
   const rank = (id: string) => {
     const o = overlapWith(id, fixed);
-    return (isFollower(id) ? 0 : 1e12) + (o > 0 ? (sourceOf.get(id) === 'clock' ? 1 : 2) : 0) * 1e9 + o;
+    return (o > 0 ? (sourceOf.get(id) === 'clock' ? 1 : 2) : 0) * 1e9 + o;
   };
   // Клипы камеры без тайм-кода, которые не зацепились за звук: ещё по нескольким местам — в начале, в середине
   // и в конце общей части — и с двумя камерами, с которыми у клипа больше всего общего времени.
@@ -773,7 +757,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
   // Сверка одной камеры по уже выровненным: точки рядом по времени, а если их нет — поиск по всей записи.
   const alignCamera = async (camId: string): Promise<void> => {
     tentative.delete(camId);
-    // Ведомая с контрольным кадром стоит по экрану — он точнее звука; образцом для других она всё равно не служит.
+    // Камера с контрольным кадром стоит по экрану — он точнее звука.
     if (opts.fixed?.has(camId)) {
       results.set(camId, { cameraId: camId, status: 'disabled', model: null, correction: null, steps: [], anchors: [] });
       fixed.push(camId);
@@ -863,21 +847,18 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
     for (const p of allOf(camId)) delete corrections[p.clipId];
     if (enabled) Object.assign(corrections, res.corrections);
     restorePre(camId);
-    const followerFix = followerAction(camId, anchors);
     if (wide) {
       issues.push(issue({
         severity: 'warning',
         cameraId: camId,
         title: `«${nameOf(camId)}» найдена по звуку на ${formatDurationHuman(Math.abs(wide.shift))} ${wide.shift > 0 ? 'позже' : 'раньше'}, чем показывают её часы`,
         details: `Часы этой камеры были сбиты${Math.abs(Math.abs(wide.shift) / 3600 - Math.round(Math.abs(wide.shift) / 3600)) < 0.25 && Math.abs(wide.shift) > 1800 ? ' — похоже, на ней другой часовой пояс' : ''}. Программа нашла общий звук ${wide.probes > 1 ? `в ${wide.probes} клипах` : 'в одном клипе'} и сдвинула всю камеру. Проверьте стыковку по картинке; отключить поправку можно в карточке камеры.`,
-        actions: [{ kind: 'show-clip', clipId: placementsOf(camId)[0].clipId }, ...followerFix],
+        actions: [{ kind: 'show-clip', clipId: placementsOf(camId)[0].clipId }],
       }));
     }
-    // Штатный ход часов рекордера — не сбой, к нему кнопку не добавляем.
     issues.push(...res.issues.map((i) => issue({
       ...i,
       title: i.title.replace('{cam}', nameOf(camId)),
-      actions: /в пределах погрешности/.test(i.title) ? i.actions : [...i.actions, ...followerFix],
     })));
     markUntrusted(camId, anchors, enabled);
     fixed.push(camId);

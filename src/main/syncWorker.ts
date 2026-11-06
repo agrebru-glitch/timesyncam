@@ -21,7 +21,6 @@ parentPort!.on('message', async (job: AudioJob) => {
       searchSec: job.searchSec,
       maxAnchors: job.maxAnchors,
       isEnabled: (id) => enabled.has(id),
-      followers: new Set(job.followers),
       pre: job.pre,
       fixed: new Set(job.fixed),
       controlClips: new Set(job.controlClips),

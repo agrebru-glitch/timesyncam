@@ -1,7 +1,8 @@
 name: Релиз
 
-# Собирает программу для Windows и macOS (Apple Silicon) с FFmpeg под LGPL
-# и прикладывает сборки к релизу на GitHub.
+# Собирает программу для Windows с FFmpeg под LGPL и прикладывает сборки к релизу на GitHub.
+# Версия для macOS (Apple Silicon) собирается на Mac и докладывается в тот же релиз (docs/release-mac.md); здесь она
+# собирается только в pull request, который меняет сборку, и при ручном запуске с галочкой mac.
 #
 # - Метка вида v0.4.0 — сборка и релиз. Метка с дефисом (v0.4.0-rc.1) — черновик релиза.
 # - Запуск вручную (Actions → Релиз → Run workflow) собирает выбранную ветку: новую версию выпускает
@@ -23,6 +24,10 @@ on:
       tag:
         description: 'Релиз, в который положить сборки (например, v0.3.0)'
         required: true
+      mac:
+        description: 'Собрать и версию для macOS'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -78,6 +83,7 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.arch }}
+    if: github.event_name == 'pull_request' || inputs.mac
     strategy:
       matrix:
         include:
@@ -179,7 +185,7 @@ jobs:
   release:
     name: Релиз на GitHub
     needs: [windows, macos]
-    if: github.event_name != 'pull_request'
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.windows.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.macos.result) }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -194,6 +200,7 @@ jobs:
       - name: Контрольные суммы
         run: |
           cd out
+          shopt -s nullglob
           sha256sum -- *.exe *.zip *.dmg > SHA256SUMS.txt
           cat SHA256SUMS.txt
 

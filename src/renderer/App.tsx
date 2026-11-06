@@ -14,7 +14,7 @@ import type { Action, ControlInfo, State, SyncMode } from './state.ts';
 import { QrScreen } from './components/QrScreen.tsx';
 import { SyncMenu } from './components/SyncMenu.tsx';
 import { requestWaveforms } from './waveforms.ts';
-import { IconExport, IconHeart, IconLock, IconQr, IconSync, IconX, LogoMark } from './icons.tsx';
+import { IconExport, IconHeart, IconTelegram, IconLock, IconQr, IconSync, IconX, LogoMark } from './icons.tsx';
 import { CameraPanel } from './components/CameraPanel.tsx';
 import { Viewer } from './components/Viewer.tsx';
 import { Timeline } from './components/Timeline.tsx';
@@ -265,7 +265,6 @@ export function App() {
         searchSec: AUDIO_SEARCH_SEC,
         maxAnchors: 8,
         enabled: cameras.filter((c) => c.audioAssist).map((c) => c.id),
-        followers: cameras.filter((c) => c.follower).map((c) => c.id),
         pre,
         fixed: [...fixed],
         controlClips: [...controlClips],
@@ -451,6 +450,9 @@ export function App() {
             </button>
             <button className="tab tab-support" onClick={() => void api.openLink('support')} title="Откроется страница CloudTips в браузере">
               <IconHeart className="icon" /> Поддержать проект
+            </button>
+            <button className="tab tab-telegram" onClick={() => void api.openLink('telegram')} title="Новости, новые версии и вопросы. Откроется t.me/timesyncam">
+              <IconTelegram className="icon" /> Telegram
             </button>
           </nav>
           <span className="spacer" />

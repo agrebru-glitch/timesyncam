@@ -7,6 +7,7 @@ const base = (path: ReactElement, cls = 'icon', style?: CSSProperties) => (
   </svg>
 );
 
+export const IconTelegram = ({ className }: P) => base(<path d="M21 4.5 2.8 11.6c-.9.4-.9 1.2 0 1.5l4.6 1.4 1.7 5.3c.2.6.9.7 1.3.3l2.5-2.4 4.7 3.5c.6.4 1.3.1 1.5-.6L22 5.6c.2-.9-.4-1.4-1-1.1zM8 14.2l9.6-6.1-7.4 7.3-.3 2.9z" fill="currentColor" stroke="none" />, className);
 export const IconPlay = ({ className }: P) => base(<path d="M8 5.5v13l10.5-6.5z" fill="currentColor" stroke="none" />, className);
 export const IconPause = ({ className }: P) => base(<g fill="currentColor" stroke="none"><rect x="7" y="5" width="3.5" height="14" rx="1" /><rect x="13.5" y="5" width="3.5" height="14" rx="1" /></g>, className);
 export const IconPrev = ({ className }: P) => base(<g><path d="M18 6l-8 6 8 6z" fill="currentColor" stroke="none" /><path d="M7 6v12" /></g>, className);

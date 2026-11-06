@@ -46,7 +46,7 @@ function timeSourceText(cs: CameraSync | undefined, cam: Camera): { title: strin
     };
   }
   return {
-    title: 'Только часы камеры',
+    title: cam.clips.length > 0 && cam.clips.every((c) => !c.hasVideo) ? 'Только часы устройства' : 'Только часы камеры',
     sub: cs.recRun ? 'Тайм-код шёл только во время записи. Точность около секунды.' : 'Точность около секунды. Точно подгоните по хлопку.',
   };
 }
@@ -244,12 +244,6 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
               <span className="muted"> · при экспорте вместо записей встанут выровненные копии (на таймлинии — штриховка), оригиналы не меняются</span>
             </div>
           )}
-          {cam.follower && (
-            <div className="card-line">
-              Ведомая — встаёт по звуку других и их не сдвигает{' '}
-              <button className="btn small ghost inline" onClick={(e) => { e.stopPropagation(); dispatch({ type: 'set-follower', cameraId: cam.id, on: false }); }}>Сделать ведущей</button>
-            </div>
-          )}
           {info.excluded > 0 && (
             <div className="card-line">
               Убрано с таймлинии: {pluralRu(info.excluded, 'клип', 'клипа', 'клипов')}{' '}
@@ -310,7 +304,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             )}
           </dl>
 
-          <div className="section-label">Тайм-код камеры</div>
+          <div className="section-label">Тайм-код</div>
           <select
             className="select"
             value={cam.timecodeTrust}
@@ -340,7 +334,7 @@ export function CameraPanel() {
     <aside className="side">
       {state.cameras.map((cam, i) => <CameraCard key={cam.id} cam={cam} index={i} />)}
       <button className="btn" style={{ justifyContent: 'center' }} onClick={() => dispatch({ type: 'add-camera' })}>
-        <IconPlus /> Добавить камеру
+        <IconPlus /> Добавить источник
       </button>
     </aside>
   );

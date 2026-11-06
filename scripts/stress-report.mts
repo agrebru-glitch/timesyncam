@@ -245,7 +245,7 @@ function build(devices: Device[], seed: number): { cameras: Camera[]; keyOf: Map
       const sony = f.xml ? parseSonyXml(f.xml) : null;
       return buildClipMeta({ id, path: f.audio, name: f.name, sizeBytes: f.size, mtimeMs: f.mtimeMs, probe, sony, proxyPath: null });
     });
-    return { id: `c${seed.toString(36)}${di}`, name: d.name, folders: [d.name], clips, manualShiftSec: 0, timecodeTrust: 'auto', excludedClipIds: [], audioAssist: true, follower: false, scanning: null };
+    return { id: `c${seed.toString(36)}${di}`, name: d.name, folders: [d.name], clips, manualShiftSec: 0, timecodeTrust: 'auto', excludedClipIds: [], audioAssist: true, scanning: null };
   });
   return { cameras, keyOf };
 }
@@ -261,7 +261,7 @@ async function run(v: Variant, seed: number) {
     features: (c, s, d) => audioFeatures(c.path, s, d, reportTiming(c)),
     samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch, reportTiming(c)),
     whole: (c) => audioWholeFeatures(c.path, c.durationSec, reportTiming(c)),
-  }, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true, followers: new Set(), pre: {}, fixed: new Set(), controlClips: new Set() });
+  }, { searchSec: AUDIO_SEARCH_SEC, maxAnchors: 8, isEnabled: () => true, pre: {}, fixed: new Set(), controlClips: new Set() });
   const final = runSync(cameras, audio.corrections, heardCameras(audio));
   if (process.env.STRESS_LOG) {
     const name = (id: string) => cameras.find((c) => c.id === id)?.name ?? id;

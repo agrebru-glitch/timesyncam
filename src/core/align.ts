@@ -19,6 +19,7 @@ import { FEAT_RATE, FINE_SR, gccPhat, hasAttacks as active, poolFeatures, sliceF
 import type { Features } from './audioFeatures.ts';
 import { correlate, SILENCE_DB } from './audioSync.ts';
 import type { AudioAnchor, AudioCameraResult, AudioFetch, AudioOptions, AudioPiece, AudioSyncResult } from './audioSync.ts';
+import { continuesByName, roughClock } from './clipMeta.ts';
 import { formatDurationHuman, pluralRu } from './format.ts';
 import { refineClips } from './refine.ts';
 
@@ -34,6 +35,14 @@ const SEARCH = 1; // окно проверки ищет совпадение в 
 const AGREE = 0.25; // окно согласно с кандидатом, если нашло его в пределах ±0,25 с
 const CLEAR_SCORE = 0.1;
 const CLEAR_RATIO = 1.35;
+const PROBABLE_MIN = 5; // столько окон хотя бы — если совпадение принимается по вероятности
+const PROBABLE_CHANCE = 1e-5; // вероятность случайно набрать столько окон: на съёмку — около тысячи проверок, ложное совпадение в 1% съёмок
+const SECOND_MIN = 5; // второй проход: поле поиска вокруг места по часам устройства, не меньше
+const SECOND_MAX = 30; // и не больше
+const SECOND_WIN = 60; // секунд в окне: длинное окно копит слабый общий звук
+const SECOND_AGREE = 0.03; // окна согласны, если их сдвиги уложились в ±30 мс
+const SECOND_MIN_VOTES = 3;
+const SECOND_CHANCE = 1e-3; // риск принять случайное совпадение за настоящее — на один кусок
 const RIVAL = 0.6; // второй кандидат с поддержкой больше 60% от лучшего — неоднозначно
 const TOLERANCE = 0.12; // сдвиги пар сходятся по кругу с точностью ±3 кадра
 const DRIFT_PER_SEC = 60e-6; // штатный ход часов рекордера: до 0,2 с за час
@@ -71,7 +80,6 @@ interface Piece {
   fileClock: boolean; // время только из даты файла: при копировании она меняется
   clockOnly: boolean;
   recorder: boolean;
-  follower: boolean;
   feat: Features | null;
   coarse: Features | null;
   channel: Map<string, number>; // канал каждого клипа для точной сверки
@@ -232,7 +240,7 @@ function buildPieces(cameras: Camera[], coarse: SyncResult, opts: AudioOptions):
       }
       // Без тайм-кода: файлы встык — одна запись, иначе каждый клип отдельно.
       const prev = chain[chain.length - 1];
-      if (prev && Math.abs(p.start - (prev.start + clipById.get(prev.clipId)!.recordedSec)) <= CHAIN_GAP) {
+      if (prev && (Math.abs(p.start - (prev.start + clipById.get(prev.clipId)!.recordedSec)) <= CHAIN_GAP || continuesByName(clipById.get(prev.clipId)!, clipById.get(p.clipId)!))) {
         chain.push(p);
       } else {
         chain = [p];
@@ -253,7 +261,7 @@ function buildPieces(cameras: Camera[], coarse: SyncResult, opts: AudioOptions):
         at += clip.recordedSec;
       }
       const length = Math.max(...members.map((m) => m.at + m.clip.durationSec));
-      const fileOnly = members.every((m) => m.clip.clock?.source === 'file');
+      const fileOnly = members.every((m) => roughClock(m.clip.clock));
       const outlier = cs?.dateOutlierSec !== null && cs?.dateOutlierSec !== undefined;
       // Жёстко стоят: камера с контрольным кадром (её тайм-код держит все клипы), клип с экраном у камеры
       // без тайм-кода и камера, чей тайм-код оператор отметил точным. Тайм-код, который просто совпадает
@@ -274,7 +282,6 @@ function buildPieces(cameras: Camera[], coarse: SyncResult, opts: AudioOptions):
         fileClock: fileOnly,
         clockOnly: cs?.timeSource === 'clock',
         recorder: members.every((m) => !m.clip.hasVideo),
-        follower: !!opts.followers?.has(cam.id),
         feat: null,
         coarse: null,
         channel: new Map(),
@@ -392,6 +399,12 @@ function chance(k: number, n: number, p: number): number {
     if (i >= k) sum += term;
   }
   return Math.min(1, sum);
+}
+
+// Вероятность случайно набрать столько совпавших окон. Как часто окно соглашается случайно, видно по соперникам.
+export function chanceOfWindows(best: { support: number; tested: number }, rivals: { support: number; tested: number }[]): number {
+  const rate = (rivals.reduce((n, x) => n + x.support, 0) + 1) / (rivals.reduce((n, x) => n + x.tested, 0) + 2);
+  return chance(best.support, best.tested, rate);
 }
 
 function memberAgreement(a: Piece, b: Piece, d: number): { hits: number; tested: number; d: number } {
@@ -625,10 +638,15 @@ function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguo
   // любого другого сдвига (устройство часть времени не слышит зал: человек с петличкой вышел, и такие окна
   // совпасть не могут). Короткая общая часть (одно-два окна): все окна согласны и соперника нет.
   const strong = winner.support >= 3 && (share >= 0.5 || (winner.support >= 8 && winner.support >= 2 * runnerUp));
+  // Или совпало слишком много окон, чтобы это было случайностью. Как часто окно случайно соглашается со сдвигом, видно
+  // по соперникам: те же окна той же пары у других сдвигов. Микрофон слышит зал лишь местами (петличка в концерте) —
+  // долю окон такое совпадение не наберёт, но и случайно семь окон из сорока при нуле у всех соперников не сойдутся.
+  const unlikely = chanceOfWindows(winner, tried.filter((x) => x !== winner && Math.abs(x.d - winner.d) > PEAK_GUARD));
+  const probable = !strong && winner.support >= PROBABLE_MIN && winner.support >= 2 * runnerUp && unlikely < PROBABLE_CHANCE;
   const short = winner.tested <= 2 && winner.support === winner.tested && (!second || second.support === 0 || winner !== best) && winner.score >= 0.25;
-  if (!strong && !short) return byClips();
+  if (!strong && !short && !probable) return byClips();
   const chosen = winner;
-  log(`    итог: ${chosen.d.toFixed(3)} с${strong ? '' : ' (короткая общая часть)'}`);
+  log(`    итог: ${chosen.d.toFixed(3)} с${strong ? '' : probable ? ` (по вероятности: ${winner.support} из ${winner.tested}, случайно ${unlikely.toExponential(1)})` : ' (короткая общая часть)'}`);
   // Проверочные окна заново — уже вокруг уточнённого сдвига, чтобы точки сверки стояли точно.
   const checks = verify(a, b, chosen.d);
   const c = centered(a, b, checks, chosen.d);
@@ -832,7 +850,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     if (DEBUG) console.log(line);
   };
   for (const p of pieces) {
-    log(`кусок ${p.cameraId}#${p.id}: ${p.members.length} клип(ов), ${p.length.toFixed(1)} с, доверие ${p.trust}${p.recorder ? ', только звук' : ''}${p.follower ? ', ведомый' : ''}: ${p.members.map((m) => `${m.clip.name}@${m.at.toFixed(2)}`).join(', ')}`);
+    log(`кусок ${p.cameraId}#${p.id}: ${p.members.length} клип(ов), ${p.length.toFixed(1)} с, доверие ${p.trust}${p.recorder ? ', только звук' : ''}: ${p.members.map((m) => `${m.clip.name}@${m.at.toFixed(2)}`).join(', ')}`);
   }
   const nameOf = (id: string) => cameras.find((c) => c.id === id)?.name ?? '';
   const whole = audio.whole ?? ((c: ClipMeta) => audio.features(c, 0, c.durationSec));
@@ -886,7 +904,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       const a = live[i];
       const b = live[j];
       tick();
-      if (a.cameraId === b.cameraId || (a.follower && b.follower)) continue;
+      if (a.cameraId === b.cameraId) continue;
       triedOf.add(a.id);
       triedOf.add(b.id);
       const r = measurePair(a, b, log);
@@ -951,12 +969,11 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     e.hard = true;
   }
 
-  // 3. Сборка: сначала ведущие куски, ведомые — потом и только по ним.
-  const leaders = live.filter((p) => !p.follower).map((p) => p.id);
-  const leaderEdges = edges.filter((e) => !pieces[e.a].follower && !pieces[e.b].follower);
-  for (const p of anchors) if (!leaders.includes(p.id)) leaders.push(p.id);
-  const { pos, used, dropped } = solve(leaders, leaderEdges, pieces);
-  const comps = components(leaders, used);
+  // 3. Сборка.
+  const nodes = live.map((p) => p.id);
+  for (const p of anchors) if (!nodes.includes(p.id)) nodes.push(p.id);
+  const { pos, used, dropped } = solve(nodes, edges, pieces);
+  const comps = components(nodes, used);
   for (const e of dropped) if (!e.hard) log(`отброшено как противоречие: ${pieces[e.a].cameraId}#${e.a} — ${pieces[e.b].cameraId}#${e.b}, ${e.d.toFixed(3)} с (совпало ${e.support})`);
   log(`группы: ${comps.map((c) => c.map((n) => `${pieces[n].cameraId}#${n}`).join(' + ')).join(' | ')}`);
 
@@ -1005,14 +1022,53 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     for (const n of comp) if (comp.length > 1 || pieces[n].trust === 'anchor') placed.set(n, pos.get(n)! + shift);
   }
 
-  // Ведомые: по своим связям с уже поставленными ведущими.
-  for (const p of live.filter((x) => x.follower)) {
-    const votes: { v: number; w: number }[] = [];
-    for (const e of edges) {
-      if (e.a === p.id && placed.has(e.b) && !pieces[e.b].follower) votes.push({ v: placed.get(e.b)! - e.d, w: e.weight });
-      if (e.b === p.id && placed.has(e.a) && !pieces[e.a].follower) votes.push({ v: placed.get(e.a)! + e.d, w: e.weight });
+  // Второй проход. Кусок без надёжной связи, но другие куски его устройства уже стоят: часы устройства ошибаются примерно
+  // одинаково, значит, его место известно с точностью до секунд. Голосуют минутные окна со всеми записями, звучащими в это
+  // время: у каждого — лучший пик в этом поле, даже слабый. Случайные пики разбросаны по полю, настоящие сходятся до сотых.
+  // На зале тестера: 34 окна из 92 в одной ячейке, у того же поля со сдвигом на минуты — 4–5.
+  const second = live.filter((p) => !placed.has(p.id) && p.feat && p.length >= MIN_OVERLAP).sort((x, y) => y.length - x.length || x.id - y.id);
+  for (const p of second) {
+    const own = pieces.filter((q) => q.cameraId === p.cameraId && placed.has(q.id));
+    if (!own.length) continue;
+    const errors: ClockError[] = own.map((q) => ({ at: q.prior, c: placed.get(q.id)! - q.prior, len: soloLength(q) }));
+    const cs = errors.map((e) => e.c);
+    const S = Math.min(SECOND_MAX, Math.max(SECOND_MIN, 2 * (Math.max(...cs) - Math.min(...cs))));
+    const guess = p.prior + expectedCorrection(errors, p);
+    const lags: number[] = [];
+    let tested = 0;
+    for (const q of pieces) {
+      if (q.cameraId === p.cameraId || !q.feat || !placed.has(q.id)) continue;
+      const at = placed.get(q.id)!;
+      const from = Math.max(guess, at + S);
+      const W = Math.min(SECOND_WIN, p.length);
+      const to = Math.min(guess + p.length, at + q.length - S) - W;
+      if (to < from) continue;
+      const n = Math.min(MAX_WINDOWS, Math.floor((to - from) / W) + 1);
+      for (let k = 0; k < n; k++) {
+        const T = from + (n > 1 ? (k * (to - from)) / (n - 1) : 0);
+        const t = slice(p.feat!, Math.round((T - guess) * RATE), Math.round(W * RATE));
+        const r = slice(q.feat, Math.round((T - at - S) * RATE), Math.round((W + 2 * S) * RATE));
+        if (!active(t) || !active(r)) continue;
+        const m = correlate(t, r, Math.round(S * RATE), Math.round(S * RATE));
+        tested++;
+        // Пик у края поля — склон того, что за краем, а не место.
+        if (m && m.score > 0 && Math.abs(m.lag / RATE) < S - 0.5) lags.push(m.lag / RATE);
+      }
     }
-    if (votes.length) placed.set(p.id, weightedMedian(votes));
+    lags.sort((x, y) => x - y);
+    let best: number[] = [];
+    for (let i = 0; i < lags.length; i++) {
+      const group = lags.filter((v) => v >= lags[i] && v <= lags[i] + 2 * SECOND_AGREE);
+      if (group.length > best.length) best = group;
+    }
+    // Случайный пик ложится в ячейку шириной 2·SECOND_AGREE с вероятностью width / (2S), а ячеек в поле — 2S / width.
+    const width = 2 * SECOND_AGREE;
+    const risk = best.length ? chance(best.length, tested, width / (2 * S)) * ((2 * S) / width) : 1;
+    log(`второй проход ${p.cameraId}#${p.id}: поле ±${S.toFixed(1)} с, окон ${tested}, согласных ${best.length}, риск случайности ${risk.toExponential(1)}`);
+    if (best.length < SECOND_MIN_VOTES || risk >= SECOND_CHANCE) continue;
+    const lag = median(best);
+    placed.set(p.id, guess + lag);
+    log(`    итог: кусок встал по звуку, поправка к догадке ${lag.toFixed(3)} с`);
   }
 
   // Сбои тайм-кода внутри кусков, найденные по клипам.
@@ -1108,7 +1164,6 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     feats: got,
     samples: (c, s, d, ch) => audio.samples(c, s, d, ch),
     isEnabled: opts.isEnabled,
-    followers: opts.followers ?? new Set(),
     fixedClips,
     exactClips,
     log,
