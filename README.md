@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.1/TCoder-0.4.1.apk">TCoder — экран синхронизации на Android</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TCoder-0.4.0.apk">TCoder — экран синхронизации на Android</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.3.6">Mac с процессором Intel (0.3.6)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.1/TimesynCam-0.4.1-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
