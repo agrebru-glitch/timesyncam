@@ -17,7 +17,6 @@
 
 <p align="center">
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TCoder-0.4.0.apk">TCoder — экран синхронизации на Android</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.3.6">Mac с процессором Intel (0.3.6)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.0/TimesynCam-0.5.0-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
@@ -69,11 +68,10 @@ TimesynCam делает эту работу за вас. Перетащите п
 | `TimesynCam-Setup-<версия>.exe` | Установщик для Windows 10 и 11 (64 бит) |
 | `TimesynCam-<версия>-win-x64.zip` | Та же программа без установки: распакуйте и запустите `TimesynCam.exe` |
 | `TimesynCam-<версия>-mac-arm64.dmg` | macOS 12 и новее на Apple Silicon (M1–M4 и новее) |
-| `TimesynCam-<версия>-mac-x64.dmg` | macOS 12 и новее на Mac с процессором Intel |
 
 FFmpeg уже внутри, отдельно ставить ничего не нужно.
 
-**macOS:** откройте `.dmg` и перетащите TimesynCam в папку «Программы». Какой файл нужен — смотрите в меню Apple → «Об этом Mac»: «Чип Apple M…» — `arm64`, «Процессор Intel» — `x64`.
+**macOS:** откройте `.dmg` и перетащите TimesynCam в папку «Программы». Нужен Mac с чипом Apple (M1 и новее): меню Apple → «Об этом Mac» → «Чип Apple M…».
 
 > [!NOTE]
 > Программа пока не подписана цифровым сертификатом. Контрольные суммы файлов — в `SHA256SUMS.txt` рядом с релизом.
