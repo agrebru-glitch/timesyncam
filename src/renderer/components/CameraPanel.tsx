@@ -3,6 +3,8 @@ import type { Camera, CameraSync, TimecodeTrust } from '../../core/types.ts';
 import type { State } from '../state.ts';
 import type { AudioCameraResult } from '../../core/audioSync.ts';
 import { checkLimit, formatSigned } from '../../core/audioSync.ts';
+import { UNSURE_TEXT, unsureDetails, unsureOf } from '../../core/unsure.ts';
+import { clearWaveforms } from '../waveforms.ts';
 import { formatClockTime, formatDate, formatDurationHuman, formatShift, formatSize, pluralRu } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
@@ -163,6 +165,8 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const brief = qt ?? (at ? { title: placedBySound && at.tone !== 'warn' ? 'Встала по звуку' : at.title, sub: accText, tone: at.tone } : synced ? { title: ts.title, sub: undefined, tone: undefined } : null);
   // Ход часов выравнивается при экспорте: на таймлинии такие записи заштрихованы снизу.
   const drift = synced && info.audioOnly ? state.audio?.drift?.find((d) => d.cameraId === cam.id && d.apply) : undefined;
+  // Клипы с неточным местом — на дорожке они обведены пунктиром.
+  const unsure = synced ? unsureOf(cam, state.audio) : null;
   const toneColor = (tone?: 'warn' | 'ok') => (tone === 'warn' ? 'var(--warning)' : tone === 'ok' ? 'var(--success)' : undefined);
 
   const onDrop = (e: React.DragEvent) => {
@@ -235,6 +239,12 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
           {brief && (
             <div className="card-line" style={{ color: toneColor(brief.tone) }}>
               {brief.title}{brief.sub && <span className="muted"> · {brief.sub}</span>}
+            </div>
+          )}
+          {unsure && unsure.ids.length > 0 && (
+            <div className="card-line" style={{ color: 'var(--warning)' }} title={unsureDetails(unsure)}>
+              Место неточно: {pluralRu(unsure.ids.length, 'клип', 'клипа', 'клипов')} из {info.count - info.excluded}
+              <span className="muted"> · {unsure.byReason.length === 1 ? UNSURE_TEXT[unsure.byReason[0].reason] : 'на дорожке обведены пунктиром'}</span>
             </div>
           )}
           {info.speedActive > 0 && <div className="card-line" style={{ color: 'var(--danger)' }}>S&Q: {pluralRu(info.speedActive, 'клип', 'клипа', 'клипов')} — помечены красным</div>}
@@ -330,12 +340,42 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
 
 export function CameraPanel() {
   const { state, dispatch } = useApp();
+  const [confirm, setConfirm] = useState(false);
+  const hasClips = state.cameras.some((c) => c.clips.length > 0);
+  const busy = state.cameras.some((c) => c.scanning) || !!state.audioRun || !!state.qrRun;
+  // Очистить — начать новый проект: все дорожки и клипы уходят из программы, файлы на диске остаются.
+  const clear = async () => {
+    setConfirm(false);
+    dispatch({ type: 'clear-all' });
+    clearWaveforms();
+    await api.clearProject();
+    dispatch({ type: 'toast', text: 'Проект очищен. Файлы на диске не тронуты — программа их только читала.' });
+  };
   return (
     <aside className="side">
       {state.cameras.map((cam, i) => <CameraCard key={cam.id} cam={cam} index={i} />)}
       <button className="btn" style={{ justifyContent: 'center' }} onClick={() => dispatch({ type: 'add-camera' })}>
         <IconPlus /> Добавить источник
       </button>
+      {hasClips && !confirm && (
+        <button
+          className="btn small ghost side-clear"
+          disabled={busy}
+          title={busy ? 'Дождитесь конца чтения или синхронизации' : 'Убрать все дорожки и клипы и начать новый проект. Файлы на диске не трогаются'}
+          onClick={() => setConfirm(true)}
+        >
+          Очистить проект
+        </button>
+      )}
+      {confirm && (
+        <div className="side-confirm">
+          <span>Убрать все дорожки, клипы и синхронизацию? Файлы на диске останутся.</span>
+          <div className="row">
+            <button className="btn small danger" onClick={() => void clear()}>Очистить</button>
+            <button className="btn small ghost" onClick={() => setConfirm(false)}>Отмена</button>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

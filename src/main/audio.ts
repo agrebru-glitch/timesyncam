@@ -140,6 +140,13 @@ export async function audioSamples(path: string, startSec: number, durSec: numbe
   return decode(path, startSec, durSec, ['-af', `pan=mono|c0=c${channel === 1 ? 1 : 0}`, '-ar', String(FINE_SR)], FINE_SR, 1, timing);
 }
 
+// Звук для предпросмотра: моно 48 кГц, кусок клипа по его времени. Плеер ставит куски всех дорожек на общие
+// часы — с точностью до сэмпла, чтобы на слух было слышно, совпали записи или двоятся.
+export const PREVIEW_SR = 48000;
+export function audioPreview(path: string, startSec: number, durSec: number, timing?: AudioTiming): Promise<Float32Array | null> {
+  return decode(path, Math.max(0, startSec), Math.max(0.01, durSec), ['-ac', '1', '-ar', String(PREVIEW_SR)], PREVIEW_SR, 1, timing);
+}
+
 // Волна всего клипа для таймлинии. Считается один раз на клип и хранится, пока программа открыта.
 export async function audioWaveform(path: string, timing?: AudioTiming): Promise<Uint8Array | null> {
   const hit = waves.get(path);
@@ -149,4 +156,10 @@ export async function audioWaveform(path: string, timing?: AudioTiming): Promise
   const peaks = waveformPeaks(samples, AUDIO_SAMPLE_RATE);
   waves.set(path, peaks);
   return peaks;
+}
+
+// Новый проект: прочитанный звук и волны старого больше не нужны.
+export function clearAudioCaches(): void {
+  featCache.clear();
+  waves.clear();
 }

@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runSync } from '../src/core/sync.ts';
 import { buildFcpxml } from '../src/core/fcpxml.ts';
+import { timelineOrigin } from '../src/core/fcp7.ts';
+import type { Camera, SyncResult } from '../src/core/types.ts';
 import { camera, clip, T16 } from './fixtures.ts';
 
 // «N/Ds» → секунды.
@@ -11,6 +13,11 @@ const sec = (v: string) => {
 };
 const attr = (xml: string, tag: string, name: string) => [...xml.matchAll(new RegExp(`<${tag} [^>]*name="${name.replace('.', '\\.')}"[^>]*>`, 'g'))].map((m) => m[0]);
 const get = (el: string, a: string) => new RegExp(` ${a}="([^"]+)"`).exec(el)![1];
+// Нулевой кадр таймлинии: первый клип съёмки, сдвинутый на долю кадра для согласованного округления.
+const originOf = (cams: Camera[], r: SyncResult, fps: number) => {
+  const video = new Set(cams.flatMap((c) => c.clips.filter((k) => k.hasVideo).map((k) => k.id)));
+  return timelineOrigin(r.placements.map((p) => ({ start: p.start, weight: p.end - p.start, exact: !video.has(p.clipId) })), fps);
+};
 
 function scene() {
   const video = clip({ start: T16 + 181, tcSeconds: 0 });
@@ -33,7 +40,9 @@ function scene() {
 test('FCPXML: звук рекордера встаёт на таймлинию сэмпл в сэмпл', () => {
   const { cams, r, wav } = scene();
   const xml = buildFcpxml(cams, r, { name: 'Тест & проверка', rate: { num: 25, den: 1 }, width: 3840, height: 2160 });
-  const fromStart = (epoch: number) => epoch - r.start; // таймлиния начинается с первого клипа
+  const origin = originOf(cams, r, 25);
+  assert.ok(Math.abs(origin - r.start) < 1 / 25, 'нулевой кадр — у первого клипа, не дальше кадра');
+  const fromStart = (epoch: number) => epoch - origin; // таймлиния начинается с первого клипа
 
   const [clipEl] = attr(xml, 'asset-clip', 'ZOOM0001.WAV');
   const [assetEl] = attr(xml, 'asset', 'ZOOM0001.WAV');
@@ -62,7 +71,7 @@ test('FCPXML: видео на кадре, таймлиния с 00:00:00:00 и �
   const [clipEl] = attr(xml, 'asset-clip', 'C0001.MP4');
   assert.equal(get(clipEl, 'lane'), '1');
   const offset = sec(get(clipEl, 'offset'));
-  const expected = r.placements.find((p) => p.clipId === video.id)!.start - r.start;
+  const expected = r.placements.find((p) => p.clipId === video.id)!.start - originOf(cams, r, 25);
   assert.ok(Math.abs(offset - expected) <= 0.5 / 25 + 1e-9);
   assert.equal(get(clipEl, 'duration'), '10s');
 });

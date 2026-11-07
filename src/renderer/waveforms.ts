@@ -54,3 +54,11 @@ export function useWaveformVersion(): number {
     () => version,
   );
 }
+
+// Новый проект: волны старого не нужны.
+export function clearWaveforms(): void {
+  waves.clear();
+  queued.clear();
+  queue.length = 0;
+  notify();
+}

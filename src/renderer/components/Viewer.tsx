@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Camera, ClipMeta, Placement } from '../../core/types.ts';
 import { formatDate, formatDurationHuman, formatTimecodeAt } from '../../core/format.ts';
-import { PREVIEW_KEY, useApp } from '../App.tsx';
+import { PREVIEW_KEY, SOUND_KEY, useApp } from '../App.tsx';
 import { api, cameraColor, mediaUrl } from '../api.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
@@ -94,7 +94,8 @@ function Tile({ cam, index, big }: { cam: Camera; index: number; big: boolean })
   const source = hit ? (hit.clip.proxyPath ?? (hit.clip.playable ? hit.clip.path : null)) : null;
   const expected = hit && state.playhead !== null ? state.playhead - hit.placement.start : 0;
   const isActive = state.activeCameraId === cam.id || (state.activeCameraId === null && index === 0);
-  const muted = !isActive;
+  // Со звуком предпросмотра видео молчит: звук всех дорожек идёт через общие часы. Без него слышна активная камера.
+  const muted = state.soundOn || !isActive;
 
   // Видео: держим кадр в соответствии с курсором таймлинии.
   useEffect(() => {
@@ -196,6 +197,14 @@ export function Viewer() {
       // запоминать необязательно
     }
   };
+  const setSound = (on: boolean) => {
+    dispatch({ type: 'sound', on });
+    try {
+      localStorage.setItem(SOUND_KEY, on ? '1' : '0');
+    } catch {
+      // запоминать необязательно
+    }
+  };
   const step = (dir: 1 | -1) => {
     if (state.playhead === null) return;
     dispatch({ type: 'play', playing: false });
@@ -219,6 +228,16 @@ export function Viewer() {
           title={state.previewOn ? 'Выключить показ видео — программа станет легче на слабом компьютере' : 'Включить показ видео'}
         >
           {state.previewOn ? 'Предпросмотр вкл.' : 'Предпросмотр выкл.'}
+        </button>
+        <button
+          className={`btn small ${state.soundOn ? '' : 'ghost'}`}
+          aria-pressed={state.soundOn}
+          onClick={() => setSound(!state.soundOn)}
+          title={state.soundOn
+            ? 'Звук всех дорожек вместе, каждая на своём месте. Совпавшие записи звучат как одна, разошедшиеся — эхом. Mute и Solo — у названий дорожек'
+            : 'Включить звук дорожек при проигрывании'}
+        >
+          {state.soundOn ? 'Звук вкл.' : 'Звук выкл.'}
         </button>
         <span className="spacer" />
         {state.playhead !== null && (

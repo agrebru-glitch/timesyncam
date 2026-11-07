@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react';
 import { buildFcp7Xml, defaultResolution, defaultTimelineRate, TIMELINE_PRESETS } from '../../core/fcp7.ts';
 import { buildFcpxml } from '../../core/fcpxml.ts';
 import { rateValue } from '../../core/timecode.ts';
-import { formatClockTime, formatDate, formatDurationHuman, formatSize } from '../../core/format.ts';
+import { formatClockTime, formatDate, formatDurationHuman, formatSize, pluralRu } from '../../core/format.ts';
 import { driftJobs, withDriftCopies } from '../../core/driftExport.ts';
+import { moveToEnd, problemClips } from '../../core/exportOptions.ts';
 import { useApp } from '../App.tsx';
 import { api } from '../api.ts';
 
@@ -63,6 +64,14 @@ export function ExportDialog() {
   const drifting = (state.audio?.drift ?? []).filter((d) => d.apply && jobs.some((j) => state.cameras.find((c) => c.id === d.cameraId)?.clips.some((k) => k.id === j.clipId)));
   const copiesSize = jobs.reduce((s, j) => s + (state.cameras.flatMap((c) => c.clips).find((k) => k.id === j.clipId)?.sizeBytes ?? 0), 0);
 
+  // Опции — выключены при каждом открытии: раскладку программы они не меняют, только то, что уйдёт в монтажку.
+  const problems = useMemo(() => problemClips(state.cameras, state.audio), [state.cameras, state.audio]);
+  const problemCount = sync.placements.filter((p) => problems.has(p.clipId)).length;
+  const cameraHasAudio = state.cameras.some((c) => c.clips.some((x) => x.hasVideo && x.audioChannels > 0 && sync.placements.some((p) => p.clipId === x.id)));
+  const [toEnd, setToEnd] = useState(false);
+  const [noCamAudio, setNoCamAudio] = useState(false);
+  const [multicam, setMulticam] = useState(false);
+
   const cams = state.cameras.filter((c) => sync.placements.some((p) => p.cameraId === c.id));
   const clipsCount = sync.placements.length;
   const errors = sync.issues.filter((i) => i.severity === 'error').length;
@@ -71,8 +80,18 @@ export function ExportDialog() {
     setBusy(true);
     const [num, den] = rateKey.split('/').map(Number);
     const [w, h] = resKey.split('x').map(Number);
-    const opts = { name: name.trim() || 'TimesynCam', rate: { num, den }, width: w, height: h };
-    const build = (c: typeof state.cameras, s: typeof sync) => (format === 'fcpxml' ? buildFcpxml(c, s, opts) : buildFcp7Xml(c, s, opts));
+    const opts = {
+      name: name.trim() || 'TimesynCam',
+      rate: { num, den },
+      width: w,
+      height: h,
+      cameraAudio: !(noCamAudio && hasRecorder && cameraHasAudio),
+      multicam: multicam && format === 'fcpxml',
+    };
+    const build = (c: typeof state.cameras, s0: typeof sync) => {
+      const s = toEnd && problemCount ? moveToEnd(s0, problems) : s0;
+      return format === 'fcpxml' ? buildFcpxml(c, s, opts) : buildFcp7Xml(c, s, opts);
+    };
     try {
       localStorage.setItem(FORMAT_KEY, format);
       localStorage.setItem(DRIFT_KEY, driftOn ? '1' : '0');
@@ -166,6 +185,45 @@ export function ExportDialog() {
             </div>
           </div>
         )}
+        <div className="export-options">
+          <div className="export-options-title">Дополнительно <span className="muted">· по умолчанию выключено</span></div>
+          {problemCount > 0 && (
+            <label className="check">
+              <input type="checkbox" checked={toEnd} onChange={(e) => setToEnd(e.target.checked)} />
+              <span>
+                Ненайденные клипы — в конец таймлинии
+                <span className="hint">
+                  {pluralRu(problemCount, 'клип', 'клипа', 'клипов')}, чьё место звук не нашёл, встанут после конца съёмки, каждый на своей дорожке.
+                  На таймлинии программы они обведены пунктиром.
+                </span>
+              </span>
+            </label>
+          )}
+          {hasRecorder && cameraHasAudio && (
+            <label className="check">
+              <input type="checkbox" checked={noCamAudio} onChange={(e) => setNoCamAudio(e.target.checked)} />
+              <span>
+                Звук камер заменить звуком рекордеров
+                <span className="hint">
+                  {format === 'fcpxml'
+                    ? 'У видео камер на таймлинии будет только картинка, звук — с дорожек рекордеров. Файлы не меняются, звук камеры можно включить в монтажке.'
+                    : 'Дорожек звука камер в XML не будет — только звук рекордеров. Файлы не меняются, звук камеры есть в мастер-клипах корзины.'}
+                </span>
+              </span>
+            </label>
+          )}
+          <label className={`check ${format === 'fcpxml' ? '' : 'disabled'}`}>
+            <input type="checkbox" checked={multicam && format === 'fcpxml'} disabled={format !== 'fcpxml'} onChange={(e) => setMulticam(e.target.checked)} />
+            <span>
+              Мультикам-клип
+              <span className="hint">
+                {format === 'fcpxml'
+                  ? 'Вместо дорожек — один мультикам-клип: каждая камера и рекордер — ракурсом. Картинка — с первой камеры, звук — с первого рекордера. В Resolve ракурсы переключаются в окне Multicam.'
+                  : 'Только для DaVinci Resolve (FCPXML). В Premiere мультикам собирается из дорожек: выделите их и выберите «Create Multi-Camera Source Sequence» по тайм-коду.'}
+              </span>
+            </span>
+          </label>
+        </div>
         <div className="note">
           Оригинальные файлы не меняются — в XML только ссылки на них и их места на таймлинии. Каждая камера — на своей дорожке,
           таймлиния начинается с 00:00:00:00 — с первого клипа съёмки ({rateValue({ num: Number(rateKey.split('/')[0]), den: Number(rateKey.split('/')[1]) }).toFixed(3).replace(/\.?0+$/, '')} к/с).

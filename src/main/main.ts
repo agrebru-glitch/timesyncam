@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
 import { AUDIO_EXT, scanPaths, VIDEO_EXT } from './scan.ts';
 import { grabFrame, toolPath, toolsAvailable } from './ffmpeg.ts';
-import { audioWaveform } from './audio.ts';
+import { audioPreview, audioWaveform, clearAudioCaches } from './audio.ts';
 import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
 import type { DriftJob, DriftRendered } from '../core/driftExport.ts';
 import { scanQr } from './qr.ts';
@@ -235,6 +235,17 @@ ipcMain.handle('sync:audio', (event, job: AudioJob) => {
   });
 });
 
+// Новый проект: всё, что программа прочитала, — из памяти, доступ плеера к файлам старого проекта закрыт.
+// Сами файлы не трогаются. Фоновый поток сверки помнит звук — он завершается, следующая сверка запустит новый.
+ipcMain.handle('app:clear', async () => {
+  const w = syncWorker;
+  syncWorker = null;
+  if (w) await w.terminate();
+  finishJob((j) => j.resolve(null));
+  clearAudioCaches();
+  allowedMedia.clear();
+});
+
 ipcMain.handle('sync:cancel', async () => {
   const w = syncWorker;
   syncWorker = null;
@@ -250,6 +261,12 @@ ipcMain.handle('qr:scan', async (_e, path: string, localSec: number, fps: number
 ipcMain.handle('audio:waveform', async (_e, path: string, audioStartSec: number) => {
   if (!allowedMedia.has(path)) return null;
   return audioWaveform(path, { start: Number(audioStartSec) || 0 });
+});
+
+// Кусок звука для предпросмотра: не длиннее минуты.
+ipcMain.handle('audio:preview', async (_e, path: string, startSec: number, durSec: number, audioStartSec: number) => {
+  if (!allowedMedia.has(path)) return null;
+  return audioPreview(path, Number(startSec) || 0, Math.min(60, Number(durSec) || 0), { start: Number(audioStartSec) || 0 });
 });
 
 // Расширенный отчёт для разработчика — ZIP-архив: отчёт, звук клипов без видео, сведения о файлах и системе.

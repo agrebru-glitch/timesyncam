@@ -4,13 +4,14 @@ import { formatClockTime, formatDate, pluralRu, rulerTicks } from '../../core/fo
 import { useApp } from '../App.tsx';
 import { api, cameraColor } from '../api.ts';
 import { IconCamera, IconHeadphones, IconPlus } from '../icons.tsx';
-import { newCamera } from '../state.ts';
+import { audible, newCamera } from '../state.ts';
 import type { Viewport } from '../state.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { isMac } from '../platform.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
 import { driftJobs } from '../../core/driftExport.ts';
 import type { DriftJob } from '../../core/driftExport.ts';
+import { UNSURE_TEXT, unsureDetails, unsureOf } from '../../core/unsure.ts';
 
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
@@ -155,6 +156,9 @@ export function Timeline() {
   }, []);
 
   const errorClips = useMemo(() => new Set(issues.filter((i) => i.severity === 'error' && i.clipId).map((i) => i.clipId!)), [issues]);
+  // Клипы с неточным местом: звук его не подтвердил или подтвердил хуже кадра — обведены пунктиром.
+  const unsureClips = useMemo(() => (synced ? state.audio?.unsure ?? {} : {}), [synced, state.audio]);
+  const unsureByCam = useMemo(() => new Map(state.cameras.map((c) => [c.id, synced ? unsureOf(c, state.audio) : unsureOf(c, null)])), [state.cameras, state.audio, synced]);
   const speedClips = useMemo(() => new Set(state.cameras.flatMap((c) => c.clips.filter((x) => x.captureFps !== null).map((x) => x.id))), [state.cameras]);
   // Записи с ходом часов: в таймлинию монтажки вместо них встанут выровненные копии — оригиналы не меняются.
   const driftClips = useMemo(
@@ -315,6 +319,16 @@ export function Timeline() {
           g.strokeStyle = '#ff5f57';
           g.lineWidth = 2;
           g.stroke();
+        } else if (unsureClips[p.clipId] && !isSpeed && w > 3) {
+          // Неточное место — пунктир: тёмная подложка и светлая штриховка видны на клипе любого цвета.
+          g.save();
+          g.lineWidth = 2;
+          g.strokeStyle = 'rgba(0,0,0,0.55)';
+          g.stroke();
+          g.setLineDash([5, 4]);
+          g.strokeStyle = '#ffd60a';
+          g.stroke();
+          g.restore();
         }
         if (state.selectedClipId === p.clipId) {
           g.strokeStyle = '#ffffff';
@@ -421,7 +435,23 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, speedClips, driftClips, tz, showWaves, waveVersion]);
+  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, unsureClips, speedClips, driftClips, tz, showWaves, waveVersion]);
+
+  // К следующему неточному клипу дорожки: выделить, поставить курсор на начало и показать, если он за краем.
+  const nextUnsure = (cameraId: string) => {
+    const ids = new Set(unsureByCam.get(cameraId)?.ids ?? []);
+    const list = placements.filter((p) => p.cameraId === cameraId && ids.has(p.clipId)).sort((a, b) => a.start - b.start);
+    if (!list.length) return;
+    const cur = list.findIndex((p) => p.clipId === state.selectedClipId);
+    const p = cur >= 0 ? list[(cur + 1) % list.length] : list.find((q) => q.start > (state.playhead ?? -Infinity) + 1e-3) ?? list[0];
+    dispatch({ type: 'select-clip', clipId: p.clipId });
+    dispatch({ type: 'play', playing: false });
+    dispatch({ type: 'playhead', at: p.start });
+    if (vp) {
+      const span = size.w * vp.secPerPx;
+      if (p.start < vp.start || p.start > vp.start + span * 0.9) dispatch({ type: 'viewport', viewport: clampViewport({ ...vp, start: p.start - span * 0.3 })! });
+    }
+  };
 
   // Мышь: щелчок ставит курсор и выделяет клип, по линейке можно водить.
   const timeAt = (clientX: number) => {
@@ -630,14 +660,45 @@ export function Timeline() {
               {r.cam.clips.length > 0 && r.cam.clips.every((c) => !c.hasVideo)
                 ? <IconHeadphones className="icon track-kind" style={{ color: cameraColor(r.index) }} />
                 : <IconCamera className="icon track-kind" style={{ color: cameraColor(r.index) }} />}
-              {r.cam.name}
+              <span className="name">{r.cam.name}</span>
+              {(() => {
+                const u = unsureByCam.get(r.cam.id);
+                if (!u?.ids.length || r.cam.scanning) return null;
+                return (
+                  <button
+                    className="tl-unsure"
+                    title={`Место неточно — ${pluralRu(u.ids.length, 'клип', 'клипа', 'клипов')} (на дорожке обведены пунктиром):\n${unsureDetails(u)}\n\nЩелчок — к следующему такому клипу.`}
+                    onClick={(e) => { e.stopPropagation(); nextUnsure(r.cam.id); }}
+                  >
+                    {u.ids.length} неточно
+                  </button>
+                );
+              })()}
             </span>
-            <span className="s">
-              {r.cam.scanning
-                ? `Читаю ${r.cam.scanning.done} из ${r.cam.scanning.total || '…'}`
-                : r.cam.clips.length
-                  ? trackInfo(r.cam)
-                  : 'Перетащите папку или файлы'}
+            <span className="s-row">
+              <span className="s">
+                {r.cam.scanning
+                  ? `Читаю ${r.cam.scanning.done} из ${r.cam.scanning.total || '…'}`
+                  : r.cam.clips.length
+                    ? trackInfo(r.cam)
+                    : 'Перетащите папку или файлы'}
+              </span>
+              {state.soundOn && r.cam.clips.some((c) => c.audioChannels > 0) && (
+                <span className="tl-mix" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    className={`mix-btn ${state.mix.muted.includes(r.cam.id) ? 'on mute' : ''} ${!audible(state.mix, r.cam.id) ? 'silent' : ''}`}
+                    title="Mute — выключить звук дорожки при проигрывании"
+                    aria-pressed={state.mix.muted.includes(r.cam.id)}
+                    onClick={() => dispatch({ type: 'mix', cameraId: r.cam.id, kind: 'mute' })}
+                  >M</button>
+                  <button
+                    className={`mix-btn ${state.mix.solo.includes(r.cam.id) ? 'on solo' : ''}`}
+                    title="Solo — слушать только эту дорожку (можно несколько): так слышно, совпадают ли две записи"
+                    aria-pressed={state.mix.solo.includes(r.cam.id)}
+                    onClick={() => dispatch({ type: 'mix', cameraId: r.cam.id, kind: 'solo' })}
+                  >S</button>
+                </span>
+              )}
             </span>
           </div>
         ))}
@@ -681,6 +742,7 @@ export function Timeline() {
           return (
             <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
               <div className="ctx-title">{clip.name}</div>
+              {unsureClips[clip.id] && <div className="ctx-note">Место неточно: {UNSURE_TEXT[unsureClips[clip.id]]}</div>}
               <button role="menuitem" className="ctx-item" onClick={() => { markControl(menu.cameraId, menu.clipId, menu.localSec); setMenu(null); }}>
                 {state.controlFrames[clip.id] ? 'Перенести контрольный кадр сюда' : 'Выбрать контрольным кадром'}
                 <span className="ctx-hint">здесь в кадре экран синхронизации</span>

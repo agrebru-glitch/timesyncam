@@ -21,6 +21,7 @@
 // клипа, p — ход часов его устройства в миллионных. Окно, где момент uc клипа c совпал с моментом ud клипа d, —
 // уравнение Sd − Sc + pd·ud·10⁻⁶ − pc·uc·10⁻⁶ = uc − ud, линейное по неизвестным.
 import { roughClock } from './clipMeta.ts';
+import { isTrackTwin } from './sync.ts';
 import type { Camera, ClipMeta, Issue, SyncResult } from './types.ts';
 import { FEAT_RATE, FINE_SR, gccPhat, hasAttacks, poolFeatures, sliceFeatures } from './audioFeatures.ts';
 import type { Features } from './audioFeatures.ts';
@@ -57,7 +58,7 @@ const ECHO_FINE = 0.7;
 // Отражение ближе 10 мс (от пола и стен у самого микрофона — 4–6 мс) — не эхо зала: точка берётся. У камеры
 // на штативе такое отражение почти в каждой точке, ошибиться на нём можно лишь на доли кадра.
 const NEAR_ECHO = 0.01;
-const FRAME_LIMIT = 0.035; // хуже — уже заметно глазу: точность камеры хуже кадра — предупреждаем
+export const FRAME_LIMIT = 0.035; // хуже — уже заметно глазу: точность камеры хуже кадра — предупреждаем
 const HUBER = 2.5;
 const OUTLIER = 6; // измерение дальше шести своих погрешностей от общего решения — ложное
 // Слабая привязка клипа к месту после сборки: держит клипы без общего звука, а общий сдвиг всей съёмки
@@ -72,6 +73,7 @@ const LINK = { rigid: 0.0005, tc: 0.4, bwf: 0.6, chain: 1, clock: 2 } as const;
 // был 60 мс, пока точек по волне было мало; с точками вдоль всего клипа он прятал настоящие сбои тайм-кода после
 // выключения камеры: на съёмке тестера — 37 мс у CAM 01, клип вставал то по звуку, то по тайм-коду.
 const HOLD = LINK.rigid;
+const TWIN_SIGMA = 0.00002; // дорожки одного дубля — сэмпл в сэмпл (1 сэмпл при 48 кГц)
 const BREAK = 0.025;
 const DRIFT_EFFECT = 0.015; // ход часов, сдвигающий края записи больше чем на 15 мс, стоит выравнивать
 const SPLIT_SIZES = [2 ** 31, 2 ** 32]; // рекордеры режут длинную запись на файлы по 2 и 4 ГБ
@@ -112,7 +114,8 @@ export interface RefineInput {
   feats: Map<string, AudioPiece | null>;
   samples: AudioFetch['samples'];
   isEnabled: (cameraId: string) => boolean;
-  fixedClips: Set<string>; // клипы с жёсткой опорой: контрольный кадр, тайм-код, отмеченный точным, общий тайм-код
+  fixedClips: Set<string>; // клипы с жёсткой опорой: тайм-код, отмеченный точным, общий тайм-код
+  softClips?: Map<string, number>; // клипы с опорой по экрану синхронизации: место держится с этой погрешностью, секунды
   exactClips: Set<string>; // клипы с тайм-кодом по часам устройства — время суток по ним точнее
   log: Log;
   tick?: () => void;
@@ -395,11 +398,24 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
         links.push({ terms, rhs, sigma: LINK[kind], kind: 'link', link: { kind, a, b } });
       }
     }
+    // Дорожки одного дубля многоканального рекордера (…_Tr1, …_Tr2) рекордер пишет синхронно до сэмпла: начало
+    // у них одно. По звуку каждая встала бы сама по себе — с разницей в миллисекунды от разных микрофонов.
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i];
+        const b = list[j];
+        if (!isTrackTwin(a.clip, b.clip)) continue;
+        const d0 = b.start0 - a.start0;
+        const terms = [{ key: yKey(b), c: 1 }, { key: yKey(a), c: -1 }];
+        if (rated.has(device)) terms.push({ key: pKey(device), c: -d0 * 1e-6 });
+        links.push({ terms, rhs: -d0, sigma: TWIN_SIGMA, kind: 'link', link: { kind: 'rigid', a, b } });
+      }
+    }
   }
   const priors: Row[] = [
     // У продолжения разрезанной записи своё время в BWF округлено до секунды — точным оно быть не может: с точной
     // опорой связь «с конца предыдущего» тянула бы на доли секунды всю съёмку.
-    ...items.filter((it) => it.free).map((it): Row => ({ terms: [{ key: yKey(it), c: 1 }], rhs: 0, sigma: PRIOR_START[input.exactClips.has(it.id) && !continued.has(it.id) ? 'exact' : it.clip.hasVideo ? 'video' : 'audio'], kind: 'prior' })),
+    ...items.filter((it) => it.free).map((it): Row => ({ terms: [{ key: yKey(it), c: 1 }], rhs: 0, sigma: input.softClips?.get(it.id) ?? PRIOR_START[input.exactClips.has(it.id) && !continued.has(it.id) ? 'exact' : it.clip.hasVideo ? 'video' : 'audio'], kind: 'prior' })),
     ...[...rated].map((d): Row => ({ terms: [{ key: pKey(d), c: 1 }], rhs: 0, sigma: PRIOR_PPM, kind: 'prior' })),
   ];
 
@@ -678,11 +694,29 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
   const VAR_LIMIT = 600; // точная дисперсия — решение системы на клип; на больших съёмках — для первых 600
   let counted = 0;
   const group = items.filter((it) => it.free && measured.has(it.id));
+  // С кем клип совпал по звуку: точность места — относительно этих записей, с ними его и монтируют встык.
+  // Против среднего по всей съёмке она тонула в клипах, которые сами стоят нетвёрдо: на концерте тестера все
+  // клипы получали ±128 мс при ошибке по волне 1–40 мс.
+  const partnersOf = new Map<Item, Map<Item, number>>();
+  for (const r of used) {
+    const [a, b] = r.pair!;
+    for (const [x, y] of [[a, b], [b, a]] as const) {
+      const m = partnersOf.get(x) ?? new Map<Item, number>();
+      m.set(y, (m.get(y) ?? 0) + 1);
+      partnersOf.set(x, m);
+    }
+  }
   for (const it of items.filter((x) => x.free)) {
     let stat = NaN;
     if (counted++ < VAR_LIMIT) {
-      const terms = [{ key: yKey(it), c: 1 }, ...group.filter((g) => g !== it).map((g) => ({ key: yKey(g), c: -1 / Math.max(1, group.length - 1) }))];
-      stat = scale * Math.sqrt(Math.max(0, varianceOf(terms)));
+      const best = [...(partnersOf.get(it) ?? new Map<Item, number>()).entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p]) => p);
+      if (best.length) {
+        // Относительно самого надёжного из трёх главных партнёров (у неподвижного партнёра своей погрешности нет).
+        stat = scale * Math.sqrt(Math.max(0, Math.min(...best.map((p) => varianceOf([{ key: yKey(it), c: 1 }, ...(p.free ? [{ key: yKey(p), c: -1 }] : [])])))));
+      } else {
+        const terms = [{ key: yKey(it), c: 1 }, ...group.filter((g) => g !== it).map((g) => ({ key: yKey(g), c: -1 / Math.max(1, group.length - 1) }))];
+        stat = scale * Math.sqrt(Math.max(0, varianceOf(terms)));
+      }
     }
     // Куда клипу пришлось бы сдвинуться ради каждого партнёра-устройства.
     const byPartner = new Map<string, { s: number; n: number }>();
@@ -714,6 +748,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     const echo = echoes.length > (fineOk.get(it.id) ?? 0) && blamed ? median(echoes) / 2 : 0;
     if (echo) log(`эхо ${nameOf(it.device)} / ${it.clip.name}: точек по волне с отражением ${echoes.length}, чистых ${fineOk.get(it.id) ?? 0}, отражение через ${(median(echoes) * 1000).toFixed(0)} мс`);
     accuracy[it.id] = Math.sqrt((Number.isFinite(stat) ? stat : 0) ** 2 + partner ** 2 + edge ** 2 + echo ** 2);
+    if (accuracy[it.id] > FRAME_LIMIT) log(`точность ${nameOf(it.device)} / ${it.clip.name}: ±${(accuracy[it.id] * 1000).toFixed(0)} мс — случайная ${(stat * 1000).toFixed(0)} (разброс ×${scale.toFixed(1)}), партнёры ${(partner * 1000).toFixed(0)}, ход ${(edge * 1000).toFixed(0)}, эхо ${(echo * 1000).toFixed(0)}`);
   }
   const deviceAccuracy = new Map<string, number>();
   for (const [device, list] of devices) {
@@ -799,7 +834,7 @@ export async function refineClips(input: RefineInput): Promise<RefineResult> {
     issues.push(issue({
       severity: 'warning',
       cameraId: device,
-      title: `«${nameOf(device)}»: точность по звуку ±${formatDurationHuman(acc)}`,
+      title: `«${nameOf(device)}»: точность по звуку ±${acc < 1 ? `${Math.round(acc * 1000)} мс` : formatDurationHuman(acc)}`,
       details: 'Звук этой записи по-разному совпадает с разными записями или в нём сильное эхо — так бывает в гулком зале и у микрофонов далеко от сцены. Место найдено по лучшему совпадению, но проверьте стыковку по картинке.',
       actions: [{ kind: 'open-faq', anchor: 'manual-sync' }],
     }));

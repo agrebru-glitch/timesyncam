@@ -32,12 +32,25 @@ const cameras: Camera[] = r.cameras.map((c: any) => ({
 console.log(`программа тестера ${r.app.version}, режим ${r.syncMode}, камер ${cameras.length}, клипов ${cameras.reduce((n, c) => n + c.clips.length, 0)}`);
 
 const coarse = runSync(cameras);
+// Режим «Контрольный кадр + тайм-код + звук»: поправки по экрану из отчёта (по камере), камеры с экраном — опорные.
+// Камера без тайм-кода ставится по клипу с экраном — в отчёте только итог по камере, его и берём.
+const pre: Record<string, number> = {};
+const fixed = new Set<string>();
+const controlClips = new Set<string>();
+if (r.syncMode === 'control' && r.control && !process.argv.includes('--no-control')) {
+  for (const [camId, c] of Object.entries(r.control as Record<string, { correction: number }>)) {
+    for (const p of coarse.placements) if (p.cameraId === camId) pre[p.clipId] = c.correction;
+    if (coarse.cameras.find((x) => x.cameraId === camId)?.timeSource !== 'clock') fixed.add(camId);
+  }
+  for (const f of Object.values(r.controlFrames ?? {}) as { clipId: string }[]) controlClips.add(f.clipId);
+  console.log(`контрольные кадры: камер ${Object.keys(r.control).length}, опорных ${fixed.size}`);
+}
 const audio = await alignByAudio(cameras, coarse, {
   features: (c, s, d) => audioFeatures(c.path, s, d, reportTiming(c)),
   samples: (c, s, d, ch) => audioSamples(c.path, s, d, ch, reportTiming(c)),
   whole: (c) => audioWholeFeatures(c.path, c.durationSec, reportTiming(c)),
-}, { searchSec: 30, maxAnchors: 8, isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true });
-const now = runSync(cameras, audio.corrections, heardCameras(audio));
+}, { searchSec: 30, maxAnchors: 8, isEnabled: (id) => cameras.find((c) => c.id === id)?.audioAssist ?? true, pre, fixed, controlClips });
+const now = runSync(cameras, audio.corrections, new Set([...heardCameras(audio), ...fixed]));
 
 for (const line of audio.log ?? []) console.log(line);
 console.log('--- клипы: у тестера → сейчас (секунды от начала съёмки)');
@@ -53,6 +66,11 @@ for (const cam of cameras) {
   }
 }
 for (const i of audio.issues) console.log(`  [${i.severity}] ${i.title}`);
+console.log('--- неточные клипы (на таймлинии — пунктир)');
+for (const cam of cameras) {
+  const list = cam.clips.filter((k) => audio.unsure?.[k.id] && !cam.excludedClipIds.includes(k.id));
+  if (list.length) console.log(`  ${cam.name}: ${list.length} из ${cam.clips.length} — ${list.map((k) => `${k.name} (${audio.unsure![k.id]})`).join(', ')}`);
+}
 // Раскладка «файл → начало, с» — для сверки по звуку (probe) и сравнения с проектом монтажки.
 const jsonAt = process.argv.indexOf('--json');
 if (jsonAt > 0) {

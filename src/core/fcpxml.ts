@@ -4,6 +4,7 @@
 import type { Camera, ClipMeta, Rate, SyncResult } from './types.ts';
 import { nominalRate, parseTc, rateValue, tcToFrameCount } from './timecode.ts';
 import type { ExportOptions } from './fcp7.ts';
+import { timelineOrigin } from './fcp7.ts';
 
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -50,7 +51,7 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
 
   // Таймлиния начинается с 00:00:00:00 — с первого клипа съёмки, остальные стоят от него на своих местах.
   // С тайм-кодом времени суток клипы оказывались за много часов от начала, и DaVinci зависал на импорте.
-  const seqStartEpoch = result.start;
+  const seqStartEpoch = timelineOrigin(result.placements.map((p) => ({ start: p.start, weight: p.end - p.start, exact: !clipsById.get(p.clipId)?.hasVideo })), seqFps);
 
   const formats = new Map<string, string>();
   const formatXml: string[] = [`<format id="r0" frameDuration="${frames(1, seq)}" width="${opts.width}" height="${opts.height}"/>`];
@@ -117,7 +118,7 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
   };
 
   const items: { lane: number; offset: number; xml: string }[] = [];
-  const entries: { lane: number; offset: number; dur: number; c: ClipMeta; start: string }[] = [];
+  const entries: { lane: number; offset: number; dur: number; c: ClipMeta; start: string; track: string }[] = [];
   const lastOf = new Map<number, (typeof entries)[number]>();
   let endFrame = 0;
   for (const cam of cameras) {
@@ -148,18 +149,18 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
       // хвост предыдущего: место следующего найдено по звуку, сдвигать его нельзя.
       const prev = lastOf.get(l);
       if (prev && offset < prev.offset + prev.dur) prev.dur = Math.max(1, offset - prev.offset);
-      const entry = { lane: l, offset, dur: durFrames, c, start };
+      const entry = { lane: l, offset, dur: durFrames, c, start, track: p.lane ? `${cam.name} (${p.lane + 1})` : cam.name };
       lastOf.set(l, entry);
       entries.push(entry);
     }
   }
+  // Без звука камер: у видео на таймлинии включена только картинка (srcEnable), звук остаётся у рекордеров.
+  const only = (c: ClipMeta) => (c.hasVideo && opts.cameraAudio === false && c.audioChannels > 0 ? ' srcEnable="video"' : '');
+  const clipXml = (e: (typeof entries)[number], lanes: boolean) =>
+    `<asset-clip ref="${assetOf(e.c)}"${lanes ? ` lane="${e.lane}"` : ''} offset="${frames(e.offset, seq)}" start="${e.start}" duration="${frames(e.dur, seq)}" name="${esc(e.c.name)}"${e.c.hasVideo ? ` format="${formatOf(e.c)}"` : ''}${only(e.c)} tcFormat="NDF">${keyword(e.c, e.start, frames(e.dur, seq))}</asset-clip>`;
   for (const e of entries) {
     endFrame = Math.max(endFrame, e.offset + e.dur);
-    items.push({
-      lane: e.lane,
-      offset: e.offset,
-      xml: `<asset-clip ref="${assetOf(e.c)}" lane="${e.lane}" offset="${frames(e.offset, seq)}" start="${e.start}" duration="${frames(e.dur, seq)}" name="${esc(e.c.name)}"${e.c.hasVideo ? ` format="${formatOf(e.c)}"` : ''} tcFormat="NDF">${keyword(e.c, e.start, frames(e.dur, seq))}</asset-clip>`,
-    });
+    items.push({ lane: e.lane, offset: e.offset, xml: clipXml(e, true) });
   }
   // Порядок в файле — по дорожкам: сначала звук без видео (рекордер), потом камеры сверху вниз, в каждой — по времени.
   // DaVinci раскладывает звук клипов по дорожкам в том порядке, в каком встречает их в файле: так звук каждой камеры
@@ -179,12 +180,48 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
   });
 
   const total = frames(Math.max(1, endFrame), seq);
+
+  // Мультикам: каждая дорожка — ракурс, клипы в нём подряд на своих местах, пустоты — промежутками. На таймлинии —
+  // один мультикам-клип: картинка с первой камеры, звук — с первого рекордера (если его нет — с той же камеры).
+  let multicamXml = '';
+  let spineXml = `<gap name="${esc(opts.name)}" offset="0s" start="0s" duration="${total}">
+${items.map((i) => i.xml).join('\n')}
+</gap>`;
+  let browserMc = '';
+  if (opts.multicam && entries.length) {
+    // Ракурсы: камеры сверху вниз, потом звук без видео.
+    const lanes = [...new Set(entries.map((e) => e.lane))].sort((a, b) => ((a > 0) === (b > 0) ? Math.abs(a) - Math.abs(b) : b - a));
+    const angleId = (l: number) => `angle-${l > 0 ? 'v' : 'a'}${Math.abs(l)}`;
+    const angles = lanes.map((l) => {
+      const list = entries.filter((e) => e.lane === l).sort((a, b) => a.offset - b.offset);
+      const parts: string[] = [];
+      let pos = 0;
+      for (const e of list) {
+        if (e.offset > pos) parts.push(`<gap name="Gap" offset="${frames(pos, seq)}" start="0s" duration="${frames(e.offset - pos, seq)}"/>`);
+        parts.push(clipXml(e, false));
+        pos = e.offset + e.dur;
+      }
+      return `<mc-angle name="${esc(list[0].track)}" angleID="${angleId(l)}">\n${parts.join('\n')}\n</mc-angle>`;
+    });
+    const video = lanes.find((l) => l > 0);
+    const audioLane = lanes.find((l) => l < 0) ?? video!;
+    const sources = video === undefined
+      ? `<mc-source angleID="${angleId(audioLane)}" srcEnable="audio"/>`
+      : video === audioLane
+        ? `<mc-source angleID="${angleId(video)}" srcEnable="all"/>`
+        : `<mc-source angleID="${angleId(video)}" srcEnable="video"/><mc-source angleID="${angleId(audioLane)}" srcEnable="audio"/>`;
+    const mcName = esc(`${opts.name} — мультикам`);
+    multicamXml = `\n<media id="mc1" name="${mcName}">\n<multicam format="r0" tcStart="0s" tcFormat="NDF">\n${angles.join('\n')}\n</multicam>\n</media>`;
+    spineXml = `<mc-clip ref="mc1" offset="0s" start="0s" duration="${total}" name="${mcName}">${sources}</mc-clip>`;
+    browserMc = `\n<mc-clip ref="mc1" start="0s" duration="${total}" name="${mcName}">${sources}</mc-clip>`;
+  }
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE fcpxml>
 <fcpxml version="1.10">
 <resources>
 ${formatXml.join('\n')}
-${assetXml.join('\n')}
+${assetXml.join('\n')}${multicamXml}
 </resources>
 <library>
 <event name="TimesynCam">
@@ -192,13 +229,11 @@ ${assetXml.join('\n')}
 <!-- Таймлиния начинается с 00:00:00:00 — с первого клипа съёмки -->
 <sequence format="r0" tcStart="0s" tcFormat="NDF" duration="${total}" audioLayout="stereo" audioRate="48k">
 <spine>
-<gap name="${esc(opts.name)}" offset="0s" start="0s" duration="${total}">
-${items.map((i) => i.xml).join('\n')}
-</gap>
+${spineXml}
 </spine>
 </sequence>
 </project>
-${browser.join('\n')}
+${browser.join('\n')}${browserMc}
 </event>
 </library>
 </fcpxml>

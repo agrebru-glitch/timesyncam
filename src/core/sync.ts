@@ -166,6 +166,22 @@ function stretchedCopy(copy: ClipMeta, orig: ClipMeta): boolean {
   return named ? Math.abs(d) >= 0.001 || history : history && !!copy.tc && !!orig.tc;
 }
 
+// Дорожки одного дубля многоканального рекордера: Zoom пишет ZOOM0001_Tr1.WAV, _Tr2, _TrLR, _TrMic, Tascam —
+// …S12.wav, …S34.wav, у других — _1/_2, _L/_R. Одно время начала, одна длина и одно имя до номера дорожки —
+// это одна запись в нескольких файлах, а не наложение: каждая встаёт на свою дорожку, без ошибки.
+const TRACK_TAIL = /([_-](tr[\p{L}\p{N}]*|lr|ms|mic|[lr]|ch?\d{1,2}|\d{1,2})|s\d{2})$/iu;
+export function isTrackTwin(a: ClipMeta, b: ClipMeta): boolean {
+  if (a.hasVideo || b.hasVideo || !a.audioChannels || !b.audioChannels || a.id === b.id) return false;
+  if (Math.abs(a.durationSec - b.durationSec) > 0.05) return false;
+  const sameStart = a.tc && b.tc ? Math.abs(wrapSigned(a.tc.seconds - b.tc.seconds)) < 0.01 : !!a.clock && !!b.clock && Math.abs(a.clock.epochSec - b.clock.epochSec) <= 1;
+  if (!sameStart) return false;
+  const stem = (n: string) => n.replace(/\.[^.]+$/, '');
+  const ta = TRACK_TAIL.exec(stem(a.name));
+  const tb = TRACK_TAIL.exec(stem(b.name));
+  if (!ta || !tb || ta[0].toLowerCase() === tb[0].toLowerCase()) return false;
+  return stem(a.name).slice(0, -ta[0].length).toLowerCase() === stem(b.name).slice(0, -tb[0].length).toLowerCase();
+}
+
 const copyKey = (cameraId: string, clipId: string) => `${cameraId}|${clipId}`;
 
 // Тот же ли это файл. Одинаковое имя ничего не значит: две камеры одной модели обе пишут C0003.MP4.
@@ -443,7 +459,9 @@ function syncCamera(
     const last = lastBySegment.get(segKey);
     const lastRecordedEnd = last?.end ?? -Infinity;
     const lastRecordedClip = last?.clip ?? null;
-    const realOverlap = guest ? 0 : lastRecordedEnd - start;
+    // Другая дорожка того же дубля рекордера — не наложение.
+    const twin = !guest && !!lastRecordedClip && isTrackTwin(lastRecordedClip, r.clip);
+    const realOverlap = guest || twin ? 0 : lastRecordedEnd - start;
     const drifting = !!r.heard && realOverlap <= DRIFT_OVERLAP;
     if (realOverlap > 0.02 && !drifting) {
       if (r.method !== 'timecode' && realOverlap <= NUDGE_LIMIT && !r.heard) {
@@ -738,7 +756,7 @@ function copiedDates(cam: Camera): boolean {
   const timed = cam.clips.filter((c) => c.clock && !cam.excludedClipIds.includes(c.id));
   if (timed.length < 2 || !timed.every((c) => c.clock!.source === 'file')) return false;
   const s = [...timed].sort((a, b) => a.clock!.epochSec - b.clock!.epochSec);
-  return s.some((c, i) => i > 0 && c.clock!.epochSec < s[i - 1].clock!.epochSec + s[i - 1].recordedSec - 3);
+  return s.some((c, i) => i > 0 && c.clock!.epochSec < s[i - 1].clock!.epochSec + s[i - 1].recordedSec - 3 && !isTrackTwin(s[i - 1], c));
 }
 
 function overlapSec(a: CameraSync, b: CameraSync): number {

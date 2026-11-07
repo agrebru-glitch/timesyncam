@@ -21,8 +21,12 @@ export interface Api {
   // Сверка по звуку в фоновом потоке. null — сверку остановили.
   syncAudio(job: AudioJob): Promise<AudioSyncResult | null>;
   cancelSync(): Promise<void>;
+  // Новый проект: освободить память от прочитанного звука и закрыть доступ к файлам старого проекта.
+  clearProject(): Promise<void>;
   onSyncProgress(cb: (p: { done: number; total: number }) => void): () => void;
   waveform(path: string, audioStartSec: number): Promise<Uint8Array | null>;
+  // Кусок звука клипа для предпросмотра: моно 48 кГц, время — от начала клипа.
+  previewAudio(path: string, startSec: number, durSec: number, audioStartSec: number): Promise<Float32Array | null>;
   scanQr(path: string, localSec: number, fps: number, width: number, height: number, durationSec: number): Promise<{ result: QrResult | null; framesRead: number; framesWithCode: number } | null>;
   saveExport(defaultName: string, content: string): Promise<string | null>;
   // Экспорт с выровненным звуком: выбрать место, сделать копии рядом с ним, записать XML.

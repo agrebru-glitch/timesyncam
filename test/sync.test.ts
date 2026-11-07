@@ -507,3 +507,22 @@ test('Клипы, поставленные по звуку, не двигают�
   }
   assert.ok(!s.issues.some((i) => /накладываются/.test(i.title)), s.issues.map((i) => i.title).join('; '));
 });
+
+test('Дорожки одного дубля рекордера (…_Tr1, …_Tr2) — не наложение: каждая на своей дорожке, без ошибки', () => {
+  const take = (name: string, start = T16, dur = 4186.49) => {
+    const c = clip({ start, durationSec: dur, recordedSec: dur, hasVideo: false, rate: null, frames: null, width: null, height: null, audioChannels: 1 });
+    return Object.assign(c, { name, tc: { text: '12:30:10:00', seconds: 45010, countRate: 25, drop: false, source: 'bwf' as const } });
+  };
+  const r = runSync([camera('Zoom', [take('ZOOM0001_Tr1.WAV'), take('ZOOM0001_Tr2.WAV'), take('ZOOM0001_TrLR.WAV')])]);
+  assert.ok(!r.issues.some((i) => /накладываются/.test(i.title)), r.issues.map((i) => i.title).join('; '));
+  assert.equal(r.cameras[0].lanes, 3);
+  // Tascam: …S12 и …S34.
+  const t = runSync([camera('Tascam', [take('TASCAM_0007S12.wav'), take('TASCAM_0007S34.wav')])]);
+  assert.ok(!t.issues.some((i) => /накладываются/.test(i.title)));
+  // Разные записи с тем же временем — по-прежнему ошибка: имена не дорожки одного дубля.
+  const bad = runSync([camera('Zoom', [take('ZOOM0001_Tr1.WAV'), take('ZOOM0002_Tr1.WAV')])]);
+  assert.ok(bad.issues.some((i) => i.severity === 'error' && /накладываются/.test(i.title)));
+  // И та же дорожка другой длины — тоже.
+  const other = runSync([camera('Zoom', [take('ZOOM0001_Tr1.WAV'), take('ZOOM0001_Tr2.WAV', T16, 3000)])]);
+  assert.ok(other.issues.some((i) => i.severity === 'error' && /накладываются/.test(i.title)));
+});

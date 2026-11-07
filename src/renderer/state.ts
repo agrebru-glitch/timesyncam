@@ -58,6 +58,8 @@ export interface State {
   controlIssues: Issue[];
   qrRun: { done: number; total: number } | null;
   previewOn: boolean;
+  soundOn: boolean; // звук предпросмотра: все слышимые дорожки на общих часах
+  mix: { muted: string[]; solo: string[] }; // Mute и Solo дорожек — как в монтажке
   qrScreenOpen: boolean;
   controlHint: number | null; // подсказка «отметьте контрольный кадр»: номер показа, null — скрыта
 }
@@ -123,6 +125,8 @@ export const initialState: State = {
   controlIssues: [],
   qrRun: null,
   previewOn: true,
+  soundOn: true,
+  mix: { muted: [], solo: [] },
   qrScreenOpen: false,
   controlHint: null,
 };
@@ -164,6 +168,9 @@ export type Action =
   | { type: 'qr-result'; key: string; result: QrResult | null }
   | { type: 'qr-done'; control: Record<string, ControlInfo> | null; issues: Issue[]; pre: Record<string, number>; fixed: string[] }
   | { type: 'preview'; on: boolean }
+  | { type: 'sound'; on: boolean }
+  | { type: 'mix'; cameraId: string; kind: 'mute' | 'solo' }
+  | { type: 'clear-all' }
   | { type: 'qr-screen'; open: boolean }
   | { type: 'control-hint-close' };
 
@@ -186,6 +193,7 @@ export function reducer(state: State, a: Action): State {
         scanIssues: state.scanIssues.filter((i) => i.cameraId !== a.cameraId),
         version: removed && removed.clips.length ? state.version + 1 : state.version,
         activeCameraId: state.activeCameraId === a.cameraId ? null : state.activeCameraId,
+        mix: { muted: state.mix.muted.filter((x) => x !== a.cameraId), solo: state.mix.solo.filter((x) => x !== a.cameraId) },
       };
     }
     case 'rename-camera':
@@ -323,6 +331,26 @@ export function reducer(state: State, a: Action): State {
       return { ...state, qrRun: null, control: a.control, controlIssues: a.issues, controlPre: a.pre, controlFixed: a.fixed };
     case 'preview':
       return { ...state, previewOn: a.on };
+    case 'sound':
+      return { ...state, soundOn: a.on };
+    case 'mix': {
+      const key = a.kind === 'mute' ? 'muted' : 'solo';
+      const list = state.mix[key];
+      return { ...state, mix: { ...state.mix, [key]: list.includes(a.cameraId) ? list.filter((x) => x !== a.cameraId) : [...list, a.cameraId] } };
+    }
+    case 'clear-all':
+      // Новый проект: дорожки, клипы, синхронизация и отметки уходят; настройки программы остаются. Файлы на диске
+      // не трогаются — программа их только читала.
+      return {
+        ...initialState,
+        cameras: [newCamera(1)],
+        version: state.version + 1,
+        tools: state.tools,
+        update: state.update,
+        syncMode: state.syncMode,
+        previewOn: state.previewOn,
+        soundOn: state.soundOn,
+      };
     case 'qr-screen':
       return { ...state, qrScreenOpen: a.open };
     case 'control-hint-close':
@@ -343,4 +371,9 @@ export function isScanning(s: State): boolean {
 
 export function canExport(s: State): boolean {
   return !!s.sync && !needsSync(s) && !isScanning(s) && !s.audioRun && !s.qrRun && s.sync.placements.length > 0;
+}
+
+// Слышна ли дорожка в предпросмотре: есть Solo — только дорожки с Solo, иначе все, кроме Mute.
+export function audible(mix: State['mix'], cameraId: string): boolean {
+  return mix.solo.length ? mix.solo.includes(cameraId) : !mix.muted.includes(cameraId);
 }

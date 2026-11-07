@@ -9,7 +9,8 @@ import { defaultTimelineRate } from '../core/fcp7.ts';
 import { rateValue } from '../core/timecode.ts';
 import { pluralRu } from '../core/format.ts';
 import { api } from './api.ts';
-import { canExport, initialState, isScanning, needsSync, newCamera, reducer } from './state.ts';
+import { audible, canExport, initialState, isScanning, needsSync, newCamera, reducer } from './state.ts';
+import { previewAudio } from './previewAudio.ts';
 import type { Action, ControlInfo, State, SyncMode } from './state.ts';
 import { QrScreen } from './components/QrScreen.tsx';
 import { SyncMenu } from './components/SyncMenu.tsx';
@@ -53,6 +54,15 @@ function savedPreview(): boolean {
   }
 }
 
+export const SOUND_KEY = 'timesyncam.sound';
+function savedSound(): boolean {
+  try {
+    return localStorage.getItem(SOUND_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
 const AppContext = createContext<Ctx | null>(null);
 export function useApp(): Ctx {
   const c = useContext(AppContext);
@@ -64,7 +74,7 @@ let scanIssueSeq = 0;
 let controlIssueSeq = 0;
 
 export function App() {
-  const [state, dispatch] = useReducer(reducer, initialState, (s) => ({ ...s, syncMode: savedMode(), previewOn: savedPreview() }));
+  const [state, dispatch] = useReducer(reducer, initialState, (s) => ({ ...s, syncMode: savedMode(), previewOn: savedPreview(), soundOn: savedSound() }));
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -233,7 +243,7 @@ export function App() {
           qrIssues.push({
             id: `q${controlIssueSeq}`, severity: 'info', cameraId: cam.id, clipId: clip.id,
             title: `«${cam.name}»: экран синхронизации снят меньше секунды`,
-            details: 'Код прочитан, но его смены не видно, поэтому точность — около полсекунды. Снимайте экран 5–10 секунд — тогда точность будет до четверти кадра.',
+            details: 'Код прочитан, но его смены не видно, поэтому точность — около полсекунды. Снимайте экран 5–10 секунд — тогда точность будет до кадра-двух.',
             actions: [{ kind: 'open-faq', anchor: 'qr-screen' }],
           });
         }
@@ -351,27 +361,50 @@ export function App() {
     return off;
   }, [addFolders, doSync]);
 
-  // Проигрывание: курсор идёт в реальном времени.
+  // Проигрывание: курсор идёт в реальном времени. Со звуком — по часам звука: он вступает, когда прочитаны
+  // первые куски, и курсор ждёт его, чтобы картинка и звук шли вместе.
   useEffect(() => {
     if (!state.playing) return;
     let raf = 0;
     let last = performance.now();
+    const sound = state.soundOn && state.tab === 'sync';
+    let started = stateRef.current.playhead ?? 0;
+    let lastSet = started;
+    if (sound) void previewAudio.start(started, stateRef.current.cameras, placements, (id) => audible(stateRef.current.mix, id));
     const tick = (now: number) => {
       const s = stateRef.current;
       const dt = (now - last) / 1000;
       last = now;
       const end = Math.max(0, ...placements.map((p) => p.end));
-      const next = (s.playhead ?? 0) + dt;
+      let next = (s.playhead ?? 0) + dt;
+      if (sound) {
+        // Курсор переставили на ходу (к следующему клипу, клавишами) — звук начинается заново с нового места.
+        if (s.playhead !== null && Math.abs(s.playhead - lastSet) > 0.05) {
+          started = s.playhead;
+          void previewAudio.start(started, s.cameras, placements, (id) => audible(stateRef.current.mix, id));
+        }
+        // Звук не запустился (нет устройства вывода) — курсор идёт по обычным часам.
+        if (previewAudio.running) next = previewAudio.position() ?? (s.playhead ?? started);
+      }
       if (next >= end) {
         dispatch({ type: 'play', playing: false });
         return;
       }
+      lastSet = next;
       dispatch({ type: 'playhead', at: next });
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [state.playing, placements]);
+    return () => {
+      cancelAnimationFrame(raf);
+      if (sound) previewAudio.stop();
+    };
+  }, [state.playing, placements, state.soundOn, state.tab]);
+
+  // Mute и Solo на ходу.
+  useEffect(() => {
+    if (previewAudio.running) previewAudio.update(state.cameras, placements, (id) => audible(state.mix, id));
+  }, [state.mix, state.cameras, placements]);
 
   // Клавиши как в монтажке: пробел, стрелки (Shift — по секунде), Home/End.
   // На Mac без клавиш Home/End то же делают ⌘ + ← →.

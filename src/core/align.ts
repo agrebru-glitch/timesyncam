@@ -18,10 +18,11 @@ import type { Camera, ClipMeta, Issue, IssueAction, Placement, SyncResult } from
 import { FEAT_RATE, FINE_SR, gccPhat, hasAttacks as active, poolFeatures, sliceFeatures as slice, xcorrFeatures } from './audioFeatures.ts';
 import type { Features } from './audioFeatures.ts';
 import { correlate, SILENCE_DB } from './audioSync.ts';
-import type { AudioAnchor, AudioCameraResult, AudioFetch, AudioOptions, AudioPiece, AudioSyncResult } from './audioSync.ts';
+import type { AudioAnchor, AudioCameraResult, AudioFetch, AudioOptions, AudioPiece, AudioSyncResult, UnsureReason } from './audioSync.ts';
 import { continuesByName, roughClock } from './clipMeta.ts';
+import { isTrackTwin } from './sync.ts';
 import { formatDurationHuman, pluralRu } from './format.ts';
-import { refineClips } from './refine.ts';
+import { FRAME_LIMIT, refineClips } from './refine.ts';
 
 const RATE = FEAT_RATE; // кадров отпечатка в секунду
 const POOL = 4; // грубый поиск — 25 кадров в секунду
@@ -50,6 +51,11 @@ const CHAIN_GAP = 1.5; // файлы одного устройства всты�
 const FINE_LEN = 8; // секунд волны: в гулком зале точной сверке нужно больше звука
 const FINE_RANGE = 0.03;
 const FINE_CONFIDENCE = 10;
+// Погрешность экрана синхронизации: сам он оценивает её в четверть кадра, но телефон показывает код с задержкой
+// экрана, и на съёмке тестера камеры по нему расходились на 30–50 мс, а прогоны — на 80 мс. Звук уточняет место
+// в пределах этой погрешности; больше трёх кадров — предупреждаем.
+const CONTROL_SIGMA = 0.04;
+const CONTROL_LIMIT = 0.12;
 const FINE_WINDOWS = 5;
 const SHARED_TC = 0.1; // тайм-коды двух устройств общие, если звук совпал с ними до 0,1 с
 const LOOSE_CLOCKS = 600; // часы, выставленные вручную, расходятся на минуты; на часы и сутки — уже сбиты
@@ -78,6 +84,9 @@ interface Piece {
   // выставлены неточно — звук его поправляет.
   exact: boolean;
   fileClock: boolean; // время только из даты файла: при копировании она меняется
+  // Опора — экран синхронизации (не тайм-код, отмеченный точным): общее время держит он, а взаимное место
+  // камер с общим звуком уточняет звук — экран ошибается на 1–2 кадра, звук — на доли миллисекунды.
+  control: boolean;
   clockOnly: boolean;
   recorder: boolean;
   feat: Features | null;
@@ -266,9 +275,9 @@ function buildPieces(cameras: Camera[], coarse: SyncResult, opts: AudioOptions):
       // Жёстко стоят: камера с контрольным кадром (её тайм-код держит все клипы), клип с экраном у камеры
       // без тайм-кода и камера, чей тайм-код оператор отметил точным. Тайм-код, который просто совпадает
       // с часами камеры, — это те же часы: две камеры с неточно выставленными часами так разошлись бы на секунды.
-      const trust: Trust = opts.fixed?.has(cam.id) || members.some((m) => opts.controlClips?.has(m.clip.id)) || (cam.timecodeTrust === 'absolute' && cs?.timeSource === 'timecode')
-        ? 'anchor'
-        : outlier ? 'none' : fileOnly ? 'weak' : 'clock';
+      const absolute = cam.timecodeTrust === 'absolute' && cs?.timeSource === 'timecode';
+      const control = !absolute && (!!opts.fixed?.has(cam.id) || members.some((m) => opts.controlClips?.has(m.clip.id)));
+      const trust: Trust = control || absolute ? 'anchor' : outlier ? 'none' : fileOnly ? 'weak' : 'clock';
       pieces.push({
         id: pieces.length,
         cameraId: cam.id,
@@ -280,6 +289,7 @@ function buildPieces(cameras: Camera[], coarse: SyncResult, opts: AudioOptions):
         // а не тайм-код генератора: точным оно не бывает и общим тайм-кодом с камерой может совпасть лишь случайно.
         exact: trust === 'clock' && cs?.timeSource === 'timecode' && !members.every((m) => m.clip.tc?.source === 'bwf' && Math.abs(m.clip.tc.seconds - Math.round(m.clip.tc.seconds)) < 1e-6),
         fileClock: fileOnly,
+        control,
         clockOnly: cs?.timeSource === 'clock',
         recorder: members.every((m) => !m.clip.hasVideo),
         feat: null,
@@ -837,6 +847,14 @@ function components(nodes: number[], edges: Edge[]): number[][] {
 }
 
 // Член куска, который звучит в момент u (секунды от начала куска).
+// Сколько мест подтвердило совпадение. «Не случайность» — только когда мест много: одно-два совпадения бывают
+// и случайно, об этом прямо и говорим.
+function evidence(confirmed: number): string {
+  if (confirmed >= 3) return `Звук совпал в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи — случайно так не совпадает.`;
+  if (confirmed > 0) return `Звук совпал лишь в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} — этого мало, чтобы исключить случайность.`;
+  return 'Место найдено по звуку всей записи целиком.';
+}
+
 function memberAt(p: Piece, u: number, len: number): Member | null {
   return p.members.find((m) => hasAudio(m.clip) && u >= m.at - 1e-6 && u + len <= m.at + m.clip.durationSec + 1e-6) ?? null;
 }
@@ -1104,13 +1122,16 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   // сбились при копировании, — часам не верим: запись встаёт встык к соседней, как файлы, на которые
   // рекордер режет длинную запись. Без звука и без верной даты место — догадка: об этом предупреждаем.
   const guessed = new Map<string, { names: string[]; chained: boolean }>();
+  const guessedIds = new Set<string>();
   const endClocks = new Set<string>(); // устройства, чьи часы отмечают конец записи
   for (const cam of cameras) {
     if (!opts.isEnabled(cam.id)) continue;
     const own = pieces.filter((p) => p.cameraId === cam.id).sort((a, b) => a.prior - b.prior || a.id - b.id);
     const known = own.filter((p) => pieceCorr.has(p.id));
     if (!known.length || known.length === own.length) continue;
-    const overlapping = own.some((p, i) => i > 0 && p.prior < own[i - 1].prior + own[i - 1].length - CHAIN_GAP);
+    // Дорожки одного дубля (…_Tr1, …_Tr2) идут одновременно по праву — это не сбитые даты.
+    const twins = (a: Piece, b: Piece) => a.members.some((x) => b.members.some((y) => isTrackTwin(x.clip, y.clip)));
+    const overlapping = own.some((p, i) => i > 0 && p.prior < own[i - 1].prior + own[i - 1].length - CHAIN_GAP && !twins(own[i - 1], p));
     const chained = overlapping && own.every((p) => p.recorder);
     const startOf = new Map(known.map((p) => [p.id, p.prior + pieceCorr.get(p.id)!]));
     const errors: ClockError[] = known.map((p) => ({ at: p.prior, c: pieceCorr.get(p.id)!, len: soloLength(p) }));
@@ -1120,6 +1141,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
       if (p.trust !== 'none' && p.trust !== 'weak') return;
       const g = guessed.get(cam.id) ?? { names: [], chained };
       g.names.push(...p.members.map((m) => m.clip.name));
+      for (const m of p.members) guessedIds.add(m.clip.id);
       guessed.set(cam.id, g);
     };
     if (chained) {
@@ -1154,9 +1176,10 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   }
   // 6. Уточнение каждого клипа по звуку: тайм-код через паузы, секунды BWF, «встык», ход часов.
   const fixedClips = new Set<string>();
+  const softClips = new Map<string, number>(); // клипы камер с экраном синхронизации: место держится с его погрешностью
   const exactClips = new Set(pieces.filter((p) => p.exact).flatMap((p) => p.members.map((m) => m.clip.id)));
-  for (const p of pieces) if (p.trust === 'anchor') for (const m of p.members) fixedClips.add(m.clip.id);
-  for (const e of edges) if (e.sound !== undefined) for (const n of [e.a, e.b]) for (const m of pieces[n].members) fixedClips.add(m.clip.id);
+  for (const p of pieces) if (p.trust === 'anchor') for (const m of p.members) (p.control ? softClips.set(m.clip.id, CONTROL_SIGMA) : fixedClips.add(m.clip.id));
+  for (const e of edges) if (e.sound !== undefined) for (const n of [e.a, e.b]) for (const m of pieces[n].members) { fixedClips.add(m.clip.id); softClips.delete(m.clip.id); }
   const refined = await refineClips({
     cameras,
     coarse,
@@ -1165,10 +1188,31 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     samples: (c, s, d, ch) => audio.samples(c, s, d, ch),
     isEnabled: opts.isEnabled,
     fixedClips,
+    softClips,
     exactClips,
     log,
     tick,
   });
+  // Камеры с экраном синхронизации, которые звук уточнил: насколько и в какую сторону — по клипам, где звук совпал.
+  for (const cam of cameras) {
+    const ids = pieces.filter((p) => p.cameraId === cam.id && p.control).flatMap((p) => p.members.map((m) => m.clip.id)).filter((id) => refined.measured.has(id));
+    if (!ids.length) continue;
+    const move = median(ids.map((id) => (refined.corrections[id] ?? 0) - (corrections[id] ?? 0)));
+    log(`экран синхронизации ${nameOf(cam.id)}: звук уточнил на ${(move * 1000).toFixed(1)} мс`);
+    if (Math.abs(move) < 0.005) continue;
+    const big = Math.abs(move) > CONTROL_LIMIT;
+    issues.push(issue({
+      severity: big ? 'warning' : 'info',
+      cameraId: cam.id,
+      title: big
+        ? `«${cam.name}»: экран синхронизации и звук расходятся на ${formatDurationHuman(Math.abs(move))}`
+        : `«${cam.name}»: звук уточнил место по экрану синхронизации на ${Math.round(Math.abs(move) * 1000)} мс`,
+      details: big
+        ? 'Это больше, чем ошибается экран (1–2 кадра). Камера поставлена по звуку — он совпал с другими записями. Проверьте стыковку по картинке: если камера стояла далеко от сцены, звук приходит к ней позже — около 3 мс на метр.'
+        : 'Экран синхронизации задаёт общее время, но сам ошибается на 1–2 кадра: телефон показывает код с задержкой экрана. Там, где у камер есть общий звук, их взаимное место точнее по звуку — до долей миллисекунды.',
+      actions: [{ kind: 'open-faq', anchor: 'qr-screen' }],
+    }));
+  }
   Object.assign(corrections, refined.corrections);
   issues.push(...refined.issues);
 
@@ -1189,9 +1233,13 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   // Точки сверки для таймлинии: окна, где звук совпал.
   const anchorsOf = new Map<string, AudioAnchor[]>();
   const usedSet = new Set(used);
+  const heard = new Set<string>(); // клипы, в которых звук совпал в принятой связи
   const addAnchor = (piece: Piece, other: Piece, u: number, c: Check, role: AudioAnchor['role'], e: Edge) => {
     const m = memberAt(piece, u, 0) ?? piece.members[0];
     const om = memberAt(other, u - (piece.id === e.a ? e.d : -e.d), 0) ?? other.members[0];
+    // Подтверждён клип, в котором лежит всё окно: окно на стыке двух клипов о соседнем ничего не говорит.
+    const whole = role === 'ignored' ? null : memberAt(piece, u - WIN / 2, WIN);
+    if (whole) heard.add(whole.clip.id);
     const list = anchorsOf.get(piece.cameraId) ?? [];
     if (list.length >= 60) return;
     list.push({
@@ -1265,7 +1313,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         severity: 'warning',
         cameraId: cam.id,
         title: `«${cam.name}» найдена по звуку на ${formatDurationHuman(Math.abs(r.correction))} ${r.correction > 0 ? 'позже' : 'раньше'}, чем показывают её часы`,
-        details: `Часы этой камеры были сбиты${tz ? ' — похоже, на ней другой часовой пояс' : ''}. Звук совпал с другими камерами в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи — это не случайность. Проверьте стыковку по картинке; отключить поправку можно в карточке камеры.`,
+        details: `Часы этой камеры были сбиты${tz ? ' — похоже, на ней другой часовой пояс' : ''}. ${evidence(confirmed)} Проверьте стыковку по картинке; отключить поправку можно в карточке камеры.`,
         actions,
       }));
     } else if ((r.status === 'applied' || r.status === 'confirmed') && own.some((p) => p.trust === 'none')) {
@@ -1273,7 +1321,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         severity: 'info',
         cameraId: cam.id,
         title: `«${cam.name}» встала по звуку`,
-        details: `Дате на устройстве программа не верит, поэтому место найдено только по звуку: совпадение подтверждено в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи.`,
+        details: `Дате на устройстве программа не верит, поэтому место найдено только по звуку. ${evidence(confirmed)}`,
         actions,
       }));
     } else if ((r.status === 'applied' || r.status === 'confirmed') && r.correction !== null && Math.abs(r.correction) > 1.5 && !own.some((p) => p.trust === 'none' || p.trust === 'anchor')) {
@@ -1283,7 +1331,7 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         severity: 'info',
         cameraId: cam.id,
         title: `Часы «${cam.name}» ${r.correction > 0 ? 'отстают' : 'спешат'} на ${formatDurationHuman(Math.abs(r.correction))} относительно остальных камер`,
-        details: `По звуку «${cam.name}» поставлена точно: совпадение подтверждено в ${pluralRu(confirmed, 'месте', 'местах', 'местах')} по всей общей записи. Расхождение — в часах самого устройства. Перед съёмкой выставляйте время на всех камерах и рекордерах по одним часам.`,
+        details: `По звуку «${cam.name}» поставлена точно. ${evidence(confirmed)} Расхождение — в часах самого устройства. Перед съёмкой выставляйте время на всех камерах и рекордерах по одним часам.`,
         actions,
       }));
     } else if (r.status === 'no-match') {
@@ -1322,6 +1370,8 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
     const b = pieces[e.b];
     const shared = e.sound !== undefined;
     if (!shared && (e.hard || a.trust !== 'anchor' || b.trust !== 'anchor')) continue;
+    // Две камеры с экраном синхронизации звук уже уточнил — об этом сообщение выше.
+    if (!shared && a.control && b.control && opts.isEnabled(a.cameraId) && opts.isEnabled(b.cameraId)) continue;
     const gap = shared ? e.sound! - e.d : e.d - (b.prior - a.prior);
     if (Math.abs(gap) > 0.06 + (a.recorder || b.recorder ? DRIFT_PER_SEC * Math.max(a.length, b.length) : 0)) {
       issues.push(issue({
@@ -1346,7 +1396,34 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   }
 
   for (const p of pieces) log(`место ${p.cameraId}#${p.id}: ${placed.has(p.id) ? `поправка ${(placed.get(p.id)! - p.prior).toFixed(3)} с` : 'по звуку не найдено'}`);
+
+  // Клипы, чьё место неточно: звук его не подтвердил или подтвердил с точностью хуже кадра. На таймлинии
+  // такие клипы помечены, на дорожке — их число. Опорные камеры, клипы с жёсткой опорой (контрольный кадр,
+  // тайм-код, отмеченный точным, общий тайм-код) и камеры, которым сверка по звуку отключена, не помечаются.
+  const unsure: Record<string, UnsureReason> = {};
+  const apartClips = new Set(apart.flat().flatMap((n) => pieces[n].members.map((m) => m.clip.id)));
+  // Звук не связал ни одной пары: время задаёт устройство главной группы, сравнивать его не с чем — его не помечаем.
+  const lonely = (ordered[0]?.length ?? 0) <= 1;
+  const mainCams = new Set((ordered[0] ?? []).map((n) => pieces[n].cameraId));
+  for (const r of results) {
+    if (r.status === 'disabled' || r.status === 'reference' || (lonely && mainCams.has(r.cameraId))) continue;
+    const found = r.status === 'applied' || r.status === 'confirmed';
+    for (const p of pieces) {
+      if (p.cameraId !== r.cameraId) continue;
+      for (const m of p.members) {
+        const id = m.clip.id;
+        // Замедленный клип уже помечен красным: его звук для сверки не годится, место — по тайм-коду камеры.
+        if (fixedClips.has(id) || m.clip.captureFps !== null) continue;
+        const own = refined.measured.has(id) || heard.has(id);
+        if ((!hasAudio(m.clip) || r.status === 'silent' || r.status === 'no-audio') && !own) unsure[id] = 'no-sound';
+        else if (apartClips.has(id)) unsure[id] = 'apart';
+        else if (!found || (guessedIds.has(id) && !own)) unsure[id] = 'not-found';
+        else if (!own) unsure[id] = 'neighbours';
+        else if ((refined.accuracy[id] ?? 0) > FRAME_LIMIT) unsure[id] = 'rough';
+      }
+    }
+  }
   opts.onProgress?.(done + left, done + left);
   for (const r of results) r.accuracySec = refined.deviceAccuracy.get(r.cameraId) ?? null;
-  return { cameras: results, corrections, issues, log: lines, drift: refined.drift, accuracy: refined.accuracy };
+  return { cameras: results, corrections, issues, log: lines, drift: refined.drift, accuracy: refined.accuracy, unsure };
 }

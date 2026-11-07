@@ -8,6 +8,10 @@ export interface ExportOptions {
   rate: Rate;
   width: number;
   height: number;
+  // Звук камер на таймлинии. false — остаётся только звук рекордеров и других записей без видео: так монтажёр
+  // сразу работает с чистым звуком. Файлы не меняются, звук камер можно включить в монтажке.
+  cameraAudio?: boolean;
+  multicam?: boolean; // FCPXML: вместо дорожек — один мультикам-клип, камеры и звук — ракурсами
 }
 
 export interface TimelinePreset {
@@ -52,6 +56,44 @@ export function defaultResolution(cameras: Camera[]): { width: number; height: n
   const best = [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '1920x1080';
   const [width, height] = best.split('x').map(Number);
   return { width, height };
+}
+
+// Согласованное округление до кадра. Клип встаёт на кадр таймлинии, и если округлять каждый сам по себе от первого
+// клипа, камеры с разной долей кадра расходятся между собой почти на кадр (до 40 мс при 25 к/с). Важно не место
+// каждого клипа, а взаимное: начало таймлинии сдвигается на долю кадра так, чтобы ошибки округления у всех клипов
+// были как можно ближе друг к другу (наименьший разброс, вес — длина клипа). У камеры с непрерывным тайм-кодом доля
+// кадра у всех клипов одна. exact — клип ставится точно (звук в FCPXML: доля кадра срезается с его начала): его
+// ошибка — ноль, и видео камер сетка подтягивает к нему. Первый клип съёмки — на нулевом кадре.
+export function timelineOrigin(items: { start: number; weight: number; exact: boolean }[], fps: number): number {
+  if (!items.length) return 0;
+  const first = Math.min(...items.map((i) => i.start));
+  let best = 0;
+  let bestCost = Infinity;
+  for (let k = 0; k < 64; k++) {
+    const d = k / 64;
+    let sw = 0;
+    let s1 = 0;
+    let s2 = 0;
+    for (const it of items) {
+      const x = (it.start - first) * fps + d;
+      const e = it.exact ? 0 : x - Math.round(x);
+      const w = Math.max(1e-3, it.weight);
+      sw += w;
+      s1 += w * e;
+      s2 += w * e * e;
+    }
+    const cost = s2 / sw - (s1 / sw) ** 2;
+    if (cost < bestCost - 1e-12) {
+      bestCost = cost;
+      best = d;
+    }
+  }
+  const origin = first - best / fps;
+  const firstFrame = Math.min(...items.map((it) => {
+    const x = (it.start - origin) * fps;
+    return it.exact ? Math.ceil(x - 1e-9) : Math.round(x);
+  }));
+  return origin + firstFrame / fps;
 }
 
 function esc(s: string): string {
@@ -102,7 +144,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
 
   // Таймлиния начинается с 00:00:00:00 — с первого клипа съёмки, остальные стоят от него на своих местах.
   // С тайм-кодом времени суток клипы оказывались за много часов от начала, и DaVinci зависал на импорте.
-  const seqStartEpoch = result.start;
+  const seqStartEpoch = timelineOrigin(result.placements.map((p) => ({ start: p.start, weight: p.end - p.start, exact: false })), seqFps);
   const toFrame = (epoch: number) => Math.round((epoch - seqStartEpoch) * seqFps);
 
   const videoTracks: { cameraName: string; items: TrackItem[] }[] = [];
@@ -130,7 +172,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
         const aItems: TrackItem[] = [];
         for (const p of inLane) {
           const clip = clipsById.get(p.clipId)!;
-          if (clip.audioChannels < ch) continue;
+          if (clip.audioChannels < ch || (clip.hasVideo && opts.cameraAudio === false)) continue;
           aItems.push({ placement: p, clip, id: `clipitem-${++clipCounter}` });
         }
         if (aItems.length) audioTracks.push({ cameraName: cam.name, channel: ch, stereo: maxCh === 2, items: aItems });

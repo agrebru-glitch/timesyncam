@@ -251,6 +251,14 @@ export interface DriftEstimate {
   apply: boolean; // оценка надёжна и расхождение заметно — при экспорте звук выравнивается
 }
 
+// Почему место клипа неточно.
+export type UnsureReason =
+  | 'no-sound' // в клипе нет звука — стоит по тайм-коду и часам своего устройства
+  | 'neighbours' // своего общего звука нет — стоит по соседним клипам того же устройства
+  | 'not-found' // звук не нашёл место ни этого клипа, ни его устройства — стоит по часам
+  | 'apart' // часть съёмки, не связанная по звуку с остальной, — стоит по своим часам
+  | 'rough'; // место найдено по звуку, но точность хуже кадра (эхо, далёкий микрофон)
+
 export interface AudioSyncResult {
   cameras: AudioCameraResult[];
   corrections: Record<string, number>; // поправка каждого клипа в секундах
@@ -258,6 +266,7 @@ export interface AudioSyncResult {
   log?: string[]; // журнал решений сверки — для отчёта разработчику
   drift?: DriftEstimate[];
   accuracy?: Record<string, number>; // погрешность места каждого клипа по звуку, секунды
+  unsure?: Record<string, UnsureReason>; // клипы, чьё место звук не подтвердил или подтвердил хуже кадра
 }
 
 export interface AudioOptions {
