@@ -22,6 +22,7 @@ import { Timeline } from './components/Timeline.tsx';
 import { ErrorsPage } from './components/ErrorsPage.tsx';
 import { FaqPage } from './components/FaqPage.tsx';
 import { ExportDialog } from './components/ExportDialog.tsx';
+import { SplitDialog } from './components/SplitDialog.tsx';
 import { isMac } from './platform.ts';
 
 interface Ctx {
@@ -640,6 +641,7 @@ function SyncWorkspace() {
         <CameraPanel />
         <Viewer />
         {state.controlHint !== null && <ControlHint key={state.controlHint} />}
+        {state.splitOffer && !state.cameras.find((c) => c.id === state.splitOffer)?.scanning && <SplitDialog cameraId={state.splitOffer} />}
       </div>
       <div className="splitter" onMouseDown={onSplitter} />
       <Timeline />

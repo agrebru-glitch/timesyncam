@@ -2,6 +2,7 @@ import type { Camera, ClipMeta, Issue, SyncResult, TimecodeTrust } from '../core
 import type { AudioSyncResult } from '../core/audioSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
 import { applyRelocation, relocateFrames, type Relocation } from '../core/sync.ts';
+import { cameraGroups, groupsSignature, splitByCamera } from '../core/split.ts';
 
 export type Tab = 'sync' | 'errors' | 'faq';
 
@@ -62,6 +63,9 @@ export interface State {
   mix: { muted: string[]; solo: string[] }; // Mute и Solo дорожек — как в монтажке
   qrScreenOpen: boolean;
   controlHint: number | null; // подсказка «отметьте контрольный кадр»: номер показа, null — скрыта
+  controlHintShown: boolean; // подсказка уже была — второй раз за запуск программы не показываем
+  splitOffer: string | null; // дорожка с клипами разных камер: предложить разложить их по своим дорожкам
+  splitDeclined: Record<string, string>; // дорожка → набор камер, который пользователь решил оставить вместе
 }
 
 let camSeq = 0;
@@ -129,6 +133,9 @@ export const initialState: State = {
   mix: { muted: [], solo: [] },
   qrScreenOpen: false,
   controlHint: null,
+  controlHintShown: false,
+  splitOffer: null,
+  splitDeclined: {},
 };
 
 export type Action =
@@ -172,7 +179,9 @@ export type Action =
   | { type: 'mix'; cameraId: string; kind: 'mute' | 'solo' }
   | { type: 'clear-all' }
   | { type: 'qr-screen'; open: boolean }
-  | { type: 'control-hint-close' };
+  | { type: 'control-hint-close' }
+  | { type: 'split-camera'; cameraId: string }
+  | { type: 'split-decline'; cameraId: string };
 
 let toastSeq = 0;
 
@@ -230,16 +239,23 @@ export function reducer(state: State, a: Action): State {
         for (let n = 2; named && taken.has(named); n++) named = `${title} (${n})`;
         return { ...c, name: named ?? c.name, clips: [...c.clips, ...fresh], folders: [...new Set([...c.folders, ...a.folders])], scanning: null };
       });
-      // Появилась вторая (третья…) камера с клипами — напоминаем про контрольный кадр.
+      // Появилась третья дорожка с клипами — один раз за запуск напоминаем про контрольный кадр.
       const wasEmpty = !state.cameras.find((c) => c.id === a.cameraId)?.clips.length;
       const nowFilled = !!cameras.find((c) => c.id === a.cameraId)?.clips.length;
-      const secondCamera = wasEmpty && nowFilled && cameras.filter((c) => c.clips.length).length >= 2;
+      const thirdTrack = !state.controlHintShown && wasEmpty && nowFilled && cameras.filter((c) => c.clips.length).length >= 3;
+      // На дорожку попали клипы разных камер — предлагаем разложить их по своим дорожкам (если именно эти камеры
+      // пользователь уже решил оставить вместе — не спрашиваем снова).
+      const target = cameras.find((c) => c.id === a.cameraId);
+      const groups = target && added ? cameraGroups(target) : [];
+      const offer = groups.length > 1 && state.splitDeclined[a.cameraId] !== groupsSignature(groups) ? a.cameraId : state.splitOffer;
       return {
         ...state,
         cameras,
         scanIssues: [...state.scanIssues, ...a.issues],
         version: added ? state.version + 1 : state.version,
-        controlHint: secondCamera ? (state.controlHint ?? 0) + 1 : state.controlHint,
+        controlHint: thirdTrack ? (state.controlHint ?? 0) + 1 : state.controlHint,
+        controlHintShown: state.controlHintShown || thirdTrack,
+        splitOffer: offer,
       };
     }
     case 'set-trust':
@@ -350,7 +366,19 @@ export function reducer(state: State, a: Action): State {
         syncMode: state.syncMode,
         previewOn: state.previewOn,
         soundOn: state.soundOn,
+        controlHintShown: state.controlHintShown,
       };
+    case 'split-camera': {
+      const { cameras, moved } = splitByCamera(state.cameras, a.cameraId, (name) => ({ ...newCamera(state.cameras.length + 1), name }));
+      if (!moved.size) return { ...state, splitOffer: null };
+      // Отметки контрольного кадра едут вместе с клипом.
+      const controlFrames = Object.fromEntries(Object.entries(state.controlFrames).map(([k, f]) => [k, moved.has(f.clipId) ? { ...f, cameraId: moved.get(f.clipId)! } : f]));
+      return { ...state, cameras, controlFrames, splitOffer: null, version: state.version + 1 };
+    }
+    case 'split-decline': {
+      const cam = state.cameras.find((c) => c.id === a.cameraId);
+      return { ...state, splitOffer: null, splitDeclined: cam ? { ...state.splitDeclined, [a.cameraId]: groupsSignature(cameraGroups(cam)) } : state.splitDeclined };
+    }
     case 'qr-screen':
       return { ...state, qrScreenOpen: a.open };
     case 'control-hint-close':

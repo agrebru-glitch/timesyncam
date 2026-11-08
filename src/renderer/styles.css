@@ -385,3 +385,9 @@ button, input, select { font: inherit; color: inherit; }
 /* Вторая строка заголовка дорожки: сведения слева, Mute и Solo справа. */
 .tl-head .s-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tl-head .s-row .s { flex: 1; min-width: 0; }
+/* Предложение разложить камеры по дорожкам. */
+.split-list { list-style: none; margin: 4px 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.split-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
+.split-cam { font-weight: 600; }
+.split-count { color: var(--text-2); text-align: right; }
+.split-to { grid-column: 1 / -1; font-size: 12px; color: var(--text-3); margin-top: 2px; }
