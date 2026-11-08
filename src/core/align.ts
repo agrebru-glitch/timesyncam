@@ -44,6 +44,16 @@ const SECOND_WIN = 60; // секунд в окне: длинное окно ко
 const SECOND_AGREE = 0.03; // окна согласны, если их сдвиги уложились в ±30 мс
 const SECOND_MIN_VOTES = 3;
 const SECOND_CHANCE = 1e-3; // риск принять случайное совпадение за настоящее — на один кусок
+// Короткая общая часть со слабым звуком: окон по 20 с в ней слишком мало для решения по вероятности, а каждое
+// по отдельности не ясное (камера далеко, ветер, другое помещение). Тогда — голосование коротких окон в узком
+// поле вокруг кандидата, как во втором проходе: лучший пик каждого окна без порога ясности; настоящий сдвиг —
+// когда много окон сошлись в ±30 мс. Случайно в такую ячейку окно попадает с вероятностью 0,03 с / 1 с.
+const FIELD_WIN = 10;
+const FIELD_STEP = 5;
+const FIELD_S = 1;
+const FIELD_CELL = 0.03;
+const FIELD_MAX = 40;
+const FIELD_RISK = 1e-4; // риск принять случайное совпадение — с поправкой на число ячеек поля и кандидатов
 const RIVAL = 0.6; // второй кандидат с поддержкой больше 60% от лучшего — неоднозначно
 const TOLERANCE = 0.12; // сдвиги пар сходятся по кругу с точностью ±3 кадра
 const DRIFT_PER_SEC = 60e-6; // штатный ход часов рекордера: до 0,2 с за час
@@ -587,6 +597,56 @@ function memberVotes(a: Piece, b: Piece): number[] {
   return out;
 }
 
+// Голосование коротких окон вокруг кандидатов (см. FIELD_WIN). Возвращает лучший сдвиг, если он не случаен, и
+// признак неоднозначности: два разных сдвига прошли оба.
+function fieldVote(a: Piece, b: Piece, cands: number[], log: Log): { d: number; votes: number; windows: number; risk: number; checks: Check[] } | 'ambiguous' | null {
+  const passed: { d: number; votes: number; windows: number; risk: number; checks: Check[] }[] = [];
+  for (const d of cands) {
+    const from = Math.max(0, d);
+    const to = Math.min(a.length, d + b.length);
+    if (to - from < FIELD_WIN) continue;
+    const count = Math.min(FIELD_MAX, Math.floor((to - from - FIELD_WIN) / FIELD_STEP) + 1);
+    const step = count > 1 ? (to - from - FIELD_WIN) / (count - 1) : 0;
+    const found: { u: number; local: number; score: number; ratio: number }[] = [];
+    for (let k = 0; k < count; k++) {
+      const u = from + k * step;
+      const t = slice(a.feat!, Math.round(u * RATE), FIELD_WIN * RATE);
+      const r = slice(b.feat!, Math.round((u - d - FIELD_S) * RATE), (FIELD_WIN + 2 * FIELD_S) * RATE);
+      if (!active(t) || !active(r)) continue;
+      const m = correlate(t, r, FIELD_S * RATE, FIELD_S * RATE);
+      // Пик у края поля — не пик: настоящий сдвиг дальше, чем видно.
+      if (!m || Math.abs(m.lag / RATE) >= FIELD_S - 0.05) {
+        found.push({ u, local: NaN, score: 0, ratio: 0 });
+        continue;
+      }
+      found.push({ u, local: d - m.lag / RATE, score: m.score, ratio: m.ratio });
+    }
+    const n = found.length;
+    const locals = found.map((f) => f.local).filter(Number.isFinite).sort((x, y) => x - y);
+    let votes = 0;
+    let center = d;
+    for (let i = 0, j = 0; i < locals.length; i++) {
+      while (locals[i] - locals[j] > 2 * FIELD_CELL) j++;
+      if (i - j + 1 > votes) {
+        votes = i - j + 1;
+        center = median(locals.slice(j, i + 1));
+      }
+    }
+    if (votes < 3) continue;
+    const cells = FIELD_S / FIELD_CELL;
+    const risk = chance(votes, n, FIELD_CELL / FIELD_S) * cells * cands.length;
+    log(`    поле ±${FIELD_S} с вокруг ${d.toFixed(2)}: окон по ${FIELD_WIN} с ${n}, сошлись ${votes} на ${center.toFixed(3)}, риск случайности ${risk.toExponential(1)}`);
+    if (risk >= FIELD_RISK) continue;
+    // Точки сверки — окна, сошедшиеся в ячейке; at сдвинут так, чтобы середина окна считалась как у 20-секундных.
+    const checks: Check[] = found.map((f) => ({ at: f.u - (WIN - FIELD_WIN) / 2, local: Number.isFinite(f.local) ? f.local : d, score: f.score, ratio: f.ratio, agree: Number.isFinite(f.local) && Math.abs(f.local - center) <= FIELD_CELL }));
+    passed.push({ d: center, votes, windows: n, risk, checks });
+  }
+  if (!passed.length) return null;
+  passed.sort((x, y) => x.risk - y.risk);
+  if (passed.some((x) => Math.abs(x.d - passed[0].d) > PEAK_GUARD)) return 'ambiguous';
+  return passed[0];
+}
+
 // Сравнение пары кусков: лучший проверенный сдвиг или null.
 function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguous: boolean } {
   const table = xcorrFeatures(a.coarse!, b.coarse!, Math.round((MIN_OVERLAP * RATE) / POOL));
@@ -620,6 +680,22 @@ function measurePair(a: Piece, b: Piece, log: Log): { edge: Edge | null; ambiguo
         edge: { a: a.id, b: b.id, d: c.d, weight: top.hits * 0.05, support: top.hits, tested: top.tested, checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span, slips: memberSlips(a, b, top.d) },
         ambiguous: false,
       };
+    }
+    // Общая часть короткая — окон по 20 с слишком мало, чтобы решить по вероятности: голосуют короткие окна.
+    if (tried.length && tried.every((x) => x.tested < PROBABLE_MIN)) {
+      const f = fieldVote(a, b, tried.map((x) => x.d), log);
+      if (f === 'ambiguous') {
+        log('    итог: неоднозначно — короткие окна сошлись на разных сдвигах');
+        return { edge: null, ambiguous: true };
+      }
+      if (f) {
+        log(`    итог: ${f.d.toFixed(3)} с (короткие окна: ${f.votes} из ${f.windows}, случайно ${f.risk.toExponential(1)})`);
+        const c = centered(a, b, f.checks, f.d);
+        return {
+          edge: { a: a.id, b: b.id, d: f.d, weight: f.votes * 0.05, support: f.votes, tested: f.windows, checks: f.checks, fine: false, fineConfidence: 0, slope: c.slope, mid: c.mid, span: c.span },
+          ambiguous: false,
+        };
+      }
     }
     log('    итог: уверенного совпадения нет');
     return { edge: null, ambiguous: false };
@@ -813,7 +889,13 @@ export function agreeingClocks(votes: { device: string; v: number; weak: boolean
     return mid(precise.length ? precise : tight.top.group);
   }
   // Середина без усреднения — часы одного из устройств: среднее двух сбитых часов не верно ни для кого.
-  const group = [...strongest((x, y) => Math.abs(y.v - x.v) <= LOOSE_CLOCKS, LOOSE_CLOCKS).top.group].sort((a, b) => a.v - b.v);
+  let group = [...strongest((x, y) => Math.abs(y.v - x.v) <= LOOSE_CLOCKS, LOOSE_CLOCKS).top.group].sort((a, b) => a.v - b.v);
+  // Одиночка дальше половины окна от середины компании — часы, ушедшие сильнее остальных, — середину не сдвигает,
+  // если без него в компании остаются хотя бы два устройства (на матче пользователя A6700 с часами на 8,5 минуты позади,
+  // найденная по звуку, перетягивала время суток всей съёмки на 2 минуты).
+  const center = mid(group);
+  const close = group.filter((y) => Math.abs(y.v - center) <= LOOSE_CLOCKS / 2);
+  if (close.length < group.length && new Set(close.map((y) => y.device)).size >= 2) group = close;
   const total = group.reduce((s, y) => s + w(y), 0);
   let acc = 0;
   return group.find((y) => (acc += w(y)) >= total / 2 - 1e-9)!.v;
