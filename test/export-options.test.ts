@@ -28,7 +28,7 @@ test('Опции экспорта: проблемные — ненайденны
   const { cams, a1, a2, b1, wav } = scene();
   const audio = audioWith({ [a1.id]: 'neighbours', [a2.id]: 'rough', [b1.id]: 'not-found', [wav.id]: 'no-sound' });
   const p = problemClips(cams, audio);
-  // У «Звука» все клипы неточны и звука нет — его место ничем не подтверждено.
+  // У «Звука» все клипы без сверки и звука нет — его место ничем не подтверждено.
   assert.deepEqual([...p].sort(), [b1.id, wav.id].sort());
   // Клип без звука у камеры, другие клипы которой найдены, — не проблемный.
   assert.deepEqual([...problemClips(cams, audioWith({ [a1.id]: 'no-sound' }))], []);

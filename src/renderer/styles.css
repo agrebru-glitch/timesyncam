@@ -227,7 +227,7 @@ button, input, select { font: inherit; color: inherit; }
 .tl-head .t { font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .tl-head .s { color: var(--text-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tl-head .t .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Число клипов с неточным местом — жёлтый пунктир, как их рамка на дорожке; щелчок — к следующему. */
+/* Число клипов без сверки — жёлтый пунктир, как их рамка на дорожке; щелчок — к следующему. */
 .tl-unsure { margin-left: auto; flex: none; font: inherit; font-size: 10.5px; font-weight: 600; color: #ffd60a; background: rgba(255, 214, 10, 0.1); border: 1px dashed rgba(255, 214, 10, 0.7); border-radius: 4px; padding: 0 5px; line-height: 16px; cursor: pointer; }
 .tl-unsure:hover { background: rgba(255, 214, 10, 0.2); }
 .tl-mix { display: inline-flex; gap: 2px; flex: none; }

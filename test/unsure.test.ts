@@ -10,7 +10,7 @@ const tcOf = (epoch: number, offset = 0) => (((epoch + 3 * 3600 + offset) % 8640
 const opts = { searchSec: 30, maxAnchors: 8, isEnabled: () => true };
 const audioClip = (start: number, dur: number) => clip({ start, durationSec: dur, recordedSec: dur, hasVideo: false, rate: null, width: null, height: null });
 
-test('Неточные клипы: без общего звука — «по соседям», найденные по звуку не помечены', async () => {
+test('Без сверки: без общего звука — «по соседям», найденные по звуку не помечены', async () => {
   const truth = new Map<string, number>();
   const cam = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 900, recordedSec: 900 });
   truth.set(cam.id, T16);
@@ -31,7 +31,7 @@ test('Неточные клипы: без общего звука — «по с�
   assert.deepEqual(unsureOf(cams[0], result).ids, []);
 });
 
-test('Неточные клипы: камера с тишиной в звуке — «нет звука», единственную камеру со звуком не помечаем', async () => {
+test('Без сверки: камера с тишиной в звуке — «нет звука», единственную камеру со звуком не помечаем', async () => {
   const truth = new Map<string, number>();
   const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 120, recordedSec: 120 });
   const b = clip({ start: T16 + 10, durationSec: 60, recordedSec: 60 });
@@ -42,7 +42,7 @@ test('Неточные клипы: камера с тишиной в звуке 
   assert.deepEqual(result.unsure, { [b.id]: 'no-sound' });
 });
 
-test('Неточные клипы: камера без общего звука — «не нашлась», камеры, связанные звуком, чистые', async () => {
+test('Без сверки: камера без общего звука — «не нашлась», камеры, связанные звуком, чистые', async () => {
   const truth = new Map<string, number>();
   const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 300, recordedSec: 300 });
   const b = clip({ start: T16 + 20, durationSec: 200, recordedSec: 200 });
@@ -58,7 +58,7 @@ test('Неточные клипы: камера без общего звука �
   assert.equal(result.unsure?.[c.id], 'not-found');
 });
 
-test('Неточные клипы: камера, которой сверка по звуку отключена, не помечается', async () => {
+test('Без сверки: камера, которой сверка по звуку отключена, не помечается', async () => {
   const truth = new Map<string, number>();
   const a = clip({ start: T16, tcSeconds: tcOf(T16), durationSec: 300, recordedSec: 300 });
   const b = clip({ start: T16 + 20, durationSec: 200, recordedSec: 200 });

@@ -66,7 +66,7 @@ for (const cam of cameras) {
   }
 }
 for (const i of audio.issues) console.log(`  [${i.severity}] ${i.title}`);
-console.log('--- неточные клипы (на таймлинии — пунктир)');
+console.log('--- клипы без сверки (на таймлинии — пунктир)');
 for (const cam of cameras) {
   const list = cam.clips.filter((k) => audio.unsure?.[k.id] && !cam.excludedClipIds.includes(k.id));
   if (list.length) console.log(`  ${cam.name}: ${list.length} из ${cam.clips.length} — ${list.map((k) => `${k.name} (${audio.unsure![k.id]})`).join(', ')}`);

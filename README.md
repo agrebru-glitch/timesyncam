@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.0/TimesynCam-Setup-0.5.0.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.1/TimesynCam-Setup-0.5.1.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.0/TimesynCam-0.5.0-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.5.0"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TCoder-0.4.0.apk">TCoder — экран синхронизации на Android</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.0/TimesynCam-0.5.0-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.1/TimesynCam-0.5.1-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 
@@ -49,7 +49,7 @@ TimesynCam делает эту работу за вас. Перетащите п
 - **Рекордер.** Длинная запись рекордера сверяется в нескольких местах, штатный ход его часов учитывается как допуск, а не как ошибка.
 - **Волна звука на клипах.** Приблизьте таймлинию — хлопки разных камер встанут на одну вертикаль, стыковку видно глазами.
 - **Звук в предпросмотре.** При проигрывании звучат все дорожки сразу, каждая на своём месте с точностью до сэмпла: совпавшие записи звучат как одна, разошедшиеся — эхом. Кнопки M и S у названия дорожки выключают её звук или оставляют только её.
-- **Неточные клипы помечены.** Клип, чьё место звук не подтвердил (нет общего звука с другими записями, звук не нашёл место) или подтвердил хуже кадра, обведён жёлтым пунктиром, у дорожки — число таких клипов. Щелчок по числу ведёт к следующему.
+- **Клипы без сверки помечены.** Клип, чьё место звук не подтвердил (нет общего звука с другими записями, звук не нашёл место) или подтвердил хуже кадра, обведён жёлтым пунктиром, у дорожки — число таких клипов. Обычно они стоят верно, по тайм-коду и часам, — пометка значит лишь, что звук этого не подтвердил. Щелчок по числу ведёт к следующему.
 - **Мультивью и одна камера.** Экранов ровно столько, сколько камер. Без прокси клипы показываются стоп-кадрами, у рекордера вместо видео — волна звука вокруг курсора. Предпросмотр можно выключить — на слабом ноутбуке программа станет легче.
 - **Удаление клипа с таймлинии** — правой кнопкой по клипу или клавишей Delete (на Mac — ⌫). Файл на диске остаётся, вернуть клип можно в карточке камеры.
 - **Понятные ошибки.** Клипы S&Q подсвечиваются красным, их можно убрать с таймлинии одной кнопкой. Смена разрешения и частоты кадров внутри камеры — норма, программа на неё не ругается.

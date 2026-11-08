@@ -11,7 +11,7 @@ import { isMac } from '../platform.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
 import { driftJobs } from '../../core/driftExport.ts';
 import type { DriftJob } from '../../core/driftExport.ts';
-import { UNSURE_TEXT, unsureDetails, unsureOf } from '../../core/unsure.ts';
+import { unsureDetails, unsureNote, unsureOf } from '../../core/unsure.ts';
 
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
@@ -156,7 +156,7 @@ export function Timeline() {
   }, []);
 
   const errorClips = useMemo(() => new Set(issues.filter((i) => i.severity === 'error' && i.clipId).map((i) => i.clipId!)), [issues]);
-  // Клипы с неточным местом: звук его не подтвердил или подтвердил хуже кадра — обведены пунктиром.
+  // Клипы без сверки: звук не подтвердил их место или подтвердил хуже кадра — обведены пунктиром.
   const unsureClips = useMemo(() => (synced ? state.audio?.unsure ?? {} : {}), [synced, state.audio]);
   const unsureByCam = useMemo(() => new Map(state.cameras.map((c) => [c.id, synced ? unsureOf(c, state.audio) : unsureOf(c, null)])), [state.cameras, state.audio, synced]);
   const speedClips = useMemo(() => new Set(state.cameras.flatMap((c) => c.clips.filter((x) => x.captureFps !== null).map((x) => x.id))), [state.cameras]);
@@ -320,7 +320,7 @@ export function Timeline() {
           g.lineWidth = 2;
           g.stroke();
         } else if (unsureClips[p.clipId] && !isSpeed && w > 3) {
-          // Неточное место — пунктир: тёмная подложка и светлая штриховка видны на клипе любого цвета.
+          // Без сверки — пунктир: тёмная подложка и светлая штриховка видны на клипе любого цвета.
           g.save();
           g.lineWidth = 2;
           g.strokeStyle = 'rgba(0,0,0,0.55)';
@@ -437,7 +437,7 @@ export function Timeline() {
     }
   }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, unsureClips, speedClips, driftClips, tz, showWaves, waveVersion]);
 
-  // К следующему неточному клипу дорожки: выделить, поставить курсор на начало и показать, если он за краем.
+  // К следующему клипу дорожки без сверки: выделить, поставить курсор на начало и показать, если он за краем.
   const nextUnsure = (cameraId: string) => {
     const ids = new Set(unsureByCam.get(cameraId)?.ids ?? []);
     const list = placements.filter((p) => p.cameraId === cameraId && ids.has(p.clipId)).sort((a, b) => a.start - b.start);
@@ -667,10 +667,10 @@ export function Timeline() {
                 return (
                   <button
                     className="tl-unsure"
-                    title={`Место неточно — ${pluralRu(u.ids.length, 'клип', 'клипа', 'клипов')} (на дорожке обведены пунктиром):\n${unsureDetails(u)}\n\nЩелчок — к следующему такому клипу.`}
+                    title={`Без сверки по звуку — ${pluralRu(u.ids.length, 'клип', 'клипа', 'клипов')} (на дорожке обведены пунктиром). Обычно они стоят верно, по тайм-коду и часам, но звук этого не подтвердил:\n${unsureDetails(u)}\n\nЩелчок — к следующему такому клипу.`}
                     onClick={(e) => { e.stopPropagation(); nextUnsure(r.cam.id); }}
                   >
-                    {u.ids.length} неточно
+                    {u.ids.length} без сверки
                   </button>
                 );
               })()}
@@ -742,7 +742,7 @@ export function Timeline() {
           return (
             <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
               <div className="ctx-title">{clip.name}</div>
-              {unsureClips[clip.id] && <div className="ctx-note">Место неточно: {UNSURE_TEXT[unsureClips[clip.id]]}</div>}
+              {unsureClips[clip.id] && <div className="ctx-note">{unsureNote(unsureClips[clip.id])}</div>}
               <button role="menuitem" className="ctx-item" onClick={() => { markControl(menu.cameraId, menu.clipId, menu.localSec); setMenu(null); }}>
                 {state.controlFrames[clip.id] ? 'Перенести контрольный кадр сюда' : 'Выбрать контрольным кадром'}
                 <span className="ctx-hint">здесь в кадре экран синхронизации</span>

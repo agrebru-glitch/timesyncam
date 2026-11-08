@@ -1,5 +1,6 @@
-// Клипы, чьё место неточно: звук его не подтвердил или подтвердил с точностью хуже кадра.
-// На таймлинии они обведены пунктиром, на дорожке и в карточке — их число.
+// Клипы без сверки: звук не подтвердил их место или подтвердил с точностью хуже кадра. Обычно они стоят верно —
+// по тайм-коду и часам, — но программа это не проверила. На таймлинии они обведены пунктиром, на дорожке и в карточке —
+// их число.
 import type { AudioSyncResult, UnsureReason } from './audioSync.ts';
 import type { Camera } from './types.ts';
 import { pluralRu } from './format.ts';
@@ -27,6 +28,11 @@ export function unsureOf(cam: Camera, audio: AudioSyncResult | null | undefined)
   const counts = new Map<UnsureReason, number>();
   for (const id of ids) counts.set(map[id], (counts.get(map[id]) ?? 0) + 1);
   return { ids, byReason: ORDER.filter((r) => counts.has(r)).map((reason) => ({ reason, count: counts.get(reason)! })) };
+}
+
+// Строка для меню клипа: почему он без сверки.
+export function unsureNote(reason: UnsureReason): string {
+  return reason === 'rough' ? 'Сверен хуже кадра: место найдено по звуку, но совпадение нечёткое (эхо, далёкий микрофон)' : `Без сверки: ${UNSURE_TEXT[reason]}`;
 }
 
 // «3 клипа: 2 — нет общего звука…, 1 — точность хуже кадра» — для подсказки.

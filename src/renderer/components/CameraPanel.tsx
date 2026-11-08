@@ -165,7 +165,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const brief = qt ?? (at ? { title: placedBySound && at.tone !== 'warn' ? 'Встала по звуку' : at.title, sub: accText, tone: at.tone } : synced ? { title: ts.title, sub: undefined, tone: undefined } : null);
   // Ход часов выравнивается при экспорте: на таймлинии такие записи заштрихованы снизу.
   const drift = synced && info.audioOnly ? state.audio?.drift?.find((d) => d.cameraId === cam.id && d.apply) : undefined;
-  // Клипы с неточным местом — на дорожке они обведены пунктиром.
+  // Клипы без сверки по звуку — на дорожке они обведены пунктиром.
   const unsure = synced ? unsureOf(cam, state.audio) : null;
   const toneColor = (tone?: 'warn' | 'ok') => (tone === 'warn' ? 'var(--warning)' : tone === 'ok' ? 'var(--success)' : undefined);
 
@@ -243,7 +243,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
           )}
           {unsure && unsure.ids.length > 0 && (
             <div className="card-line" style={{ color: 'var(--warning)' }} title={unsureDetails(unsure)}>
-              Место неточно: {pluralRu(unsure.ids.length, 'клип', 'клипа', 'клипов')} из {info.count - info.excluded}
+              Без сверки: {pluralRu(unsure.ids.length, 'клип', 'клипа', 'клипов')} из {info.count - info.excluded}
               <span className="muted"> · {unsure.byReason.length === 1 ? UNSURE_TEXT[unsure.byReason[0].reason] : 'на дорожке обведены пунктиром'}</span>
             </div>
           )}

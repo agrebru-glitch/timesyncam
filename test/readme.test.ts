@@ -12,7 +12,7 @@ test('ссылки на скачивание в README — на текущую �
   // TCoder выпускается отдельно от программы: ссылка на него остаётся на релиз, где он менялся в последний раз.
   const links = [...readme.matchAll(/releases\/download\/(v[^/]+)\/([^")\s]+)/g)].filter(([, , file]) => !file.startsWith('TCoder-'));
   // Кнопка macOS до сборки на Mac ведёт на страницу прошлого релиза (docs/release-mac.md) — поэтому файлов может быть два.
-  assert.ok(links.length >= 3, 'в README нет ссылок на файлы релиза');
+  assert.ok(links.length >= 2, 'в README нет ссылок на файлы релиза');
   for (const [, tag, file] of links) {
     assert.equal(tag, `v${version}`, `ссылка на ${file} ведёт в релиз ${tag}`);
     assert.ok(file.includes(version), `${file}: в имени не версия ${version}`);
