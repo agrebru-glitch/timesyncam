@@ -51,7 +51,7 @@ const metaOf = new WeakMap<Float32Array, { path: string; from: number }>();
   },
 };
 
-const { PreviewAudio } = await import('../src/renderer/previewAudio.ts');
+const { PreviewAudio, loudLevel, trackGain } = await import('../src/renderer/previewAudio.ts');
 
 function scene(): { cams: Camera[]; placements: Placement[] } {
   const a1 = clip({ start: T16, durationSec: 10, recordedSec: 10 });
@@ -125,4 +125,19 @@ test('Звук предпросмотра: Mute и Solo на ходу — вык
     assert.ok(Math.abs(s.when - (c0 + (97.25 + s.from + s.offset - 105))) < 1e-9);
   }
   p.stop();
+});
+
+test('Звук предпросмотра: тихая дорожка поднимается к уровню громких мест, громкая — не задирается, хлопок уровень не меняет', () => {
+  const tone = (amp: number, sec: number) => Float32Array.from({ length: Math.round(48000 * sec) }, (_, i) => amp * Math.sin(i / 7));
+  // Рекордер на 16 дБ тише камеры: после выравнивания громкие места обеих звучат одинаково.
+  const cam = loudLevel(tone(0.14, 4));
+  const rec = loudLevel(tone(0.022, 4));
+  assert.ok(Math.abs(cam * trackGain(cam) - rec * trackGain(rec)) < 1e-6);
+  // Один хлопок в тихой записи: уровень по большинству, а не по пику.
+  const clap = tone(0.022, 4);
+  clap.fill(0.9, 48000, 48000 + 2400);
+  assert.ok(Math.abs(loudLevel(clap) - rec) / rec < 0.05);
+  // Тишина и шум ниже −60 дБ не поднимаются; подъём не больше +24 дБ.
+  assert.equal(trackGain(loudLevel(new Float32Array(48000))), 1);
+  assert.equal(trackGain(0.002), 16);
 });

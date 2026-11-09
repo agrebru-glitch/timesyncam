@@ -79,12 +79,13 @@ export async function extendedReport(outZip: string, appVersion: string, clips: 
 
 async function collectMaterials(outDir: string, clips: MaterialClip[], report: string, onProgress: (done: number, total: number) => void): Promise<void> {
   await mkdir(outDir, { recursive: true });
-  await writeFile(join(outDir, 'report.json'), report, 'utf8');
+  const mask = privacyMask(randomBytes(8).toString('hex'));
+  // Серийные номера камер в отчёте — условные, те же, что в XML рядом.
+  await writeFile(join(outDir, 'report.json'), mask(report), 'utf8');
   await writeFile(join(outDir, 'Прочитайте.txt'), README, 'utf8');
   let done = 0;
   onProgress(done, clips.length);
   const sidecarsSeen = new Set<string>();
-  const mask = privacyMask(randomBytes(8).toString('hex'));
   for (const c of clips) {
     const dir = join(outDir, safe(c.camera));
     await mkdir(dir, { recursive: true });

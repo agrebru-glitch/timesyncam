@@ -69,6 +69,7 @@ const CONTROL_LIMIT = 0.12;
 const FINE_WINDOWS = 5;
 const SHARED_TC = 0.1; // тайм-коды двух устройств общие, если звук совпал с ними до 0,1 с
 const LOOSE_CLOCKS = 600; // часы, выставленные вручную, расходятся на минуты; на часы и сутки — уже сбиты
+const ALONE_MARGIN = 30; // клип не с чем сверить, если ближе 30 с (и поля поиска) никто больше не писал
 
 type Trust = 'anchor' | 'clock' | 'weak' | 'none';
 
@@ -753,10 +754,15 @@ function tolerance(e: Edge, pieces: Piece[]): number {
 
 // Сводим сдвиги пар в положения кусков. Связи берутся от самых подтверждённых; связь, которая противоречит
 // уже собранному, сравнивается со слабейшим звеном пути, с которым спорит, — проигравший отбрасывается.
-function solve(nodes: number[], edges: Edge[], pieces: Piece[]): { pos: Map<number, number>; used: Edge[]; dropped: Edge[] } {
+// Противоречит не только звук звуку, но и звук часам: часы одной камеры между её клипами не прыгают на минуты
+// (clockBreak). Оба вида противоречий решаются здесь же, по кругу, пока собранное не согласно ни с тем, ни с другим:
+// сначала звук со звуком (их решает вес связей), потом с часами — по уже согласованным между собой связям.
+type ClockDrop = { edge: Edge; piece: number; gap: number };
+function solve(nodes: number[], edges: Edge[], pieces: Piece[]): { pos: Map<number, number>; used: Edge[]; dropped: Edge[]; clockDropped: ClockDrop[] } {
   const dropped = new Set<Edge>();
+  const clockDropped: ClockDrop[] = [];
   let result = { pos: new Map<number, number>(), used: [] as Edge[] };
-  for (let round = 0; round < 30; round++) {
+  for (let round = 0; round < 60; round++) {
     const parent = new Map<number, number>(nodes.map((n) => [n, n]));
     const offset = new Map<number, number>(nodes.map((n) => [n, 0])); // положение узла относительно его корня
     const find = (x: number): number => {
@@ -805,7 +811,13 @@ function solve(nodes: number[], edges: Edge[], pieces: Piece[]): { pos: Map<numb
     }
     const pos = new Map<number, number>(nodes.map((n) => [n, posInRoot(n)]));
     result = { pos, used: [...tree, ...consistent] };
-    if (!conflicts.length) break;
+    if (!conflicts.length) {
+      const bad = clockBreak(nodes, result.used, pos, pieces);
+      if (!bad) break;
+      dropped.add(bad.edge);
+      clockDropped.push(bad);
+      continue;
+    }
     // Самое сильное противоречие: со слабейшим звеном пути по дереву между его концами.
     const c = conflicts[0];
     const adj = new Map<number, Edge[]>();
@@ -858,7 +870,7 @@ function solve(nodes: number[], edges: Edge[], pieces: Piece[]): { pos: Map<numb
     }
     if (moved < 1e-5) break;
   }
-  return { pos, used, dropped: [...dropped] };
+  return { pos, used, dropped: [...dropped], clockDropped };
 }
 
 // Время суток для группы, сведённой по звуку. Каждое устройство своими часами предлагает, где стоит группа.
@@ -902,6 +914,93 @@ export function agreeingClocks(votes: { device: string; v: number; weak: boolean
 }
 
 // Связные группы кусков по использованным связям.
+// Часы одной камеры между её клипами не прыгают на минуты: сбитые часы ошибаются одинаково весь день. Кусок, который
+// звук увёл от остальных кусков своей камеры на минуты против её часов, привязан ложной связью — повтор одного и того же
+// звука (заставка, ролик, джингл) через час даёт совпадение не хуже настоящего. На лекции пользователя две такие связи
+// разнесли клипы камеры на 57 минут поверх других её клипов. Ищем такой кусок и на пути к согласным кускам его камеры
+// снимаем связь, которая сильнее всех спорит с часами, — остальные связи пути с часами сходятся.
+// Часы берём только настоящие (не дату файла), кусок сравниваем с большинством своей камеры в той же группе;
+// допуск — пять минут и длина кусков (телефон пишет время конца записи).
+const CLOCK_JUMP = LOOSE_CLOCKS / 2;
+function clockBreak(nodes: number[], used: Edge[], pos: Map<number, number>, pieces: Piece[]): { edge: Edge; piece: number; gap: number } | null {
+  const clocked = (p: Piece) => p.trust === 'clock' && !p.fileClock;
+  const adj = new Map<number, Edge[]>();
+  for (const e of used) {
+    adj.set(e.a, [...(adj.get(e.a) ?? []), e]);
+    adj.set(e.b, [...(adj.get(e.b) ?? []), e]);
+  }
+  for (const comp of components(nodes, used)) {
+    if (comp.length < 3) continue;
+    // Ошибка часов каждого устройства в группе — по большинству его кусков.
+    const err = (p: Piece) => p.prior - pos.get(p.id)!;
+    const offset = new Map<string, number>();
+    const byCamera = new Map<string, Piece[]>();
+    for (const n of comp) {
+      const p = pieces[n];
+      if (clocked(p)) byCamera.set(p.cameraId, [...(byCamera.get(p.cameraId) ?? []), p]);
+    }
+    for (const [cam, ps] of byCamera) if (ps.length >= 3) offset.set(cam, median(ps.map(err)));
+    const outliers: { p: Piece; gap: number }[] = [];
+    for (const [cam, ps] of byCamera) {
+      if (!offset.has(cam)) continue;
+      const mid = offset.get(cam)!;
+      const agree = ps.filter((p) => Math.abs(err(p) - mid) <= CLOCK_JUMP);
+      if (agree.length < 2 || agree.length * 2 <= ps.length) continue;
+      for (const p of ps) {
+        const gap = Math.abs(err(p) - mid);
+        if (gap > CLOCK_JUMP + p.length + Math.max(...agree.map((q) => q.length))) outliers.push({ p, gap });
+      }
+    }
+    outliers.sort((x, y) => y.gap - x.gap || x.p.id - y.p.id);
+    for (const { p, gap } of outliers) {
+      // Кратчайший путь по связям до ближайшего согласного куска той же камеры.
+      const mid = offset.get(p.cameraId)!;
+      const target = (n: number) => pieces[n].cameraId === p.cameraId && clocked(pieces[n]) && Math.abs(err(pieces[n]) - mid) <= CLOCK_JUMP;
+      const prev = new Map<number, Edge>();
+      const queue = [p.id];
+      const seen = new Set([p.id]);
+      let end: number | null = null;
+      while (queue.length && end === null) {
+        const x = queue.shift()!;
+        for (const e of adj.get(x) ?? []) {
+          const y = e.a === x ? e.b : e.a;
+          if (seen.has(y)) continue;
+          seen.add(y);
+          prev.set(y, e);
+          if (target(y)) {
+            end = y;
+            break;
+          }
+          queue.push(y);
+        }
+      }
+      if (end === null) continue;
+      // Насколько связь спорит с часами своих концов (с поправкой на ошибку часов их устройств).
+      const clash = (e: Edge) => {
+        const pa = pieces[e.a];
+        const pb = pieces[e.b];
+        const oa = offset.get(pa.cameraId);
+        const ob = offset.get(pb.cameraId);
+        if (oa === undefined || ob === undefined || !clocked(pa) || !clocked(pb)) return null;
+        return Math.abs(e.d - (pb.prior - ob - (pa.prior - oa)));
+      };
+      // Связь, явно спорящая с часами, — она; если часы концов проверить нельзя (у устройства мало кусков), — самая
+      // слабая из непроверяемых. Связи, сошедшиеся с часами, не трогаем.
+      let worst: Edge | null = null;
+      let weakest: Edge | null = null;
+      for (let x = end; x !== p.id;) {
+        const e = prev.get(x)!;
+        const c = clash(e);
+        if (!e.hard && c !== null && c > CLOCK_JUMP && (!worst || c > clash(worst)!)) worst = e;
+        if (!e.hard && c === null && (!weakest || e.weight < weakest.weight)) weakest = e;
+        x = e.a === x ? e.b : e.a;
+      }
+      if (worst ?? weakest) return { edge: (worst ?? weakest)!, piece: p.id, gap };
+    }
+  }
+  return null;
+}
+
 function components(nodes: number[], edges: Edge[]): number[][] {
   const adj = new Map<number, number[]>(nodes.map((n) => [n, []]));
   for (const e of edges) {
@@ -1072,9 +1171,11 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   // 3. Сборка.
   const nodes = live.map((p) => p.id);
   for (const p of anchors) if (!nodes.includes(p.id)) nodes.push(p.id);
-  const { pos, used, dropped } = solve(nodes, edges, pieces);
+  const { pos, used, dropped, clockDropped } = solve(nodes, edges, pieces);
   const comps = components(nodes, used);
-  for (const e of dropped) if (!e.hard) log(`отброшено как противоречие: ${pieces[e.a].cameraId}#${e.a} — ${pieces[e.b].cameraId}#${e.b}, ${e.d.toFixed(3)} с (совпало ${e.support})`);
+  const byClock = new Set(clockDropped.map((x) => x.edge));
+  for (const x of clockDropped) log(`отброшено — против часов камеры: ${pieces[x.edge.a].cameraId}#${x.edge.a} — ${pieces[x.edge.b].cameraId}#${x.edge.b}, ${x.edge.d.toFixed(3)} с (совпало ${x.edge.support}); уводило ${pieces[x.piece].cameraId}#${x.piece} от её же клипов на ${x.gap.toFixed(0)} с`);
+  for (const e of dropped) if (!e.hard && !byClock.has(e)) log(`отброшено как противоречие: ${pieces[e.a].cameraId}#${e.a} — ${pieces[e.b].cameraId}#${e.b}, ${e.d.toFixed(3)} с (совпало ${e.support})`);
   log(`группы: ${comps.map((c) => c.map((n) => `${pieces[n].cameraId}#${n}`).join(' + ')).join(' | ')}`);
 
   // 4. Где стоит каждая группа. Первой — главная: с жёсткой опорой, а без неё — с наибольшим числом устройств.
@@ -1483,6 +1584,18 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   // такие клипы помечены, на дорожке — их число. Опорные камеры, клипы с жёсткой опорой (контрольный кадр,
   // тайм-код, отмеченный точным, общий тайм-код) и камеры, которым сверка по звуку отключена, не помечаются.
   const unsure: Record<string, UnsureReason> = {};
+  // Не с чем сверить: в это время (с запасом поля поиска) не писало ни одно другое устройство со звуком. На лекции
+  // пользователя последние два часа снимала одна камера — пометка «без сверки» на сотне её клипов только пугала.
+  // Только у устройства, чьё место звук подтвердил по другим клипам: его часы проверены. Камера с часами на минуты
+  // мимо по своим часам тоже выглядит одинокой — у неё это «звук не нашёл место», а не «не с чем сверить».
+  const spanOf = (m: Member) => ({ s: m.p.start + (corrections[m.clip.id] ?? 0), e: m.p.end + (corrections[m.clip.id] ?? 0) });
+  const sounding = pieces.flatMap((p) => p.members.filter((m) => hasAudio(m.clip)).map((m) => ({ cam: p.cameraId, ...spanOf(m) })));
+  const margin = Math.max(ALONE_MARGIN, opts.searchSec);
+  const isAlone = (cameraId: string, m: Member) => {
+    const { s, e } = spanOf(m);
+    return !sounding.some((x) => x.cam !== cameraId && x.s < e + margin && x.e > s - margin);
+  };
+  const alone: string[] = [];
   const apartClips = new Set(apart.flat().flatMap((n) => pieces[n].members.map((m) => m.clip.id)));
   // Звук не связал ни одной пары: время задаёт устройство главной группы, сравнивать его не с чем — его не помечаем.
   const lonely = (ordered[0]?.length ?? 0) <= 1;
@@ -1497,6 +1610,10 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
         // Замедленный клип уже помечен красным: его звук для сверки не годится, место — по тайм-коду камеры.
         if (fixedClips.has(id) || m.clip.captureFps !== null) continue;
         const own = refined.measured.has(id) || heard.has(id);
+        if (!own && found && isAlone(r.cameraId, m)) {
+          alone.push(id);
+          continue;
+        }
         if ((!hasAudio(m.clip) || r.status === 'silent' || r.status === 'no-audio') && !own) unsure[id] = 'no-sound';
         else if (apartClips.has(id)) unsure[id] = 'apart';
         else if (!found || (guessedIds.has(id) && !own)) unsure[id] = 'not-found';
@@ -1507,5 +1624,5 @@ export async function alignByAudio(cameras: Camera[], coarse: SyncResult, audio:
   }
   opts.onProgress?.(done + left, done + left);
   for (const r of results) r.accuracySec = refined.deviceAccuracy.get(r.cameraId) ?? null;
-  return { cameras: results, corrections, issues, log: lines, drift: refined.drift, accuracy: refined.accuracy, unsure };
+  return { cameras: results, corrections, issues, log: lines, drift: refined.drift, accuracy: refined.accuracy, unsure, alone };
 }

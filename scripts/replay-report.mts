@@ -71,6 +71,11 @@ for (const cam of cameras) {
   const list = cam.clips.filter((k) => audio.unsure?.[k.id] && !cam.excludedClipIds.includes(k.id));
   if (list.length) console.log(`  ${cam.name}: ${list.length} из ${cam.clips.length} — ${list.map((k) => `${k.name} (${audio.unsure![k.id]})`).join(', ')}`);
 }
+const alone = new Set(audio.alone ?? []);
+for (const cam of cameras) {
+  const n = cam.clips.filter((k) => alone.has(k.id)).length;
+  if (n) console.log(`  ${cam.name}: не с чем сверить ${n} из ${cam.clips.length}`);
+}
 // Раскладка «файл → начало, с» — для сверки по звуку (probe) и сравнения с проектом монтажки.
 const jsonAt = process.argv.indexOf('--json');
 if (jsonAt > 0) {

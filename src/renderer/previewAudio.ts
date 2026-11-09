@@ -10,6 +10,12 @@ const CHUNK = 8; // секунд звука в одном куске
 const LEAD = 3; // за столько секунд до конца запаса читается следующий кусок
 const START_WAIT = 2.5; // столько ждём первые куски: что не успело, вступит позже, но на своём месте
 const START_DELAY = 0.06; // запас на старт после того, как куски готовы
+// Громкость дорожек выравнивается по громким местам: петличка или рекордер, записанные на 15–20 дБ тише камер,
+// иначе тонут в их звуке (у тестера рекордер −49 дБ в среднем против −32 дБ у камер — его не было слышно).
+const LOUD_TARGET = 0.1; // −20 дБ: уровень громких мест каждой дорожки
+const MAX_BOOST = 16; // +24 дБ — тише не поднимаем: там шум, а не запись
+const MIN_CUT = 0.5;
+const QUIET = 0.001; // −60 дБ: кусок тише — тишина, уровень по нему не меряем
 
 interface Track {
   gain: GainNode;
@@ -17,6 +23,24 @@ interface Track {
   until: number; // до какого времени таймлинии звук дорожки уже прочитан
   busy: boolean;
   on: boolean;
+}
+
+// Уровень громких мест куска: 90-й процентиль громкости по 50 мс — одиночный хлопок его не задирает.
+export function loudLevel(data: Float32Array, sr = SR): number {
+  const frame = Math.round(sr * 0.05);
+  const rms: number[] = [];
+  for (let i = 0; i + frame <= data.length; i += frame) {
+    let s = 0;
+    for (let j = i; j < i + frame; j++) s += data[j] * data[j];
+    rms.push(Math.sqrt(s / frame));
+  }
+  if (!rms.length) return 0;
+  rms.sort((a, b) => a - b);
+  return rms[Math.min(rms.length - 1, Math.floor(rms.length * 0.9))];
+}
+
+export function trackGain(level: number): number {
+  return level < QUIET ? 1 : Math.min(MAX_BOOST, Math.max(MIN_CUT, LOUD_TARGET / level));
 }
 
 const playable = (c: ClipMeta) => c.audioChannels > 0 && c.captureFps === null;
@@ -32,6 +56,7 @@ export class PreviewAudio {
   private timer: ReturnType<typeof setInterval> | null = null;
   private placements: Placement[] = [];
   private clips = new Map<string, ClipMeta>();
+  private levels = new Map<string, number>(); // уровень громких мест дорожки — помнится между запусками
   running = false;
 
   // Где сейчас звук на таймлинии; null — первые куски ещё читаются.
@@ -113,7 +138,7 @@ export class PreviewAudio {
       const on = audible(cam.id);
       if (on && !tr.on) {
         tr.until = this.c0 ? now + 0.25 : this.t0;
-        tr.gain.gain.setValueAtTime(1, this.ctx.currentTime);
+        tr.gain.gain.setValueAtTime(trackGain(this.levels.get(cam.id) ?? 0), this.ctx.currentTime);
       } else if (!on && tr.on) {
         for (const s of tr.sources) {
           try {
@@ -151,6 +176,7 @@ export class PreviewAudio {
         if (b - a < 0.01) return;
         const data = await api.previewAudio(clip.path, a, b - a, clip.audioStartSec ?? 0).catch(() => null);
         if (!data || !data.length || session !== this.session || !this.ctx) return;
+        this.level(cameraId, tr, loudLevel(data));
         const buffer = this.ctx.createBuffer(1, data.length, SR);
         buffer.getChannelData(0).set(data);
         if (this.c0 === 0) this.pending.push({ cameraId, buffer, at: p.start + a });
@@ -158,6 +184,13 @@ export class PreviewAudio {
       });
     await Promise.all(jobs);
     if (session === this.session) tr.busy = false;
+  }
+
+  // Дорожка громче, чем казалась, — убавляем; уровень только растёт, чтобы тихий кусок не задирал громкость.
+  private level(cameraId: string, tr: Track, v: number): void {
+    if (!this.ctx || v < QUIET || v <= (this.levels.get(cameraId) ?? 0)) return;
+    this.levels.set(cameraId, v);
+    tr.gain.gain.setTargetAtTime(trackGain(v), this.ctx.currentTime, 0.05);
   }
 
   private place(cameraId: string, buffer: AudioBuffer, at: number): void {

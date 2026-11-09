@@ -3,7 +3,8 @@ import type { Camera, CameraSync, TimecodeTrust } from '../../core/types.ts';
 import type { State } from '../state.ts';
 import type { AudioCameraResult } from '../../core/audioSync.ts';
 import { checkLimit, formatSigned } from '../../core/audioSync.ts';
-import { UNSURE_TEXT, unsureDetails, unsureOf } from '../../core/unsure.ts';
+import { UNSURE_TEXT, aloneOf, unsureDetails, unsureOf } from '../../core/unsure.ts';
+import { trackOrder } from '../../core/trackOrder.ts';
 import { clearWaveforms } from '../waveforms.ts';
 import { formatClockTime, formatDate, formatDurationHuman, formatShift, formatSize, pluralRu } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
@@ -167,6 +168,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
   const drift = synced && info.audioOnly ? state.audio?.drift?.find((d) => d.cameraId === cam.id && d.apply) : undefined;
   // Клипы без сверки по звуку — на дорожке они обведены пунктиром.
   const unsure = synced ? unsureOf(cam, state.audio) : null;
+  const alone = synced ? aloneOf(cam, state.audio) : [];
   const toneColor = (tone?: 'warn' | 'ok') => (tone === 'warn' ? 'var(--warning)' : tone === 'ok' ? 'var(--success)' : undefined);
 
   const onDrop = (e: React.DragEvent) => {
@@ -245,6 +247,11 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
             <div className="card-line" style={{ color: 'var(--warning)' }} title={unsureDetails(unsure)}>
               Без сверки: {pluralRu(unsure.ids.length, 'клип', 'клипа', 'клипов')} из {info.count - info.excluded}
               <span className="muted"> · {unsure.byReason.length === 1 ? UNSURE_TEXT[unsure.byReason[0].reason] : 'на дорожке обведены пунктиром'}</span>
+            </div>
+          )}
+          {alone.length > 0 && (
+            <div className="card-line muted" title="В это время другие устройства не писали — сверять не с чем. Клипы стоят по часам и соседним клипам своей камеры; на дорожке обведены тонкой серой точкой.">
+              Не с чем сверить: {pluralRu(alone.length, 'клип', 'клипа', 'клипов')} · писала только эта камера
             </div>
           )}
           {info.speedActive > 0 && <div className="card-line" style={{ color: 'var(--danger)' }}>S&Q: {pluralRu(info.speedActive, 'клип', 'клипа', 'клипов')} — помечены красным</div>}
@@ -353,7 +360,7 @@ export function CameraPanel() {
   };
   return (
     <aside className="side">
-      {state.cameras.map((cam, i) => <CameraCard key={cam.id} cam={cam} index={i} />)}
+      {trackOrder(state.cameras).map((cam) => <CameraCard key={cam.id} cam={cam} index={state.cameras.indexOf(cam)} />)}
       <button className="btn" style={{ justifyContent: 'center' }} onClick={() => dispatch({ type: 'add-camera' })}>
         <IconPlus /> Добавить источник
       </button>

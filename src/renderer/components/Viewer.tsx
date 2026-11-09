@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Camera, ClipMeta, Placement } from '../../core/types.ts';
 import { formatDate, formatDurationHuman, formatTimecodeAt } from '../../core/format.ts';
+import { trackOrder } from '../../core/trackOrder.ts';
 import { PREVIEW_KEY, SOUND_KEY, useApp } from '../App.tsx';
 import { api, cameraColor, mediaUrl } from '../api.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
@@ -179,7 +180,7 @@ export function Viewer() {
   const cams = state.cameras;
   const single = state.viewMode === 'single' || cams.length === 1;
   const active = cams.find((c) => c.id === state.activeCameraId) ?? cams[0];
-  const shown = single ? [active] : cams;
+  const shown = single ? [active] : trackOrder(cams);
   const cols = shown.length <= 1 ? 1 : shown.length <= 4 ? 2 : shown.length <= 9 ? 3 : 4;
   const rows = Math.ceil(shown.length / cols);
 

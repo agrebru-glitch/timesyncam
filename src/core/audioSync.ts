@@ -267,6 +267,9 @@ export interface AudioSyncResult {
   drift?: DriftEstimate[];
   accuracy?: Record<string, number>; // погрешность места каждого клипа по звуку, секунды
   unsure?: Record<string, UnsureReason>; // клипы, чьё место звук не подтвердил или подтвердил хуже кадра
+  // Клипы, рядом с которыми по времени не писало ни одно другое устройство: сверять их не с чем, и это не недочёт
+  // сверки — они стоят по часам и соседним клипам своей камеры и помечены отдельно, без «без сверки».
+  alone?: string[];
 }
 
 export interface AudioOptions {

@@ -2,6 +2,7 @@
 // В отличие от FCP7 XML, звук без видео (рекордер) ставится точно до сэмпла: клип встаёт на ближайший кадр,
 // а доля кадра срезается с его начала. Оригинальные файлы не меняются.
 import type { Camera, ClipMeta, Rate, SyncResult } from './types.ts';
+import { trackOrder } from './trackOrder.ts';
 import { nominalRate, parseTc, rateValue, tcToFrameCount } from './timecode.ts';
 import type { ExportOptions } from './fcp7.ts';
 import { timelineOrigin } from './fcp7.ts';
@@ -121,7 +122,16 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
   const entries: { lane: number; offset: number; dur: number; c: ClipMeta; start: string; track: string }[] = [];
   const lastOf = new Map<number, (typeof entries)[number]>();
   let endFrame = 0;
-  for (const cam of cameras) {
+  // Порядок дорожек (core/trackOrder.ts): ближе к основной — камера с наибольшим количеством материала, выше — те,
+  // где его меньше; звук без видео — под основной, сверху вниз от меньшего к большему. Как на таймлинии программы.
+  const ordered = trackOrder(cameras);
+  // Номера видео растут вверх от основной: раздаём их снизу — от дорожки с наибольшим количеством материала,
+  // у камеры с наложениями её вторая строка ниже первой, как на таймлинии программы.
+  for (const cam of [...ordered].reverse()) {
+    const own = result.placements.filter((p) => p.cameraId === cam.id && clipsById.get(p.clipId)?.hasVideo);
+    for (const l of [...new Set(own.map((p) => p.lane))].sort((a, b) => b - a)) lane(cam.id, l, true);
+  }
+  for (const cam of ordered) {
     const list = result.placements.filter((p) => p.cameraId === cam.id).sort((a, b) => a.start - b.start);
     for (const p of list) {
       const c = clipsById.get(p.clipId);

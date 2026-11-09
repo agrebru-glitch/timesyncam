@@ -11,7 +11,8 @@ import { isMac } from '../platform.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
 import { driftJobs } from '../../core/driftExport.ts';
 import type { DriftJob } from '../../core/driftExport.ts';
-import { unsureDetails, unsureNote, unsureOf } from '../../core/unsure.ts';
+import { ALONE_NOTE, unsureDetails, unsureNote, unsureOf } from '../../core/unsure.ts';
+import { trackOrder } from '../../core/trackOrder.ts';
 
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
@@ -90,9 +91,11 @@ export function Timeline() {
   const sy = Math.min(scrollY, maxScroll);
   const rows = useMemo(() => {
     let y = RULER_H - sy;
-    return state.cameras.map((c, i) => {
+    // Сверху — дорожки с меньшим количеством материала, звук — под камерами (core/trackOrder.ts). index — место
+    // дорожки в проекте: по нему цвет и куда бросать файлы; pos — место на экране.
+    return trackOrder(state.cameras).map((c, pos) => {
       const h = ROW_H * (lanesByCam.get(c.id) ?? 1);
-      const r = { cam: c, index: i, y, h };
+      const r = { cam: c, index: state.cameras.indexOf(c), pos, y, h };
       y += h;
       return r;
     });
@@ -158,6 +161,7 @@ export function Timeline() {
   const errorClips = useMemo(() => new Set(issues.filter((i) => i.severity === 'error' && i.clipId).map((i) => i.clipId!)), [issues]);
   // Клипы без сверки: звук не подтвердил их место или подтвердил хуже кадра — обведены пунктиром.
   const unsureClips = useMemo(() => (synced ? state.audio?.unsure ?? {} : {}), [synced, state.audio]);
+  const aloneClips = useMemo(() => new Set(synced ? state.audio?.alone ?? [] : []), [synced, state.audio]);
   const unsureByCam = useMemo(() => new Map(state.cameras.map((c) => [c.id, synced ? unsureOf(c, state.audio) : unsureOf(c, null)])), [state.cameras, state.audio, synced]);
   const speedClips = useMemo(() => new Set(state.cameras.flatMap((c) => c.clips.filter((x) => x.captureFps !== null).map((x) => x.id))), [state.cameras]);
   // Записи с ходом часов: в таймлинию монтажки вместо них встанут выровненные копии — оригиналы не меняются.
@@ -188,7 +192,7 @@ export function Timeline() {
     };
     clipRows();
     rows.forEach((r) => {
-      g.fillStyle = r.index % 2 ? '#1d1e22' : '#1a1b1f';
+      g.fillStyle = r.pos % 2 ? '#1d1e22' : '#1a1b1f';
       g.fillRect(0, r.y, size.w, r.h);
       g.fillStyle = 'rgba(255,255,255,0.06)';
       g.fillRect(0, r.y + r.h - 1, size.w, 1);
@@ -329,6 +333,14 @@ export function Timeline() {
           g.strokeStyle = '#ffd60a';
           g.stroke();
           g.restore();
+        } else if (aloneClips.has(p.clipId) && !isSpeed && w > 3) {
+          // Не с чем сверить — тонкая серая точка: это не недочёт, а единственная запись в это время.
+          g.save();
+          g.lineWidth = 1;
+          g.setLineDash([2, 3]);
+          g.strokeStyle = 'rgba(255,255,255,0.45)';
+          g.stroke();
+          g.restore();
         }
         if (state.selectedClipId === p.clipId) {
           g.strokeStyle = '#ffffff';
@@ -435,7 +447,7 @@ export function Timeline() {
         g.fill();
       }
     }
-  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, unsureClips, speedClips, driftClips, tz, showWaves, waveVersion]);
+  }, [size, viewH, vp, extent, rows, placements, synced, state.playhead, state.selectedClipId, state.audio, state.controlFrames, state.controlIssues, errorClips, unsureClips, aloneClips, speedClips, driftClips, tz, showWaves, waveVersion]);
 
   // К следующему клипу дорожки без сверки: выделить, поставить курсор на начало и показать, если он за краем.
   const nextUnsure = (cameraId: string) => {
@@ -743,6 +755,7 @@ export function Timeline() {
             <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} role="menu" onMouseDown={(e) => e.stopPropagation()}>
               <div className="ctx-title">{clip.name}</div>
               {unsureClips[clip.id] && <div className="ctx-note">{unsureNote(unsureClips[clip.id])}</div>}
+              {aloneClips.has(clip.id) && <div className="ctx-note muted">{ALONE_NOTE}</div>}
               <button role="menuitem" className="ctx-item" onClick={() => { markControl(menu.cameraId, menu.clipId, menu.localSec); setMenu(null); }}>
                 {state.controlFrames[clip.id] ? 'Перенести контрольный кадр сюда' : 'Выбрать контрольным кадром'}
                 <span className="ctx-hint">здесь в кадре экран синхронизации</span>

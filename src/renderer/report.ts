@@ -57,6 +57,8 @@ export function buildReport(state: State, issues: Issue[]): string {
     audio: state.audio && {
       cameras: state.audio.cameras.map((c) => ({ ...c, anchors: c.anchors.map((a) => ({ clip: a.clipId, ref: a.refClipId, at: a.at, correction: a.correction, score: a.score, ratio: a.ratio, role: a.role, fine: a.fine })) })),
       corrections: state.audio.corrections,
+      unsure: state.audio.unsure ?? {},
+      alone: state.audio.alone ?? [],
       log: state.audio.log ?? [],
     },
     issues: issues.map((i) => ({ severity: i.severity, camera: state.cameras.find((c) => c.id === i.cameraId)?.name ?? null, title: i.title, details: i.details })),

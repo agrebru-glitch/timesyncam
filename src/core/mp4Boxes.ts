@@ -151,6 +151,8 @@ export function privacyMask(salt: string): (text: string) => string {
   };
   return (text) => text
     .replace(/(serialNo|SerialNumber)(\s*=\s*"|>)([^"<]*)/gi, (_, k: string, sep: string, v: string) => `${k}${sep}${pseudonym(v)}`)
+    // report.json: серийный номер камеры в сведениях о клипе — тот же условный, что в XML.
+    .replace(/("serial"\s*:\s*")([^"]*)/g, (_, k: string, v: string) => `${k}${pseudonym(v)}`)
     .replace(/(umidRef\s*=\s*")[^"]*/g, '$1…')
     .replace(/(<Group name="ExifGPS"[^>]*>)[\s\S]*?(<\/Group>)/g, '$1…$2')
     .replace(/(<[\w:]*GPS\w*[^>]*>)[^<]*/g, '$1…')

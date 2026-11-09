@@ -1,5 +1,6 @@
 // Экспорт таймлинии в Final Cut Pro 7 XML (xmeml) — его открывают Premiere Pro и DaVinci Resolve.
 // Оригинальные файлы не меняются: в XML только ссылки на них и позиции на таймлинии.
+import { trackOrder } from './trackOrder.ts';
 import type { Camera, ClipMeta, Placement, Rate, SyncResult } from './types.ts';
 import { isNtscRate, nominalRate, parseTc, rateValue, tcToFrameCount, secondsToTcText } from './timecode.ts';
 
@@ -154,7 +155,10 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
   let clipCounter = 0;
   let fileCounter = 0;
 
-  for (const cam of cameras) {
+  // Порядок дорожек (core/trackOrder.ts): видео — у камеры с наибольшим количеством материала V1, выше — те, где его
+  // меньше; звук — сверху вниз от меньшего к большему, рекордеры — под звуком камер. Как на таймлинии программы.
+  const ordered = trackOrder(cameras);
+  for (const cam of ordered) {
     const camPlacements = result.placements.filter((p) => p.cameraId === cam.id).sort((a, b) => a.start - b.start);
     if (camPlacements.length === 0) continue;
     const lanes = Math.max(...camPlacements.map((p) => p.lane)) + 1;
@@ -179,6 +183,9 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
       }
     }
   }
+
+  // Видео собрано сверху вниз — в XML V1 самая нижняя дорожка.
+  videoTracks.reverse();
 
   // Связи видео и звука одного клипа, чтобы в монтажке они двигались вместе.
   const linksByClip = new Map<string, { id: string; mediatype: 'video' | 'audio'; track: number; index: number }[]>();

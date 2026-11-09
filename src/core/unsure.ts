@@ -35,6 +35,15 @@ export function unsureNote(reason: UnsureReason): string {
   return reason === 'rough' ? 'Сверен хуже кадра: место найдено по звуку, но совпадение нечёткое (эхо, далёкий микрофон)' : `Без сверки: ${UNSURE_TEXT[reason]}`;
 }
 
+// Клип, который не с чем сверить: в это время писало только его устройство.
+export const ALONE_NOTE = 'Не с чем сверить: в это время другие устройства не писали — стоит по часам и соседним клипам своей камеры';
+
+export function aloneOf(cam: Camera, audio: AudioSyncResult | null | undefined): string[] {
+  const set = new Set(audio?.alone ?? []);
+  const excluded = new Set(cam.excludedClipIds);
+  return cam.clips.filter((c) => set.has(c.id) && !excluded.has(c.id)).map((c) => c.id);
+}
+
 // «3 клипа: 2 — нет общего звука…, 1 — точность хуже кадра» — для подсказки.
 export function unsureDetails(s: UnsureSummary): string {
   return s.byReason.map((r) => `${pluralRu(r.count, 'клип', 'клипа', 'клипов')}: ${UNSURE_TEXT[r.reason]}`).join('\n');

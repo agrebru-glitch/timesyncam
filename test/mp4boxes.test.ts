@@ -123,6 +123,11 @@ test('Приватность отчёта: серийник — условный
   assert.notEqual(privacyMask('b')('serialNo="5512345"'), mask('serialNo="5512345"'));
   // «Номера нет» у Sony остаётся как есть.
   assert.equal(mask('serialNo="4294967295"'), 'serialNo="4294967295"');
+  // report.json: серийный номер в сведениях о клипе — тот же условный, что в XML этой камеры; остальное не трогается.
+  const json = JSON.stringify({ camera: { make: 'Sony', model: 'Sony A7 IV', serial: '5512345' }, file: 'C0001.MP4', start: -12.5 }, null, 1);
+  const masked = JSON.parse(mask(json));
+  assert.equal(masked.camera.serial, ids[0]);
+  assert.deepEqual({ ...masked, camera: { ...masked.camera, serial: '5512345' } }, JSON.parse(json));
   assert.equal(mask('+12.3456+065.4321+100.000/'), '…/');
   assert.equal(mask('<exif:GPSLatitude>12,20.7N</exif:GPSLatitude>'), '<exif:GPSLatitude>…</exif:GPSLatitude>');
   assert.equal(mask('<Group name="ExifGPS"><Item name="Latitude" value="12.3"/></Group>'), '<Group name="ExifGPS">…</Group>');

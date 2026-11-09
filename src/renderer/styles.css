@@ -237,6 +237,7 @@ button, input, select { font: inherit; color: inherit; }
 .mix-btn.on.solo { background: #ffd60a; border-color: #ffd60a; color: #111; }
 .mix-btn.silent:not(.on) { opacity: 0.45; }
 .ctx-note { font-size: 11px; color: #ffd60a; padding: 0 10px 6px; max-width: 250px; white-space: normal; }
+.ctx-note.muted { color: var(--text-3); }
 .tl-add { height: 44px; flex: none; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 5px; padding: 0 8px; color: var(--text-2); cursor: pointer; border-bottom: 1px solid var(--border); white-space: nowrap; font-size: 12px; letter-spacing: -0.1px; }
 .tl-add .icon { width: 14px; height: 14px; }
 .tl-add:hover { color: var(--text); background: var(--hover); }
