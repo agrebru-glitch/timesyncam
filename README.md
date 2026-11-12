@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.4/TimesynCam-Setup-0.5.4.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.5.2"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.4/TimesynCam-0.5.4-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
