@@ -3,6 +3,7 @@ import type { AudioSyncResult } from '../core/audioSync.ts';
 import type { ControlFrame, QrResult } from '../core/qrSync.ts';
 import { applyRelocation, relocateFrames, type Relocation } from '../core/sync.ts';
 import { cameraGroups, groupsSignature, splitByCamera } from '../core/split.ts';
+import type { SoundLoading } from './previewAudio.ts';
 
 export type Tab = 'sync' | 'errors' | 'faq';
 
@@ -60,6 +61,7 @@ export interface State {
   qrRun: { done: number; total: number } | null;
   previewOn: boolean;
   soundOn: boolean; // звук предпросмотра: все слышимые дорожки на общих часах
+  soundLoading: SoundLoading | null; // звук дорожек подгружается: при запуске курсор ждёт все дорожки
   mix: { muted: string[]; solo: string[] }; // Mute и Solo дорожек — как в монтажке
   qrScreenOpen: boolean;
   controlHint: number | null; // подсказка «отметьте контрольный кадр»: номер показа, null — скрыта
@@ -130,6 +132,7 @@ export const initialState: State = {
   qrRun: null,
   previewOn: true,
   soundOn: true,
+  soundLoading: null,
   mix: { muted: [], solo: [] },
   qrScreenOpen: false,
   controlHint: null,
@@ -176,6 +179,7 @@ export type Action =
   | { type: 'qr-done'; control: Record<string, ControlInfo> | null; issues: Issue[]; pre: Record<string, number>; fixed: string[] }
   | { type: 'preview'; on: boolean }
   | { type: 'sound'; on: boolean }
+  | { type: 'sound-loading'; loading: SoundLoading | null }
   | { type: 'mix'; cameraId: string; kind: 'mute' | 'solo' }
   | { type: 'clear-all' }
   | { type: 'qr-screen'; open: boolean }
@@ -349,6 +353,8 @@ export function reducer(state: State, a: Action): State {
       return { ...state, previewOn: a.on };
     case 'sound':
       return { ...state, soundOn: a.on };
+    case 'sound-loading':
+      return { ...state, soundLoading: a.loading };
     case 'mix': {
       const key = a.kind === 'mute' ? 'muted' : 'solo';
       const list = state.mix[key];

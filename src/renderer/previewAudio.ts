@@ -6,10 +6,11 @@ import type { Camera, ClipMeta, Placement } from '../core/types.ts';
 import { api } from './api.ts';
 
 const SR = 48000;
-const CHUNK = 8; // секунд звука в одном куске
-const LEAD = 3; // за столько секунд до конца запаса читается следующий кусок
-const START_WAIT = 2.5; // столько ждём первые куски: что не успело, вступит позже, но на своём месте
+const CHUNK = 8; // секунд звука в одном куске; куски — по сетке таймлинии, чтобы прочитанное шло в дело повторно
+const LEAD = CHUNK; // следующий кусок читается, как только начал звучать текущий: впереди всегда 8–16 с звука
+const START_LIMIT = 30; // столько ждём первые куски всех дорожек; что не успело — вступит позже, но на своём месте
 const START_DELAY = 0.06; // запас на старт после того, как куски готовы
+const CACHE_BYTES = 256 * 1024 * 1024; // буфер прочитанного звука: около 20 минут звука дорожек
 // Громкость дорожек выравнивается по громким местам: петличка или рекордер, записанные на 15–20 дБ тише камер,
 // иначе тонут в их звуке (у тестера рекордер −49 дБ в среднем против −32 дБ у камер — его не было слышно).
 const LOUD_TARGET = 0.1; // −20 дБ: уровень громких мест каждой дорожки
@@ -20,7 +21,8 @@ const QUIET = 0.001; // −60 дБ: кусок тише — тишина, уро
 interface Track {
   gain: GainNode;
   sources: Set<AudioBufferSourceNode>;
-  until: number; // до какого времени таймлинии звук дорожки уже прочитан
+  until: number; // до какого времени таймлинии звук дорожки уже заказан
+  ready: number; // до какого времени он уже прочитан и стоит в очереди
   busy: boolean;
   on: boolean;
 }
@@ -45,6 +47,48 @@ export function trackGain(level: number): number {
 
 const playable = (c: ClipMeta) => c.audioChannels > 0 && c.captureFps === null;
 
+// Буфер прочитанного звука. Раньше каждый Play и каждый перескок курсора заново читали звук всех дорожек через
+// ffmpeg — на внешнем диске с файлами 4K это секунда и больше на кусок. Куски лежат по сетке таймлинии, поэтому
+// повторное прослушивание того же места берёт их из памяти; одинаковый кусок, заказанный дважды, читается один раз.
+const cache = new Map<string, Float32Array>();
+const inflight = new Map<string, Promise<Float32Array | null>>();
+let cacheBytes = 0;
+function cachedPiece(key: string, load: () => Promise<Float32Array | null>): Promise<Float32Array | null> {
+  const hit = cache.get(key);
+  if (hit) {
+    cache.delete(key); // свежий — в конец очереди на вытеснение
+    cache.set(key, hit);
+    return Promise.resolve(hit);
+  }
+  let job = inflight.get(key);
+  if (!job) {
+    job = load()
+      .catch(() => null)
+      .then((data) => {
+        inflight.delete(key);
+        if (data && data.length) {
+          cache.set(key, data);
+          cacheBytes += data.byteLength;
+          for (const [k, v] of cache) {
+            if (cacheBytes <= CACHE_BYTES) break;
+            cache.delete(k);
+            cacheBytes -= v.byteLength;
+          }
+        }
+        return data;
+      });
+    inflight.set(key, job);
+  }
+  return job;
+}
+
+// Сколько дорожек уже готово: пока не готовы все — звук не идёт, курсор ждёт; во время проигрывания — какие догружаются.
+export interface SoundLoading {
+  ready: number;
+  total: number;
+  playing: boolean;
+}
+
 export class PreviewAudio {
   private ctx: AudioContext | null = null;
   private master: AudioNode | null = null;
@@ -57,7 +101,9 @@ export class PreviewAudio {
   private placements: Placement[] = [];
   private clips = new Map<string, ClipMeta>();
   private levels = new Map<string, number>(); // уровень громких мест дорожки — помнится между запусками
+  private lagging = -1;
   running = false;
+  onLoading: ((s: SoundLoading | null) => void) | null = null;
 
   // Где сейчас звук на таймлинии; null — первые куски ещё читаются.
   position(): number | null {
@@ -92,9 +138,25 @@ export class PreviewAudio {
       return;
     }
     this.update(cameras, placements, audible);
-    const first = [...this.tracks.entries()].filter(([, tr]) => tr.on).map(([id, tr]) => this.fill(id, tr, session));
-    await Promise.race([Promise.all(first), new Promise((r) => setTimeout(r, START_WAIT * 1000))]);
+    // Каждая дорожка читает с места курсора. Раньше дорожка, звучавшая в прошлый раз, продолжала с того места,
+    // где остановилась: после перескока вперёд она догоняла курсор кусками и молчала, после перескока назад —
+    // молчала до старого места. Отсюда «не все дорожки включаются сразу».
+    const from = Math.floor(at / CHUNK) * CHUNK;
+    for (const tr of this.tracks.values()) {
+      tr.until = from;
+      tr.ready = from;
+      tr.busy = false;
+    }
+    const on = [...this.tracks.entries()].filter(([, tr]) => tr.on);
+    let ready = 0;
+    this.onLoading?.({ ready, total: on.length, playing: false });
+    const first = on.map(([id, tr]) => this.fill(id, tr, session).then(() => {
+      if (session === this.session) this.onLoading?.({ ready: ++ready, total: on.length, playing: false });
+    }));
+    await Promise.race([Promise.all(first), new Promise((r) => setTimeout(r, START_LIMIT * 1000))]);
     if (session !== this.session) return;
+    this.lagging = -1;
+    this.onLoading?.(null);
     this.c0 = this.ctx.currentTime + START_DELAY;
     for (const p of this.pending.splice(0)) this.place(p.cameraId, p.buffer, p.at);
     this.timer = setInterval(() => this.pump(session), 200);
@@ -107,6 +169,7 @@ export class PreviewAudio {
     this.pending = [];
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.onLoading?.(null);
     for (const tr of this.tracks.values()) {
       for (const s of tr.sources) {
         try {
@@ -132,12 +195,13 @@ export class PreviewAudio {
       if (!tr) {
         const gain = this.ctx.createGain();
         gain.connect(this.master);
-        tr = { gain, sources: new Set(), until: now, busy: false, on: false };
+        tr = { gain, sources: new Set(), until: now, ready: now, busy: false, on: false };
         this.tracks.set(cam.id, tr);
       }
       const on = audible(cam.id);
       if (on && !tr.on) {
-        tr.until = this.c0 ? now + 0.25 : this.t0;
+        tr.until = Math.floor((this.c0 ? now : this.t0) / CHUNK) * CHUNK;
+        tr.ready = tr.until;
         tr.gain.gain.setValueAtTime(trackGain(this.levels.get(cam.id) ?? 0), this.ctx.currentTime);
       } else if (!on && tr.on) {
         for (const s of tr.sources) {
@@ -157,7 +221,18 @@ export class PreviewAudio {
     if (session !== this.session) return;
     const pos = this.position();
     if (pos === null) return;
-    for (const [id, tr] of this.tracks) if (tr.on && !tr.busy && tr.until < pos + LEAD) void this.fill(id, tr, session);
+    let lagging = 0;
+    for (const [id, tr] of this.tracks) {
+      if (!tr.on) continue;
+      if (!tr.busy && tr.until < pos + LEAD) void this.fill(id, tr, session);
+      if (tr.ready < pos) lagging += 1;
+    }
+    // Дорожка не успела прочитать звук к месту курсора — показываем, что она догружается (вступит на своём месте).
+    if (lagging !== this.lagging) {
+      const total = [...this.tracks.values()].filter((t) => t.on).length;
+      this.onLoading?.(lagging ? { ready: total - lagging, total, playing: true } : null);
+      this.lagging = lagging;
+    }
   }
 
   // Следующий кусок дорожки: все её клипы в окне [until, until + CHUNK).
@@ -174,7 +249,8 @@ export class PreviewAudio {
         const a = Math.max(0, from - p.start);
         const b = Math.min(p.end - p.start, to - p.start);
         if (b - a < 0.01) return;
-        const data = await api.previewAudio(clip.path, a, b - a, clip.audioStartSec ?? 0).catch(() => null);
+        const key = `${clip.path}|${clip.audioStartSec ?? 0}|${a.toFixed(4)}|${(b - a).toFixed(4)}`;
+        const data = await cachedPiece(key, () => api.previewAudio(clip.path, a, b - a, clip.audioStartSec ?? 0));
         if (!data || !data.length || session !== this.session || !this.ctx) return;
         this.level(cameraId, tr, loudLevel(data));
         const buffer = this.ctx.createBuffer(1, data.length, SR);
@@ -183,7 +259,9 @@ export class PreviewAudio {
         else this.place(cameraId, buffer, p.start + a);
       });
     await Promise.all(jobs);
-    if (session === this.session) tr.busy = false;
+    if (session !== this.session) return;
+    tr.busy = false;
+    tr.ready = to;
   }
 
   // Дорожка громче, чем казалась, — убавляем; уровень только растёт, чтобы тихий кусок не задирал громкость.

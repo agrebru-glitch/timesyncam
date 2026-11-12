@@ -47,3 +47,14 @@ export const IconError = ({ className }: P) => base(<g><circle cx="12" cy="12" r
 export const IconInfo = ({ className }: P) => base(<g><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5" /><path d="M12 8v.5" /></g>, className);
 export const IconLock = ({ className }: P) => base(<g><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></g>, className);
 export const IconCheck = ({ className }: P) => base(<path d="M5 12.5l4.5 4.5L19 7.5" />, className);
+
+// Значки меню камеры для вкладки «Настройка камер» — свои, в духе пиктограмм меню Sony: видеосъёмка, настройка, удалить.
+export const IconMovieMode = ({ className, style }: P) => (
+  <svg className={className ?? 'icon'} style={style} viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M2.5 7.5v9l5.5-4.5z" fill="currentColor" />
+    <rect x="9.5" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
+  </svg>
+);
+export const IconSetupMode = ({ className, style }: P) => base(<g><rect x="3.5" y="8" width="17" height="11" rx="1.8" /><path d="M9 8V6.2A1.2 1.2 0 0 1 10.2 5h3.6A1.2 1.2 0 0 1 15 6.2V8" /><path d="M3.5 12.5h17" /><path d="M10.5 12.5v2h3v-2" /></g>, className, style);
+export const IconTrash = ({ className, style }: P) => base(<g><path d="M5 7h14" /><path d="M9.5 7V5h5v2" /><path d="M6.5 7l1 12.5h9l1-12.5" /><path d="M10.5 10.5v6M13.5 10.5v6" /></g>, className, style);
+export const IconPhotoMode = ({ className, style }: P) => base(<g><rect x="3.5" y="7.5" width="17" height="12" rx="2" /><path d="M9 7.5l1.3-2h3.4l1.3 2" /><circle cx="12" cy="13.5" r="3.2" /></g>, className, style);

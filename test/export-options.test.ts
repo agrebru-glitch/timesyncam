@@ -56,10 +56,15 @@ test('Опции экспорта: без звука камер — в FCPXML у
   const opts = { name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080 };
   const on = buildFcpxml(cams, sync, opts);
   const off = buildFcpxml(cams, sync, { ...opts, cameraAudio: false });
-  assert.ok(!/srcEnable/.test(on));
-  // Три клипа камер на таймлинии и три в браузере; srcEnable — только на таймлинии.
-  assert.equal([...off.matchAll(/<asset-clip [^>]*lane="[1-9][^>]*srcEnable="video"/g)].length, 3);
-  assert.ok(![...off.matchAll(/<asset-clip [^>]*name="ZOOM0001.WAV"[^>]*>/g)].some((m) => /srcEnable/.test(m[0])));
+  // srcEnable DaVinci 21.2 не понимает — его нет вовсе; клипы камер без звука — <clip> с одной картинкой (<video>).
+  assert.ok(!/srcEnable/.test(on) && !/srcEnable/.test(off));
+  assert.ok(!/<video ref=/.test(on));
+  const pictures = [...off.matchAll(/<clip name="[^"]+" lane="[1-9]"[^>]*>(<video ref="[^"]+" [^>]*\/>)<keyword [^>]*\/><\/clip>/g)];
+  assert.equal(pictures.length, 3);
+  assert.ok(!/<audio /.test(off));
+  // Рекордер — как был, asset-clip под основной, вместе со звуком; клипы события в браузере — целиком.
+  assert.match(off, /<asset-clip [^>]*lane="-1"[^>]*name="ZOOM0001\.WAV"/);
+  assert.equal([...off.matchAll(/<asset-clip ref="[^"]+" start=/g)].length, 4);
 
   const x7on = buildFcp7Xml(cams, sync, opts);
   const x7off = buildFcp7Xml(cams, sync, { ...opts, cameraAudio: false });

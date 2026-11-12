@@ -10,14 +10,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.2/TimesynCam-Setup-0.5.2.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.3/TimesynCam-Setup-0.5.3.exe"><img src="docs/images/download-windows.svg" width="300" height="68" alt="Скачать для Windows"></a>
   &nbsp;
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.2/TimesynCam-0.5.2-mac-arm64.dmg"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/tag/v0.5.2"><img src="docs/images/download-macos.svg" width="300" height="68" alt="Скачать для macOS"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.4.0/TCoder-0.4.0.apk">TCoder — экран синхронизации на Android</a> ·
-  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.2/TimesynCam-0.5.2-win-x64.zip">Windows без установки (zip)</a> ·
+  <a href="https://github.com/agrebru-glitch/timesyncam/releases/download/v0.5.3/TimesynCam-0.5.3-win-x64.zip">Windows без установки (zip)</a> ·
   <a href="https://github.com/agrebru-glitch/timesyncam/releases">Все версии</a>
 </p>
 
@@ -87,7 +87,7 @@ FFmpeg уже внутри, отдельно ставить ничего не н
 2. **Нажмите «Синхронизировать»** и выберите **«Тайм-код + звук»** (по умолчанию), **«Только тайм-код»** или **«Контрольный кадр + тайм-код + звук»**, если камеры снимали экран синхронизации (правая кнопка по клипу → «Выбрать контрольным кадром»). Кнопка подсвечивается, когда появились новые клипы. Программа разложит клипы по времени, сверит по звуку и расскажет в карточке каждой камеры, откуда она взяла время и что поправил звук.
 3. **Загляните во вкладку «Замечания».** Там клипы S&Q, наложения и подсказки — у каждой строки есть кнопка, которая это исправит.
 4. **Проверьте стыковку по хлопку.** В мультивью поставьте курсор на хлопок, стрелками ← → найдите кадр. Камеру без общего звука с остальными подгоните по кадру хлопка в монтажке.
-5. **Нажмите «Экспорт».** Кнопка становится доступной только после синхронизации. Выберите частоту, разрешение и монтажку: для DaVinci Resolve — FCPXML (стерео одной дорожкой, звук рекордера до сэмпла), для Premiere Pro — XML.
+5. **Нажмите «Экспорт».** Кнопка становится доступной только после синхронизации. Выберите частоту, разрешение и монтажку: для DaVinci Resolve — FCPXML (стерео одной дорожкой, звук рекордера до сэмпла) или XML (звук каждой камеры на своих дорожках, парами к видео), для Premiere Pro — XML.
 6. **Откройте в монтажке.** DaVinci Resolve: `File → Import → Timeline…`. Premiere Pro: `File → Import…`.
 
 | Клавиша | Действие |

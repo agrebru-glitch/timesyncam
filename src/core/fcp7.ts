@@ -13,6 +13,9 @@ export interface ExportOptions {
   // сразу работает с чистым звуком. Файлы не меняются, звук камер можно включить в монтажке.
   cameraAudio?: boolean;
   multicam?: boolean; // FCPXML: вместо дорожек — один мультикам-клип, камеры и звук — ракурсами
+  // XML для DaVinci: звук — парами к видео (A1 — звук камеры на V1, дальше вверх по видео), рекордеры — ниже всех.
+  // По умолчанию (Premiere) — сверху вниз от меньшего количества материала к большему, как на таймлинии программы.
+  audioOrder?: 'video';
 }
 
 export interface TimelinePreset {
@@ -150,7 +153,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
 
   const videoTracks: { cameraName: string; items: TrackItem[] }[] = [];
   // stereo — камера пишет два канала: Premiere склеит пару дорожек в одну стереодорожку.
-  const audioTracks: { cameraName: string; channel: number; stereo: boolean; items: TrackItem[] }[] = [];
+  const audioTracks: { cameraName: string; channel: number; stereo: boolean; items: TrackItem[]; rank: number[] }[] = [];
   const fileIds = new Map<string, string>();
   let clipCounter = 0;
   let fileCounter = 0;
@@ -158,7 +161,7 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
   // Порядок дорожек (core/trackOrder.ts): видео — у камеры с наибольшим количеством материала V1, выше — те, где его
   // меньше; звук — сверху вниз от меньшего к большему, рекордеры — под звуком камер. Как на таймлинии программы.
   const ordered = trackOrder(cameras);
-  for (const cam of ordered) {
+  for (const [camIdx, cam] of ordered.entries()) {
     const camPlacements = result.placements.filter((p) => p.cameraId === cam.id).sort((a, b) => a.start - b.start);
     if (camPlacements.length === 0) continue;
     const lanes = Math.max(...camPlacements.map((p) => p.lane)) + 1;
@@ -179,13 +182,17 @@ export function buildFcp7Xml(cameras: Camera[], result: SyncResult, opts: Export
           if (clip.audioChannels < ch || (clip.hasVideo && opts.cameraAudio === false)) continue;
           aItems.push({ placement: p, clip, id: `clipitem-${++clipCounter}` });
         }
-        if (aItems.length) audioTracks.push({ cameraName: cam.name, channel: ch, stereo: maxCh === 2, items: aItems });
+        // Место дорожки в порядке для DaVinci: сначала камеры с видео — от нижней (V1) вверх, потом звук без видео.
+        const video = camPlacements.some((p) => clipsById.get(p.clipId)!.hasVideo);
+        const rank = video ? [0, -camIdx, audioTracks.length] : [1, camIdx, audioTracks.length];
+        if (aItems.length) audioTracks.push({ cameraName: cam.name, channel: ch, stereo: maxCh === 2, items: aItems, rank });
       }
     }
   }
 
   // Видео собрано сверху вниз — в XML V1 самая нижняя дорожка.
   videoTracks.reverse();
+  if (opts.audioOrder === 'video') audioTracks.sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1] || a.rank[2] - b.rank[2]);
 
   // Связи видео и звука одного клипа, чтобы в монтажке они двигались вместе.
   const linksByClip = new Map<string, { id: string; mediatype: 'video' | 'audio'; track: number; index: number }[]>();

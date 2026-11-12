@@ -15,7 +15,9 @@ const RESOLUTIONS = [
   { w: 1080, h: 1920, label: 'Вертикаль 1080×1920' },
 ];
 
-type Format = 'fcp7' | 'fcpxml';
+// fcp7 — XML для Premiere; resolve-xml — тот же XML для DaVinci: звук по камерам парами к видео. Корзины в файле те же,
+// но DaVinci 21.2 папок из них не создаёт (проверено импортом через меню, и с XML по образцу PluralEyes тоже).
+type Format = 'fcp7' | 'fcpxml' | 'resolve-xml';
 const FORMAT_KEY = 'timesyncam.exportFormat';
 const DRIFT_KEY = 'timesyncam.driftCorrection';
 // Выравнивание хода часов включено по умолчанию; какие записи выравнивать, решает программа.
@@ -29,7 +31,8 @@ function savedDrift(): boolean {
 // По умолчанию — FCPXML для DaVinci: в нём стерео одной дорожкой. Выбор запоминается.
 function savedFormat(): Format {
   try {
-    return localStorage.getItem(FORMAT_KEY) === 'fcp7' ? 'fcp7' : 'fcpxml';
+    const v = localStorage.getItem(FORMAT_KEY);
+    return v === 'fcp7' || v === 'resolve-xml' ? v : 'fcpxml';
   } catch {
     return 'fcpxml';
   }
@@ -90,7 +93,7 @@ export function ExportDialog() {
     };
     const build = (c: typeof state.cameras, s0: typeof sync) => {
       const s = toEnd && problemCount ? moveToEnd(s0, problems) : s0;
-      return format === 'fcpxml' ? buildFcpxml(c, s, opts) : buildFcp7Xml(c, s, opts);
+      return format === 'fcpxml' ? buildFcpxml(c, s, opts) : buildFcp7Xml(c, s, { ...opts, audioOrder: format === 'resolve-xml' ? 'video' : undefined });
     };
     try {
       localStorage.setItem(FORMAT_KEY, format);
@@ -141,7 +144,7 @@ export function ExportDialog() {
       <div className="dialog" role="dialog" aria-label="Экспорт таймлинии">
         <h2>Экспорт таймлинии</h2>
         <p className="lead">
-          {cams.length} {cams.length === 1 ? 'камера' : cams.length < 5 ? 'камеры' : 'камер'}, {clipsCount} клипов ·{' '}
+          {pluralRu(cams.length, 'камера', 'камеры', 'камер')}, {pluralRu(clipsCount, 'клип', 'клипа', 'клипов')} ·{' '}
           {formatDate(sync.start, tz)}, {formatClockTime(sync.start, tz, false)}–{formatClockTime(sync.end, tz, false)}
         </p>
         <div className="field">
@@ -168,6 +171,7 @@ export function ExportDialog() {
           <label htmlFor="ex-format">Для какой монтажки</label>
           <select id="ex-format" value={format} onChange={(e) => setFormat(e.target.value as Format)}>
             <option value="fcpxml">DaVinci Resolve — FCPXML: стерео одной дорожкой, звук рекордера до сэмпла</option>
+            <option value="resolve-xml">DaVinci Resolve — XML: звук каждой камеры на своих дорожках, парами к видео</option>
             <option value="fcp7">Premiere Pro — XML (Final Cut Pro 7)</option>
           </select>
         </div>
@@ -230,7 +234,9 @@ export function ExportDialog() {
           {errors > 0 && <><br /><b style={{ color: 'var(--danger)' }}>Есть ошибки ({errors}):</b> накладывающиеся клипы уйдут на дополнительную дорожку камеры.</>}
           {format === 'fcpxml'
             ? <><br />Видео встаёт на кадр, звук без видео — точно до сэмпла, как его нашла синхронизация.<br />Resolve: File → Import → Timeline.</>
-            : <><br />В XML каждый канал звука — на своей дорожке: так устроен формат. Для DaVinci выбирайте FCPXML — там стерео одной дорожкой.{hasRecorder && <> Звук рекордера в XML встаёт с точностью до кадра.</>}<br />Premiere Pro: File → Import. Resolve: File → Import → Timeline.</>}
+            : format === 'resolve-xml'
+              ? <><br />Звук камер — парами к видео: A1 и A2 — левый и правый канал камеры на V1, дальше вверх по видео; рекордеры — ниже всех. Картинка и звук клипа связаны. В XML каждый канал — на своей дорожке: так устроен формат.{hasRecorder && <> Звук рекордера встаёт с точностью до кадра.</>}<br />Resolve: File → Import → Timeline.</>
+              : <><br />В XML каждый канал звука — на своей дорожке: так устроен формат.{hasRecorder && <> Звук рекордера в XML встаёт с точностью до кадра.</>}<br />Premiere Pro: File → Import.</>}
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={() => dispatch({ type: 'export-open', open: false })}>Отмена</button>

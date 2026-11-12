@@ -77,7 +77,7 @@ test('Звук предпросмотра: каждый кусок звучит,
   const p = new PreviewAudio();
   await p.start(105, cams, placements, () => true);
   // Курсор по часам звука: в момент c0 он в 105.
-  const c0 = started.length ? Math.min(...started.map((s) => s.when)) : 0;
+  const c0 = (p as unknown as { c0: number }).c0;
   assert.ok(Math.abs((p.position() ?? 0) - 105) < 0.1);
   // Прогоняем 20 секунд: подкачка по таймеру.
   for (let t = 0; t <= 20; t += 0.2) {
@@ -99,8 +99,10 @@ test('Звук предпросмотра: каждый кусок звучит,
     assert.ok(list.length >= 2, `${path}: кусков ${list.length}`);
     for (let i = 1; i < list.length; i++) assert.ok(Math.abs(list[i - 1].from + list[i - 1].duration - list[i].from) < 1 / 48000 + 1e-9, `${path}: зазор у ${list[i].from}`);
   }
-  // Первый клип камеры начат с середины: курсор стоял в 105 — с 5-й секунды клипа.
-  assert.equal(requests.find((r) => r.path === 'a1')!.start, 5);
+  // Первый клип камеры начат с середины: куски — по сетке таймлинии в 8 с, курсор стоял в 105 — кусок с 104,
+  // то есть с 4-й секунды клипа; звучать он начинает с 5-й (что раньше курсора — пропускается).
+  assert.equal(requests.find((r) => r.path === 'a1')!.start, 4);
+  assert.ok(started.filter((s) => s.clipPath === 'a1').every((s) => s.from + s.offset >= 5 - 0.1)); // до курсора — только запас на старт;
 });
 
 test('Звук предпросмотра: Mute и Solo на ходу — выключенная дорожка не читается, включённая вступает на своём месте', async () => {
@@ -114,12 +116,11 @@ test('Звук предпросмотра: Mute и Solo на ходу — вык
   now = 2;
   p.update(cams, placements, () => true);
   (p as unknown as { pump: (s: number) => void }).pump((p as unknown as { session: number }).session);
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
   const rec = started.filter((s) => s.clipPath === 'rec');
   assert.ok(rec.length > 0, 'включённая дорожка вступила');
   // Вступает не раньше текущего момента и на своём месте.
-  const c0 = Math.min(...started.filter((s) => s.clipPath !== 'rec').map((s) => s.when));
+  const c0 = (p as unknown as { c0: number }).c0;
   for (const s of rec) {
     assert.ok(s.when >= 2 - 1e-9);
     assert.ok(Math.abs(s.when - (c0 + (97.25 + s.from + s.offset - 105))) < 1e-9);
@@ -140,4 +141,39 @@ test('Звук предпросмотра: тихая дорожка подни�
   // Тишина и шум ниже −60 дБ не поднимаются; подъём не больше +24 дБ.
   assert.equal(trackGain(loudLevel(new Float32Array(48000))), 1);
   assert.equal(trackGain(0.002), 16);
+});
+
+test('Звук предпросмотра: после перескока курсора каждая дорожка сразу читает звук у курсора, а не с прежнего места', async () => {
+  const { cams, placements } = scene();
+  const p = new PreviewAudio();
+  const pump = () => (p as unknown as { pump: (s: number) => void }).pump((p as unknown as { session: number }).session);
+  // Играем с 102 десять секунд — дорожки читают вперёд.
+  started.length = 0;
+  requests.length = 0;
+  now = 0;
+  await p.start(102, cams, placements, () => true);
+  for (let t = 0; t <= 10; t += 0.2) {
+    now = t;
+    pump();
+    await new Promise((r) => setImmediate(r));
+  }
+  // Перескок вперёд на 130 (клип a2 кончился, рекордер ещё звучит) и назад на 101.
+  try {
+  for (const at of [130, 101]) {
+    started.length = 0;
+    requests.length = 0;
+    now += 1;
+    await p.start(at, cams, placements, () => true);
+    const c0 = Math.min(...started.map((s) => s.when)); // первый миг звука после старта
+    // Обе дорожки, которым есть что сказать в момент at, вступают сразу — в первый же миг после старта.
+    const sounding = (path: string) => started.some((s) => s.clipPath === path && Math.abs(s.when - c0) < 1e-6);
+    if (at === 130) assert.ok(sounding('rec'), `рекордер молчит после перескока на ${at}: ${JSON.stringify(requests)}`);
+    else {
+      assert.ok(sounding('a1'), `камера молчит после перескока на ${at}: ${JSON.stringify(requests)}`);
+      assert.ok(sounding('rec'), `рекордер молчит после перескока на ${at}: ${JSON.stringify(requests)}`);
+    }
+  }
+  } finally {
+    p.stop();
+  }
 });

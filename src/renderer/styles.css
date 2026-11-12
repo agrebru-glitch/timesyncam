@@ -283,22 +283,123 @@ button, input, select { font: inherit; color: inherit; }
 .sev.warning { color: var(--warning); }
 .sev.info { color: var(--text-3); }
 .empty-state { color: var(--text-2); padding: 40px; text-align: center; border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); max-width: 1100px; }
-.faq { max-width: 820px; }
-.faq section { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px 20px; margin-bottom: 12px; }
-.faq section.flash { border-color: var(--accent); }
-/* Главный способ синхронизации — выделен, как рекомендуемый пункт меню. */
-.faq section.featured { border-color: #2f9a5c; background: rgba(31, 92, 56, 0.28); }
-.faq section.featured h2 { font-size: 17px; }
-.featured-head { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; margin-bottom: 4px; }
-.btn.featured-btn { flex: none; background: #2f9a5c; border-color: #2f9a5c; color: #fff; }
-.btn.featured-btn:hover { background: #38b06a; border-color: #38b06a; }
-.faq h2 { font-size: 15px; margin: 0 0 6px; font-weight: 600; }
-.faq p, .faq li { color: var(--text-2); line-height: 1.6; user-select: text; }
-.faq p { margin: 6px 0; }
-.faq ul { margin: 6px 0; padding-left: 20px; }
+/* Вкладка «Настройка камер»: оглавление слева, разделы — карточками; ширина окна занята сеткой, а не длинными строками. */
+.faq-page { padding: 0; }
+.faq-shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: 32px; max-width: 1360px; margin: 0 auto; padding: 24px 32px 48px; }
+.faq-nav { position: sticky; top: 24px; align-self: start; max-height: calc(100vh - 120px); overflow-y: auto; padding-right: 4px; }
+.faq-nav-group { margin-bottom: 14px; }
+.faq-nav-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); margin: 0 0 4px 10px; }
+.faq-nav-item { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text-2); padding: 5px 10px; border-radius: 6px; cursor: pointer; line-height: 1.35; border-left: 2px solid transparent; }
+.faq-nav-item:hover { background: var(--hover); color: var(--text); }
+.faq-nav-item.on { color: var(--text); background: var(--accent-soft); border-left-color: var(--accent); }
+.faq { min-width: 0; }
+.faq-hero { margin-bottom: 18px; }
+.faq-hero .lead { max-width: 820px; margin-bottom: 0; }
+.faq-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 18px 22px; margin-bottom: 14px; scroll-margin-top: 20px; transition: border-color 0.3s, box-shadow 0.3s; }
+.faq-card.flash { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.faq h2 { font-size: 16px; margin: 0 0 8px; font-weight: 600; }
+.faq h3 { font-size: 14px; margin: 0 0 6px; font-weight: 600; }
+.faq-card h3 + p { margin-top: 0; }
+.faq-card p + h3 { margin-top: 16px; }
+.faq h2.faq-group { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); font-weight: 600; margin: 30px 0 10px; }
+.faq p, .faq li, .faq td, .faq .fact { color: var(--text-2); line-height: 1.6; user-select: text; }
+.faq p { margin: 8px 0; max-width: 980px; }
 .faq b { color: var(--text); font-weight: 500; }
-.faq .path { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg); padding: 1px 6px; border-radius: 4px; }
-.faq .group-title { font-size: 12px; color: var(--text-3); margin: 22px 0 8px; }
+.faq .path { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+.faq .note-line { color: var(--text-3); font-size: 12px; margin-bottom: 0; }
+.faq .muted-line { color: var(--text-2); margin: 2px 0 0; font-size: 12px; }
+
+/* Экран синхронизации — главный способ, выделен как рекомендуемый пункт меню. */
+.faq-card.featured { border-color: #2f9a5c; background: linear-gradient(135deg, rgba(31, 92, 56, 0.42), rgba(31, 92, 56, 0.16)); padding: 20px 24px; }
+.featured-title { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; }
+.featured-title h2 { margin: 0; font-size: 18px; }
+.featured-icon { width: 42px; height: 42px; flex: none; border-radius: 10px; display: grid; place-items: center; background: rgba(111, 220, 157, 0.16); color: #6fdc9d; }
+.featured-icon .icon { width: 24px; height: 24px; }
+.faq .sync-recommended { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #0d2a19; background: #6fdc9d; border-radius: 999px; padding: 2px 8px; margin-left: 8px; vertical-align: 2px; }
+.featured-body { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 28px; align-items: start; }
+.featured-body > div > p:first-child { margin-top: 0; }
+.featured-aside { display: flex; flex-direction: column; gap: 12px; align-items: stretch; background: rgba(0, 0, 0, 0.2); border: 1px solid rgba(111, 220, 157, 0.2); border-radius: 12px; padding: 16px; }
+.qr-art { display: grid; place-items: center; aspect-ratio: 1; border-radius: 10px; background: #f4f5f7; color: #111; }
+.qr-art .icon { width: 70%; height: 70%; stroke-width: 1.6; }
+.btn.featured-btn { justify-content: center; background: #2f9a5c; border-color: #2f9a5c; color: #fff; }
+.btn.featured-btn:hover { background: #38b06a; border-color: #38b06a; }
+.featured-aside .note-line { margin: 0; }
+/* Шаги — как в справке Sony: номер в кружке, линия к следующему шагу. */
+.faq ol.flow { list-style: none; counter-reset: flow; margin: 12px 0 0; padding: 0; }
+.faq ol.flow li { counter-increment: flow; position: relative; padding: 0 0 14px 40px; }
+.faq ol.flow li:last-child { padding-bottom: 0; }
+.faq ol.flow li::before { content: counter(flow); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%; background: #6fdc9d; color: #0d2a19; font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+.faq ol.flow li::after { content: ''; position: absolute; left: 11px; top: 28px; bottom: 4px; width: 2px; background: rgba(111, 220, 157, 0.3); }
+.faq ol.flow li:last-child::after { display: none; }
+
+/* Источники времени и факты о сверке — сеткой. */
+.source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 6px; }
+.source, .import-app { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.source.best { border-color: rgba(111, 220, 157, 0.45); }
+.source p, .import-app p { margin: 4px 0 0; font-size: 12.5px; }
+.source-name { font-weight: 600; color: var(--text); }
+.fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 10px; }
+.fact { background: var(--surface-2); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; }
+
+/* Условные обозначения таймлинии. */
+.legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 10px 18px; margin: 6px 0 4px; }
+.legend-row { display: flex; gap: 12px; align-items: flex-start; color: var(--text-2); line-height: 1.6; font-size: 12.5px; user-select: text; }
+.swatch { flex: none; width: 44px; height: 22px; border-radius: 5px; margin-top: 2px; background: rgba(61, 139, 253, 0.35); }
+.swatch.unsure { outline: 2px dashed var(--warning); outline-offset: -2px; }
+.swatch.alone { outline: 1px dashed rgba(255, 255, 255, 0.45); outline-offset: -1px; }
+.swatch.order { background: linear-gradient(to bottom, rgba(176, 124, 255, 0.55) 0 30%, transparent 30% 36%, rgba(61, 139, 253, 0.55) 36% 64%, transparent 64% 70%, rgba(47, 198, 180, 0.55) 70%); }
+.diamonds { flex: none; width: 44px; display: flex; gap: 5px; justify-content: center; padding-top: 7px; }
+.diamonds .d { width: 9px; height: 9px; transform: rotate(45deg); display: block; }
+.diamonds .d.set { background: var(--success); }
+.diamonds .d.ok { background: #fff; }
+.diamonds .d.off { background: var(--text-3); }
+
+/* Sony: путь по меню, как в справке, и таблица TC/UB. */
+.menu-path { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 0; margin: 4px 0; vertical-align: middle; user-select: text; }
+.menu-step { display: inline-flex; align-items: center; }
+.menu-arrow { color: var(--text-3); margin: 0 6px; }
+.menu-key, .menu-item, .menu-value { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 20px; padding: 1px 8px; border-radius: 5px; white-space: nowrap; }
+.menu-key { background: #e9e9ec; color: #18181b; font-weight: 700; letter-spacing: 0.03em; }
+.menu-item { background: var(--surface-3); color: var(--text); border: 1px solid var(--border-strong); }
+.menu-value { background: var(--accent-soft); color: #cfe2ff; border: 1px solid rgba(61, 139, 253, 0.45); font-weight: 600; }
+.menu-icon { width: 15px; height: 15px; color: var(--text); }
+.menu-icon.movie { color: #ff4d5e; }
+.tcub-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.modes { display: inline-flex; gap: 4px; flex: none; }
+.mode { height: 24px; min-width: 30px; padding: 0 6px; border-radius: 4px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 800; }
+.mode .mode-icon { width: 17px; height: 17px; }
+.mode.off { background: #3a3b41; color: #8b8d94; }
+.mode.movie { background: #e5303f; color: #fff; }
+.mode.sq { background: #f08a24; color: #fff; }
+.tc-table { width: 100%; border-collapse: collapse; margin: 12px 0 4px; font-size: 12.5px; }
+.tc-table th { text-align: left; font-weight: 500; color: var(--text-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 12px 6px 0; border-bottom: 1px solid var(--border); }
+.tc-table td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.tc-table tr:last-child td { border-bottom: 0; }
+.tc-table td:first-child { color: var(--text); white-space: nowrap; width: 1%; }
+.tc-table td:nth-child(2) { white-space: nowrap; width: 1%; }
+.tc-val { display: inline-block; font-weight: 600; color: #cfe2ff; background: var(--accent-soft); border-radius: 5px; padding: 1px 8px; }
+.tc-val.soft { color: var(--text-2); background: var(--surface-3); font-weight: 500; }
+.inline-icon { width: 14px; height: 14px; vertical-align: -2px; color: var(--text); }
+
+/* Шаги Sony — карточками в две колонки, номер как в справке: кружок с линией вниз. */
+.step-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; align-items: start; }
+.step-grid .faq-card { margin-bottom: 0; }
+.step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.step-head h3 { margin: 0; font-size: 15px; }
+.step-badge { width: 26px; height: 26px; flex: none; border-radius: 50%; background: #9a9ca3; color: #141518; font-weight: 700; display: grid; place-items: center; font-size: 13px; }
+.step-body { border-left: 2px solid var(--border-strong); margin-left: 12px; padding-left: 22px; }
+.step-body p:first-child { margin-top: 0; }
+.step-body p:last-child { margin-bottom: 0; }
+
+.card-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.card-grid .faq-card { margin-bottom: 0; }
+.card-stack { display: flex; flex-direction: column; gap: 14px; }
+.import-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.faq-card.about { margin-top: 14px; }
+@media (max-width: 1250px) {
+  .faq-shell { grid-template-columns: 180px minmax(0, 1fr); gap: 22px; padding: 20px 22px 40px; }
+  .card-grid { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* Диалог экспорта и тосты */
 .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; z-index: 20; }
@@ -392,3 +493,6 @@ button, input, select { font: inherit; color: inherit; }
 .split-cam { font-weight: 600; }
 .split-count { color: var(--text-2); text-align: right; }
 .split-to { grid-column: 1 / -1; font-size: 12px; color: var(--text-3); margin-top: 2px; }
+/* Звук дорожек подгружается — над предпросмотром, рядом с кнопкой «Звук». */
+.sound-loading { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warning); background: var(--warning-soft); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+.sound-loading .icon { width: 13px; height: 13px; }

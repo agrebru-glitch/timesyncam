@@ -31,13 +31,21 @@ function registerMediaProtocol(): void {
     const url = new URL(request.url);
     const path = decodeURIComponent(url.pathname.replace(/^\//, ''));
     if (!allowedMedia.has(path)) return new Response('Forbidden', { status: 403 });
-    const st = await stat(path);
+    // Файл могли переместить или удалить после сканирования.
+    const st = await stat(path).catch(() => null);
+    if (!st) return new Response('Not found', { status: 404 });
     const type = MIME[extname(path).toLowerCase()] ?? 'application/octet-stream';
     const range = request.headers.get('range');
     if (range) {
       const m = /bytes=(\d*)-(\d*)/.exec(range);
-      const start = m && m[1] ? Number(m[1]) : 0;
-      const end = m && m[2] ? Math.min(Number(m[2]), st.size - 1) : st.size - 1;
+      let start = m && m[1] ? Number(m[1]) : 0;
+      let end = m && m[2] ? Math.min(Number(m[2]), st.size - 1) : st.size - 1;
+      // «bytes=-N» — последние N байт файла.
+      if (m && !m[1] && m[2]) {
+        start = Math.max(0, st.size - Number(m[2]));
+        end = st.size - 1;
+      }
+      if (start > end || start >= st.size) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${st.size}` } });
       const stream = Readable.toWeb(createReadStream(path, { start, end })) as ReadableStream;
       return new Response(stream, {
         status: 206,
@@ -293,7 +301,7 @@ async function chooseExportPath(defaultName: string): Promise<string | null> {
     defaultPath: defaultName,
     filters: defaultName.endsWith('.fcpxml')
       ? [{ name: 'FCPXML (DaVinci Resolve)', extensions: ['fcpxml'] }]
-      : [{ name: 'Final Cut Pro 7 XML (Premiere Pro, DaVinci Resolve)', extensions: ['xml'] }],
+      : [{ name: 'XML (Final Cut Pro 7) — Premiere Pro, DaVinci Resolve', extensions: ['xml'] }],
   });
   return r.canceled || !r.filePath ? null : r.filePath;
 }

@@ -58,3 +58,24 @@ test('Порядок дорожек в экспорте: V1 — камера с 
   assert.equal(laneOf('LAV.WAV'), -1);
   assert.equal(laneOf('REC.WAV'), -2);
 });
+
+test('XML для DaVinci: звук парами к видео — A1 у камеры на V1, дальше вверх по видео, рекордеры ниже всех; для Premiere — как было', () => {
+  const s = scene();
+  const sync = runSync(s.cams);
+  const opts = { name: 'T', rate: { num: 25, den: 1 }, width: 1920, height: 1080 };
+  const audioOf = (xml: string) => {
+    const seq = xml.slice(xml.indexOf('<sequence'));
+    const audio = /<audio>([\s\S]*?)<\/audio>\s*<\/media>/.exec(seq)![1];
+    return [...audio.matchAll(/<track[ >][\s\S]*?<\/track>/g)].map((m) => [...new Set([...m[0].matchAll(/<name>([^<]+\.(?:MP4|WAV))<\/name>/g)].map((n) => n[1]))].join(','));
+  };
+  const resolve = audioOf(buildFcp7Xml(s.cams, sync, { ...opts, audioOrder: 'video' }));
+  const first = (list: string[], name: string) => list.findIndex((t) => t.includes(name));
+  assert.equal(first(resolve, 'MAIN1.MP4'), 0, resolve.join(' | '));
+  assert.ok(first(resolve, 'MAIN1.MP4') < first(resolve, 'SIDE1.MP4') && first(resolve, 'SIDE1.MP4') < first(resolve, 'LAV.WAV') && first(resolve, 'LAV.WAV') < first(resolve, 'REC.WAV'), resolve.join(' | '));
+  // Видео и корзины те же, что для Premiere; меняется только порядок дорожек звука.
+  const premiere = buildFcp7Xml(s.cams, sync, opts);
+  const davinci = buildFcp7Xml(s.cams, sync, { ...opts, audioOrder: 'video' });
+  const bins = (x: string) => x.slice(0, x.indexOf('<sequence'));
+  assert.equal(bins(davinci), bins(premiere));
+  assert.deepEqual([...audioOf(premiere)].sort(), [...resolve].sort());
+});

@@ -6,7 +6,7 @@ import { PREVIEW_KEY, SOUND_KEY, useApp } from '../App.tsx';
 import { api, cameraColor, mediaUrl } from '../api.ts';
 import { getWaveform, useWaveformVersion } from '../waveforms.ts';
 import { WAVE_RATE } from '../../core/audioSync.ts';
-import { IconCamera, IconFrameBack, IconFrameFwd, IconHeadphones, IconNext, IconPause, IconPlay, IconPrev } from '../icons.tsx';
+import { IconCamera, IconFrameBack, IconFrameFwd, IconHeadphones, IconNext, IconPause, IconPlay, IconPrev, IconSync } from '../icons.tsx';
 
 interface Hit {
   placement: Placement;
@@ -240,6 +240,14 @@ export function Viewer() {
         >
           {state.soundOn ? 'Звук вкл.' : 'Звук выкл.'}
         </button>
+        {state.soundOn && state.soundLoading && (
+          <span className="sound-loading" role="status" title={state.soundLoading.playing ? 'Дорожка не успела прочитать звук к месту курсора — вступит на своём месте, как только прочитает' : 'Звук начнётся, когда прочитаны все дорожки: так они звучат вместе с первой секунды'}>
+            <IconSync className="icon spin" />
+            {state.soundLoading.playing
+              ? `Догружаю звук: ${state.soundLoading.total - state.soundLoading.ready} из ${state.soundLoading.total}`
+              : `Загружаю звук: ${state.soundLoading.ready} из ${state.soundLoading.total}`}
+          </span>
+        )}
         <span className="spacer" />
         {state.playhead !== null && (
           <>

@@ -332,7 +332,9 @@ export function App() {
       if (qr) dispatch({ type: 'qr-screen', open: true });
       const syncMode = mode === 'audio' || mode === 'timecode' || mode === 'control' ? mode : undefined;
       if (sync) setTimeout(() => void doSync(syncMode), 50);
-      if (tab === 'errors' || tab === 'faq') setTimeout(() => dispatch({ type: 'tab', tab }), 100);
+      // «faq#tcub» — вкладка и раздел FAQ, для снимков проверки.
+      const [tabName, anchor] = (tab ?? '').split('#');
+      if (tabName === 'errors' || tabName === 'faq') setTimeout(() => dispatch({ type: 'tab', tab: tabName, faqAnchor: anchor || null }), 100);
       if (menu) setTimeout(() => dispatch({ type: 'sync-menu', open: true }), 200);
       const m = at ? /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(at) : null;
       if (m) {
@@ -401,6 +403,14 @@ export function App() {
       if (sound) previewAudio.stop();
     };
   }, [state.playing, placements, state.soundOn, state.tab]);
+
+  // Подгрузка звука — в строку над предпросмотром.
+  useEffect(() => {
+    previewAudio.onLoading = (loading) => dispatch({ type: 'sound-loading', loading });
+    return () => {
+      previewAudio.onLoading = null;
+    };
+  }, []);
 
   // Mute и Solo на ходу.
   useEffect(() => {

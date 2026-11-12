@@ -164,10 +164,18 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
       entries.push(entry);
     }
   }
-  // Без звука камер: у видео на таймлинии включена только картинка (srcEnable), звук остаётся у рекордеров.
-  const only = (c: ClipMeta) => (c.hasVideo && opts.cameraAudio === false && c.audioChannels > 0 ? ' srcEnable="video"' : '');
-  const clipXml = (e: (typeof entries)[number], lanes: boolean) =>
-    `<asset-clip ref="${assetOf(e.c)}"${lanes ? ` lane="${e.lane}"` : ''} offset="${frames(e.offset, seq)}" start="${e.start}" duration="${frames(e.dur, seq)}" name="${esc(e.c.name)}"${e.c.hasVideo ? ` format="${formatOf(e.c)}"` : ''}${only(e.c)} tcFormat="NDF">${keyword(e.c, e.start, frames(e.dur, seq))}</asset-clip>`;
+  // Без звука камер: клип камеры — <clip> с одной картинкой (<video>), звук остаётся у рекордеров. srcEnable="video"
+  // у asset-clip DaVinci 21.2 не понимает — клип приходил со звуком (проверено на живом DaVinci 2026-11-12).
+  const pictureOnly = (c: ClipMeta) => c.hasVideo && opts.cameraAudio === false && c.audioChannels > 0;
+  const clipXml = (e: (typeof entries)[number], lanes: boolean) => {
+    const lane = lanes ? ` lane="${e.lane}"` : '';
+    const dur = frames(e.dur, seq);
+    if (lanes && pictureOnly(e.c)) {
+      return `<clip name="${esc(e.c.name)}"${lane} offset="${frames(e.offset, seq)}" start="${e.start}" duration="${dur}" format="${formatOf(e.c)}" tcFormat="NDF">`
+        + `<video ref="${assetOf(e.c)}" offset="${e.start}" start="${e.start}" duration="${dur}"/>${keyword(e.c, e.start, dur)}</clip>`;
+    }
+    return `<asset-clip ref="${assetOf(e.c)}"${lane} offset="${frames(e.offset, seq)}" start="${e.start}" duration="${dur}" name="${esc(e.c.name)}"${e.c.hasVideo ? ` format="${formatOf(e.c)}"` : ''} tcFormat="NDF">${keyword(e.c, e.start, dur)}</asset-clip>`;
+  };
   for (const e of entries) {
     endFrame = Math.max(endFrame, e.offset + e.dur);
     items.push({ lane: e.lane, offset: e.offset, xml: clipXml(e, true) });

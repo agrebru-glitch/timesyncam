@@ -98,7 +98,7 @@ function audioText(au: AudioCameraResult | undefined, cam: Camera, running: bool
         return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}${acc}. Ход часов рекордера измерен по звуку`, tone: 'ok' };
       }
       if (au.model === 'per-clip') return { title: 'Поправлена по звуку', sub: `${wide}Своя поправка у клипов с общим звуком (${clips}), остальным — по ближайшей точке${acc}`, tone: 'ok' };
-      if (au.model === 'per-anchor') return { title: `Поправка менялась по ходу съёмки: ${au.steps.length} шага`, sub: `${wide}В начале ${formatSigned(au.steps[0].correction)}, в конце ${formatSigned(au.steps[au.steps.length - 1].correction)}${acc}`, tone: 'ok' };
+      if (au.model === 'per-anchor') return { title: `Поправка менялась по ходу съёмки: ${pluralRu(au.steps.length, 'шаг', 'шага', 'шагов')}`, sub: `${wide}В начале ${formatSigned(au.steps[0].correction)}, в конце ${formatSigned(au.steps[au.steps.length - 1].correction)}${acc}`, tone: 'ok' };
       return { title: `Поправлена по звуку на ${formatSigned(au.correction ?? 0)}`, sub: `${wide}Точек сверки: ${clips}${acc}`, tone: 'ok' };
     }
     case 'no-overlap':

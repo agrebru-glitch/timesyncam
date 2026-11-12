@@ -434,7 +434,7 @@ function syncCamera(
       severity: 'error',
       cameraId: cam.id,
       clipId: untimed[0].id,
-      title: `«${cam.name}»: у ${untimed.length} клипов нет времени съёмки`,
+      title: `«${cam.name}»: у ${pluralRu(untimed.length, 'клипа', 'клипов', 'клипов')} нет времени съёмки`,
       details: `${untimed.slice(0, 5).map((c) => c.name).join(', ')}${untimed.length > 5 ? '…' : ''}. Их не получится поставить на таймлинию.`,
       actions: [],
     }));
@@ -498,7 +498,7 @@ function syncCamera(
     issues.push(issue({
       severity: 'warning',
       cameraId: cam.id,
-      title: `«${cam.name}»: время ${fileTimed} клипов взято из даты файла`,
+      title: `«${cam.name}»: время ${pluralRu(fileTimed, 'клипа', 'клипов', 'клипов')} взято из даты файла`,
       details: 'Камера не записала время съёмки внутрь файла. Дата файла верна, только если карту копировали целиком, без пересохранения.',
       actions: [],
     }));
