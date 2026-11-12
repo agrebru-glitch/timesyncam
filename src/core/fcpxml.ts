@@ -3,6 +3,7 @@
 // а доля кадра срезается с его начала. Оригинальные файлы не меняются.
 import type { Camera, ClipMeta, Rate, SyncResult } from './types.ts';
 import { trackOrder } from './trackOrder.ts';
+import { laneName } from './channels.ts';
 import { nominalRate, parseTc, rateValue, tcToFrameCount } from './timecode.ts';
 import type { ExportOptions } from './fcp7.ts';
 import { timelineOrigin } from './fcp7.ts';
@@ -159,7 +160,7 @@ export function buildFcpxml(cameras: Camera[], result: SyncResult, opts: ExportO
       // хвост предыдущего: место следующего найдено по звуку, сдвигать его нельзя.
       const prev = lastOf.get(l);
       if (prev && offset < prev.offset + prev.dur) prev.dur = Math.max(1, offset - prev.offset);
-      const entry = { lane: l, offset, dur: durFrames, c, start, track: p.lane ? `${cam.name} (${p.lane + 1})` : cam.name };
+      const entry = { lane: l, offset, dur: durFrames, c, start, track: laneName(cam, result.placements, p.lane) ?? (p.lane ? `${cam.name} (${p.lane + 1})` : cam.name) };
       lastOf.set(l, entry);
       entries.push(entry);
     }

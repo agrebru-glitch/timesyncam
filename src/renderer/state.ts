@@ -62,6 +62,11 @@ export interface State {
   previewOn: boolean;
   soundOn: boolean; // звук предпросмотра: все слышимые дорожки на общих часах
   soundLoading: SoundLoading | null; // звук дорожек подгружается: при запуске курсор ждёт все дорожки
+  // Фоновая работа, которая идёт дольше минуты, — в общем состоянии, а не в окне, где её начали: сменили вкладку
+  // или закрыли окно экспорта — ход виден в строке состояния, а кнопка не даёт запустить второй раз.
+  reportRun: { done: number; total: number } | null;
+  exportRun: string | null;
+  exportHint: boolean; // синхронизация закончилась — подсказка у кнопки «Экспорт»
   mix: { muted: string[]; solo: string[] }; // Mute и Solo дорожек — как в монтажке
   qrScreenOpen: boolean;
   controlHint: number | null; // подсказка «отметьте контрольный кадр»: номер показа, null — скрыта
@@ -133,6 +138,9 @@ export const initialState: State = {
   previewOn: true,
   soundOn: true,
   soundLoading: null,
+  reportRun: null,
+  exportRun: null,
+  exportHint: false,
   mix: { muted: [], solo: [] },
   qrScreenOpen: false,
   controlHint: null,
@@ -144,6 +152,7 @@ export const initialState: State = {
 export type Action =
   | { type: 'add-camera'; camera?: Camera }
   | { type: 'remove-camera'; cameraId: string }
+  | { type: 'merge-cameras'; intoId: string; fromId: string }
   | { type: 'rename-camera'; cameraId: string; name: string }
   | { type: 'scan-start'; cameraId: string }
   | { type: 'scan-progress'; cameraId: string; done: number; total: number }
@@ -180,6 +189,9 @@ export type Action =
   | { type: 'preview'; on: boolean }
   | { type: 'sound'; on: boolean }
   | { type: 'sound-loading'; loading: SoundLoading | null }
+  | { type: 'report-run'; run: { done: number; total: number } | null }
+  | { type: 'export-run'; text: string | null }
+  | { type: 'export-hint'; show: boolean }
   | { type: 'mix'; cameraId: string; kind: 'mute' | 'solo' }
   | { type: 'clear-all' }
   | { type: 'qr-screen'; open: boolean }
@@ -208,6 +220,17 @@ export function reducer(state: State, a: Action): State {
         activeCameraId: state.activeCameraId === a.cameraId ? null : state.activeCameraId,
         mix: { muted: state.mix.muted.filter((x) => x !== a.cameraId), solo: state.mix.solo.filter((x) => x !== a.cameraId) },
       };
+    }
+    case 'merge-cameras': {
+      // Две дорожки одной камеры (одинаковый серийный номер) — в одну: карты одной камеры в разных подпапках.
+      const from = state.cameras.find((c) => c.id === a.fromId);
+      if (!from || a.intoId === a.fromId) return state;
+      const cameras = state.cameras.filter((c) => c.id !== a.fromId).map((c) => {
+        if (c.id !== a.intoId) return c;
+        const known = new Set(c.clips.map((x) => x.path));
+        return { ...c, clips: [...c.clips, ...from.clips.filter((x) => !known.has(x.path))], folders: [...new Set([...c.folders, ...from.folders])], excludedClipIds: [...c.excludedClipIds, ...from.excludedClipIds] };
+      });
+      return { ...state, cameras, version: state.version + 1, splitOffer: state.splitOffer === a.fromId ? null : state.splitOffer };
     }
     case 'rename-camera':
       return { ...state, cameras: mapCamera(state, a.cameraId, (c) => ({ ...c, name: a.name || c.name })) };
@@ -313,7 +336,7 @@ export function reducer(state: State, a: Action): State {
     case 'viewport':
       return { ...state, viewport: a.viewport };
     case 'export-open':
-      return { ...state, exportOpen: a.open };
+      return { ...state, exportOpen: a.open, exportHint: a.open ? false : state.exportHint };
     case 'toast':
       toastSeq += 1;
       return { ...state, toasts: [...state.toasts.slice(-2), { id: toastSeq, text: a.text, revealPath: a.revealPath }] };
@@ -328,7 +351,7 @@ export function reducer(state: State, a: Action): State {
     case 'sync-mode':
       return { ...state, syncMode: a.mode };
     case 'audio-start':
-      return { ...state, audioRun: { done: 0, total: 0, frac: 0 }, audio: null };
+      return { ...state, audioRun: { done: 0, total: 0, frac: 0 }, audio: null, exportHint: false };
     case 'audio-progress':
       // Оценка оставшейся работы уточняется по ходу; полоса на кнопке назад не откатывается.
       return { ...state, audioRun: { done: a.done, total: a.total, frac: Math.max(state.audioRun?.frac ?? 0, a.total ? Math.min(1, a.done / a.total) : 0) } };
@@ -355,6 +378,12 @@ export function reducer(state: State, a: Action): State {
       return { ...state, soundOn: a.on };
     case 'sound-loading':
       return { ...state, soundLoading: a.loading };
+    case 'report-run':
+      return { ...state, reportRun: a.run };
+    case 'export-run':
+      return { ...state, exportRun: a.text };
+    case 'export-hint':
+      return { ...state, exportHint: a.show };
     case 'mix': {
       const key = a.kind === 'mute' ? 'muted' : 'solo';
       const list = state.mix[key];

@@ -496,3 +496,24 @@ button, input, select { font: inherit; color: inherit; }
 /* Звук дорожек подгружается — над предпросмотром, рядом с кнопкой «Звук». */
 .sound-loading { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warning); background: var(--warning-soft); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
 .sound-loading .icon { width: 13px; height: 13px; }
+/* Фоновая работа (выравнивание звука, отчёт) — в строке состояния, видна с любой вкладки. */
+.statusbar-run { display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; font-size: 12px; color: var(--warning); }
+.statusbar-run .icon { width: 13px; height: 13px; }
+/* Сверка идёт: дорожки заливаются фирменным синим, по ним медленно бегут полосы ярче — программа занята. */
+.tl-busy { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; overflow: hidden; background: rgba(61, 139, 253, 0.14); }
+.tl-busy::before { content: ''; position: absolute; top: 0; bottom: 0; left: -120px; right: 0; background: repeating-linear-gradient(-45deg, rgba(90, 156, 255, 0) 0 28px, rgba(90, 156, 255, 0.2) 28px 56px); animation: tl-stripes 2.4s linear infinite; }
+@keyframes tl-stripes { to { transform: translateX(79.2px); } }
+@media (prefers-reduced-motion: reduce) { .tl-busy::before { animation: none; } }
+/* Подсказка «дальше — экспорт» под кнопкой. */
+.export-wrap { position: relative; display: inline-flex; }
+.export-hint { position: absolute; top: calc(100% + 12px); right: 0; z-index: 25; width: 330px; display: flex; gap: 12px; align-items: flex-start; padding: 14px 12px 14px 14px; background: linear-gradient(135deg, rgba(61, 139, 253, 0.16), rgba(61, 139, 253, 0.03) 60%), var(--surface-3); border: 1px solid rgba(61, 139, 253, 0.75); border-radius: 12px; box-shadow: 0 0 0 1px rgba(61, 139, 253, 0.15), 0 0 22px rgba(61, 139, 253, 0.3), 0 12px 34px rgba(0, 0, 0, 0.5); animation: hint-in 0.25s ease-out, export-glow 2.6s ease-in-out 0.25s infinite; }
+.export-hint::before { content: ''; position: absolute; top: -7px; right: 30px; width: 12px; height: 12px; background: #23293a; border-left: 1px solid rgba(61, 139, 253, 0.75); border-top: 1px solid rgba(61, 139, 253, 0.75); transform: rotate(45deg); }
+.export-hint-icon { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--accent); color: #fff; box-shadow: 0 0 14px rgba(61, 139, 253, 0.6); }
+.export-hint-icon svg { width: 24px; height: 24px; }
+.export-hint-text { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.export-hint-text b { color: var(--text); font-weight: 600; font-size: 13.5px; }
+@keyframes export-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(61, 139, 253, 0.15), 0 0 16px rgba(61, 139, 253, 0.2), 0 12px 34px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 0 0 2px rgba(61, 139, 253, 0.35), 0 0 32px rgba(61, 139, 253, 0.45), 0 12px 34px rgba(0, 0, 0, 0.5); }
+}
+@media (prefers-reduced-motion: reduce) { .export-hint { animation: none; } }

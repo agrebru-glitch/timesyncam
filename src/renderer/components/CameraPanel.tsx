@@ -258,7 +258,7 @@ function CameraCard({ cam, index }: { cam: Camera; index: number }) {
           {drift && (
             <div className="card-line">
               Часы {drift.ppm > 0 ? 'отстают' : 'спешат'} на {Math.abs(drift.ppm).toFixed(1).replace('.', ',')} ppm
-              <span className="muted"> · при экспорте вместо записей встанут выровненные копии (на таймлинии — штриховка), оригиналы не меняются</span>
+              <span className="muted"> · при экспорте программа подставит выровненные копии (на таймлинии — штриховка), оригиналы не меняются</span>
             </div>
           )}
           {info.excluded > 0 && (

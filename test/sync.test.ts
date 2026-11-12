@@ -526,3 +526,21 @@ test('Дорожки одного дубля рекордера (…_Tr1, …_Tr
   const other = runSync([camera('Zoom', [take('ZOOM0001_Tr1.WAV'), take('ZOOM0001_Tr2.WAV', T16, 3000)])]);
   assert.ok(other.issues.some((i) => i.severity === 'error' && /накладываются/.test(i.title)));
 });
+
+test('Каналы рекордера …S3/…S4 со временем из даты файла — дорожки одного дубля, не наложение', () => {
+  // Отзыв тестера 11.11.2026: …0001S3.wav и …S4.wav — без тайм-кода, даты файлов расходятся на 2 и 21 с,
+  // длина одинакова до сэмпла. Раньше — ошибка «накладываются» и четыре строки на одной дорожке.
+  const ch = (name: string, start: number, dur: number) => {
+    const c = clip({ start, durationSec: dur, recordedSec: dur, hasVideo: false, rate: null, frames: null, width: null, height: null, audioChannels: 1 });
+    return Object.assign(c, { name, tc: null, clock: { epochSec: start, precisionSec: 3, tzOffsetMin: null, source: 'file' as const } });
+  };
+  const files = [ch('260101_0002S3.wav', T16, 4489.272), ch('260101_0002S4.wav', T16 - 20.6, 4489.272), ch('260101_0001S3.wav', T16 + 5000, 2947.896), ch('260101_0001S4.wav', T16 + 5002, 2947.896)];
+  const r = runSync([camera('ДОП ЗВУК', files)]);
+  assert.ok(!r.issues.some((i) => i.severity === 'error' && /накладываются/.test(i.title)), r.issues.map((i) => i.title).join('; '));
+  // Каналы одного дубля встают с одним началом.
+  const at = (n: string) => r.placements.find((p) => p.clipId === files.find((f) => f.name === n)!.id)!;
+  assert.ok(Math.abs(at('260101_0002S3.wav').start - at('260101_0002S4.wav').start) < 0.01);
+  // Разные дубли с датами файлов и разной длиной — не дорожки одного дубля.
+  const two = runSync([camera('ДОП ЗВУК', [ch('A_0001S3.wav', T16, 100), ch('A_0002S3.wav', T16 + 10, 100)])]);
+  assert.ok(two.issues.some((i) => i.severity === 'error' && /накладываются/.test(i.title)));
+});

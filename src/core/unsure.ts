@@ -8,9 +8,9 @@ import { pluralRu } from './format.ts';
 export const UNSURE_TEXT: Record<UnsureReason, string> = {
   'no-sound': 'в клипе нет звука — стоит по тайм-коду и часам',
   neighbours: 'нет общего звука — стоит по соседним клипам',
-  'not-found': 'звук не нашёл место — стоит по часам',
+  'not-found': 'по звуку место не найдено — стоит по часам',
   apart: 'часть съёмки не связана по звуку с остальной — стоит по часам',
-  rough: 'место по звуку, но точность хуже кадра',
+  rough: 'место найдено по звуку, но не точнее кадра',
 };
 
 const ORDER: UnsureReason[] = ['not-found', 'apart', 'neighbours', 'no-sound', 'rough'];

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Camera, Placement } from '../../core/types.ts';
 import { formatClockTime, formatDate, pluralRu, rulerTicks } from '../../core/format.ts';
 import { useApp } from '../App.tsx';
@@ -13,6 +13,7 @@ import { driftJobs } from '../../core/driftExport.ts';
 import type { DriftJob } from '../../core/driftExport.ts';
 import { ALONE_NOTE, unsureDetails, unsureNote, unsureOf } from '../../core/unsure.ts';
 import { trackOrder } from '../../core/trackOrder.ts';
+import { channelLabels, laneKey } from '../../core/channels.ts';
 
 const RULER_H = 30;
 const EDGE_PX = 24; // поле до начала и после конца съёмки
@@ -61,7 +62,7 @@ export function Timeline() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 800, h: 240 });
-  // Дорожек больше, чем помещается, — их можно прокручивать: колёсиком над названиями или Alt + колёсико.
+  // Дорожек больше, чем помещается, — их можно прокручивать колёсиком и над названиями, и над клипами.
   const [scrollY, setScrollY] = useState(0);
   const headsRef = useRef<HTMLDivElement>(null);
   const [dropRow, setDropRow] = useState<number | 'new' | null>(null);
@@ -569,7 +570,12 @@ export function Timeline() {
     const el = canvasRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (e.altKey) {
+      // Колесо — как в DaVinci Resolve: просто колесо — дорожки вверх-вниз; Ctrl (на Mac ⌘) + колесо, Shift + колесо
+      // и сдвиг трекпада вбок — по времени; Alt (⌥) + колесо и щипок на трекпаде — масштаб. Щипок приходит
+      // с ctrlKey — на Mac Ctrl поэтому масштаб, по времени там — ⌘.
+      const zoom = e.altKey || (isMac && e.ctrlKey);
+      const pan = !zoom && ((isMac ? e.metaKey : e.ctrlKey) || e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY));
+      if (!zoom && !pan) {
         e.preventDefault();
         setScrollY((v) => Math.max(0, Math.min(maxScroll, Math.min(v, maxScroll) + e.deltaY)));
         return;
@@ -577,9 +583,10 @@ export function Timeline() {
       if (!vp) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
-      if (e.ctrlKey || e.metaKey) {
+      if (zoom) {
         dispatch({ type: 'viewport', viewport: zoomAround(vp, Math.exp(e.deltaY * 0.0015), e.clientX - rect.left) });
       } else {
+        // Shift + колёсико: Windows отдаёт сдвиг в deltaY, macOS — уже в deltaX.
         const d = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * vp.secPerPx;
         dispatch({ type: 'viewport', viewport: clampViewport({ ...vp, start: vp.start + d })! });
       }
@@ -658,11 +665,30 @@ export function Timeline() {
           </button>
         </div>
         <div className="tl-rows" ref={headsRef} style={{ height: viewH }} onScroll={(e) => setScrollY(e.currentTarget.scrollTop)}>
-        {rows.map((r) => (
+        {rows.map((r) => {
+          // Каналы рекордера (…_Tr1/_Tr2) — каждый своей строкой со своим названием и M/S; сверяются вместе.
+          const chans = channelLabels(r.cam, placements);
+          const mix = (key: string, title: string) => (
+            <span className="tl-mix" onClick={(e) => e.stopPropagation()}>
+              <button
+                className={`mix-btn ${state.mix.muted.includes(key) ? 'on mute' : ''} ${!audible(state.mix, key) ? 'silent' : ''}`}
+                title={`Mute — выключить звук ${title} при проигрывании`}
+                aria-pressed={state.mix.muted.includes(key)}
+                onClick={() => dispatch({ type: 'mix', cameraId: key, kind: 'mute' })}
+              >M</button>
+              <button
+                className={`mix-btn ${state.mix.solo.includes(key) ? 'on solo' : ''}`}
+                title={`Solo — слушать только ${title} (можно несколько): так слышно, совпадают ли две записи`}
+                aria-pressed={state.mix.solo.includes(key)}
+                onClick={() => dispatch({ type: 'mix', cameraId: key, kind: 'solo' })}
+              >S</button>
+            </span>
+          );
+          return (
+          <Fragment key={r.cam.id}>
           <div
-            key={r.cam.id}
             className={`tl-head ${dropRow === r.index ? 'drop' : ''}`}
-            style={{ height: r.h }}
+            style={{ height: chans.size ? ROW_H : r.h }}
             onClick={() => dispatch({ type: 'view-mode', mode: state.viewMode, cameraId: r.cam.id })}
             onDragOver={(e) => { e.stopPropagation(); onDragOver(e, r.index); }}
             onDragLeave={() => setDropRow(null)}
@@ -672,7 +698,7 @@ export function Timeline() {
               {r.cam.clips.length > 0 && r.cam.clips.every((c) => !c.hasVideo)
                 ? <IconHeadphones className="icon track-kind" style={{ color: cameraColor(r.index) }} />
                 : <IconCamera className="icon track-kind" style={{ color: cameraColor(r.index) }} />}
-              <span className="name">{r.cam.name}</span>
+              <span className="name">{r.cam.name}{chans.size ? ` · ${chans.get(0)}` : ''}</span>
               {(() => {
                 const u = unsureByCam.get(r.cam.id);
                 if (!u?.ids.length || r.cam.scanning) return null;
@@ -695,25 +721,30 @@ export function Timeline() {
                     ? trackInfo(r.cam)
                     : 'Перетащите папку или файлы'}
               </span>
-              {state.soundOn && r.cam.clips.some((c) => c.audioChannels > 0) && (
-                <span className="tl-mix" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className={`mix-btn ${state.mix.muted.includes(r.cam.id) ? 'on mute' : ''} ${!audible(state.mix, r.cam.id) ? 'silent' : ''}`}
-                    title="Mute — выключить звук дорожки при проигрывании"
-                    aria-pressed={state.mix.muted.includes(r.cam.id)}
-                    onClick={() => dispatch({ type: 'mix', cameraId: r.cam.id, kind: 'mute' })}
-                  >M</button>
-                  <button
-                    className={`mix-btn ${state.mix.solo.includes(r.cam.id) ? 'on solo' : ''}`}
-                    title="Solo — слушать только эту дорожку (можно несколько): так слышно, совпадают ли две записи"
-                    aria-pressed={state.mix.solo.includes(r.cam.id)}
-                    onClick={() => dispatch({ type: 'mix', cameraId: r.cam.id, kind: 'solo' })}
-                  >S</button>
-                </span>
-              )}
+              {state.soundOn && r.cam.clips.some((c) => c.audioChannels > 0) && mix(r.cam.id, chans.size ? `канала ${chans.get(0)}` : 'дорожки')}
             </span>
           </div>
-        ))}
+          {[...chans].filter(([lane]) => lane > 0).map(([lane, label]) => (
+            <div
+              key={`${r.cam.id}#${lane}`}
+              className="tl-head tl-channel"
+              style={{ height: ROW_H }}
+              onClick={() => dispatch({ type: 'view-mode', mode: state.viewMode, cameraId: r.cam.id })}
+              title="Канал того же рекордера: сверяется вместе с дорожкой, в монтажку уходит отдельной дорожкой"
+            >
+              <span className="t">
+                <IconHeadphones className="icon track-kind" style={{ color: cameraColor(r.index) }} />
+                <span className="name">{r.cam.name} · {label}</span>
+              </span>
+              <span className="s-row">
+                <span className="s">канал рекордера</span>
+                {state.soundOn && mix(laneKey(r.cam.id, lane), `канала ${label}`)}
+              </span>
+            </div>
+          ))}
+          </Fragment>
+          );
+        })}
         </div>
         <div
           className={`tl-add ${dropRow === 'new' ? 'drop' : ''}`}
@@ -741,6 +772,8 @@ export function Timeline() {
         onDrop={(e) => onDrop(e, rowAtY(e.clientY))}
       >
         <canvas ref={canvasRef} onMouseDown={onMouseDown} onContextMenu={onContextMenu} />
+        {/* Идёт сверка по звуку или чтение экрана синхронизации — дорожки заливаются фирменным синим, по ним бегут полосы. */}
+        {(state.audioRun || state.qrRun) && <div className="tl-busy" style={{ top: RULER_H }} aria-hidden="true" />}
         {dropRow !== null && (() => {
           // Куда упадут файлы: подсветка дорожки на всю ширину или места под дорожками для новой.
           const r = dropRow === 'new' ? null : rows.find((row) => row.index === dropRow);

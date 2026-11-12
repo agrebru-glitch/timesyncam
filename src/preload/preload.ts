@@ -4,6 +4,7 @@ const api = {
   pickFolders: (): Promise<string[] | null> => ipcRenderer.invoke('dialog:pick-folder'),
   pickFiles: (): Promise<string[] | null> => ipcRenderer.invoke('dialog:pick-files'),
   scanPaths: (scanId: string, paths: string[]) => ipcRenderer.invoke('scan:paths', scanId, paths),
+  trackFolders: (paths: string[]): Promise<{ folder: string; files: string[] }[]> => ipcRenderer.invoke('scan:track-folders', paths),
   onScanProgress: (cb: (p: { scanId: string; done: number; total: number }) => void) => {
     const listener = (_e: unknown, p: { scanId: string; done: number; total: number }) => cb(p);
     ipcRenderer.on('scan:progress', listener);

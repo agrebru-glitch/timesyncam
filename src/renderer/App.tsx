@@ -11,6 +11,7 @@ import { pluralRu } from '../core/format.ts';
 import { api } from './api.ts';
 import { audible, canExport, initialState, isScanning, needsSync, newCamera, reducer } from './state.ts';
 import { previewAudio } from './previewAudio.ts';
+import { audioByChannel } from '../core/channels.ts';
 import type { Action, ControlInfo, State, SyncMode } from './state.ts';
 import { QrScreen } from './components/QrScreen.tsx';
 import { SyncMenu } from './components/SyncMenu.tsx';
@@ -89,7 +90,7 @@ export function App() {
     if (state.tools && !state.tools.ffprobe) {
       list.unshift({
         id: 'tools', severity: 'error', cameraId: null,
-        title: 'Не найден ffprobe — программа не может читать клипы',
+        title: 'Программа не может читать клипы: не найден ffprobe',
         details: isMac
           ? 'Переустановите программу из образа .dmg с GitHub — FFmpeg входит в него. Или установите FFmpeg (например, brew install ffmpeg).'
           : 'Положите ffprobe.exe и ffmpeg.exe в папку bin рядом с программой или установите FFmpeg и добавьте его в PATH.',
@@ -149,7 +150,44 @@ export function App() {
     if (res) requestWaveforms(res.clips);
   }, []);
 
-  const addFolders = useCallback((cameraId: string | null, paths: string[]) => {
+  const addFolders = useCallback((cameraId: string | null, paths: string[]): Promise<void> => {
+    // Папки на пустую дорожку (или на свободное место): каждая папка с видео или звуком — своя дорожка, как их
+    // разложил оператор («кам 1», «кам 2», «звук»), — так же делает PluralEyes. Камеры одной модели без серийного
+    // номера иначе не различить — раньше они сливались в одну дорожку вместе со звуком из соседней папки. Карты одной
+    // камеры (один серийный номер) собираются обратно в одну дорожку. Папка, брошенная на дорожку с клипами, — к ней.
+    const target = cameraId ? stateRef.current.cameras.find((c) => c.id === cameraId) : null;
+    const emptyTarget = !cameraId || (!!target && target.clips.length === 0 && !target.scanning && !scanQueue.current.has(target.id));
+    if (emptyTarget) {
+      return api.trackFolders(paths).catch(() => [] as { folder: string; files: string[] }[]).then(async (folders) => {
+        if (folders.length < 2) return addOne(cameraId, paths);
+        const ids: string[] = [];
+        const jobs = folders.map((f, i) => {
+          const job = addOne(i === 0 ? cameraId : null, f.files);
+          ids.push(lastTarget.current!);
+          return job;
+        });
+        await Promise.all(jobs);
+        // Карты одной камеры в разных подпапках: один и тот же серийный номер — одна дорожка.
+        const serialOf = (id: string) => {
+          const cam = stateRef.current.cameras.find((c) => c.id === id);
+          const serials = new Set(cam?.clips.map((c) => (c.camera.model && c.camera.serial ? `${c.camera.model}|${c.camera.serial}` : '')) ?? []);
+          return serials.size === 1 ? [...serials][0] : '';
+        };
+        const seen = new Map<string, string>();
+        for (const id of ids) {
+          const key = serialOf(id);
+          if (!key) continue;
+          const into = seen.get(key);
+          if (into) dispatch({ type: 'merge-cameras', intoId: into, fromId: id });
+          else seen.set(key, id);
+        }
+      });
+    }
+    return addOne(cameraId, paths);
+  }, [scanInto]);
+
+  const lastTarget = useRef<string | null>(null);
+  const addOne = useCallback((cameraId: string | null, paths: string[]): Promise<void> => {
     let targetId = cameraId;
     if (!targetId) {
       // Пустая камера (обычно «Камера 1» на старте) — файлы в неё, а не в ещё одну новую.
@@ -163,6 +201,7 @@ export function App() {
       }
     }
     const id = targetId;
+    lastTarget.current = id;
     const job = (scanQueue.current.get(id) ?? Promise.resolve()).then(() => scanInto(id, paths));
     scanQueue.current.set(id, job);
     void job.finally(() => {
@@ -264,6 +303,7 @@ export function App() {
     if (chosen === 'timecode' || noFfmpeg) {
       dispatch({ type: 'audio-done', result: null });
       if (Object.keys(pre).length) dispatch({ type: 'synced', result: runSync(cameras, pre, fixed), fit: true });
+      dispatch({ type: 'export-hint', show: true });
       return;
     }
     dispatch({ type: 'audio-start' });
@@ -294,6 +334,7 @@ export function App() {
       dispatch({ type: 'audio-done', result: audio });
       // Звук и контрольные кадры могли передвинуть камеры на часы — заново показываем всю съёмку.
       dispatch({ type: 'synced', result: runSync(stateRef.current.cameras, audio.corrections, new Set([...heardCameras(audio), ...fixed])), fit: true });
+      dispatch({ type: 'export-hint', show: true });
     } catch {
       dispatch({ type: 'audio-done', result: null });
       if (Object.keys(pre).length) dispatch({ type: 'synced', result: runSync(cameras, pre, fixed), fit: true });
@@ -373,7 +414,12 @@ export function App() {
     const sound = state.soundOn && state.tab === 'sync';
     let started = stateRef.current.playhead ?? 0;
     let lastSet = started;
-    if (sound) void previewAudio.start(started, stateRef.current.cameras, placements, (id) => audible(stateRef.current.mix, id));
+    // Каналы рекордера — отдельными дорожками звука: у каждого свои M и S.
+    const channels = (cams: typeof state.cameras) => audioByChannel(cams, placements);
+    if (sound) {
+      const ch = channels(stateRef.current.cameras);
+      void previewAudio.start(started, ch.cameras, ch.placements, (id) => audible(stateRef.current.mix, id));
+    }
     const tick = (now: number) => {
       const s = stateRef.current;
       const dt = (now - last) / 1000;
@@ -384,7 +430,8 @@ export function App() {
         // Курсор переставили на ходу (к следующему клипу, клавишами) — звук начинается заново с нового места.
         if (s.playhead !== null && Math.abs(s.playhead - lastSet) > 0.05) {
           started = s.playhead;
-          void previewAudio.start(started, s.cameras, placements, (id) => audible(stateRef.current.mix, id));
+          const ch = channels(s.cameras);
+          void previewAudio.start(started, ch.cameras, ch.placements, (id) => audible(stateRef.current.mix, id));
         }
         // Звук не запустился (нет устройства вывода) — курсор идёт по обычным часам.
         if (previewAudio.running) next = previewAudio.position() ?? (s.playhead ?? started);
@@ -414,7 +461,9 @@ export function App() {
 
   // Mute и Solo на ходу.
   useEffect(() => {
-    if (previewAudio.running) previewAudio.update(state.cameras, placements, (id) => audible(state.mix, id));
+    if (!previewAudio.running) return;
+    const ch = audioByChannel(state.cameras, placements);
+    previewAudio.update(ch.cameras, ch.placements, (id) => audible(state.mix, id));
   }, [state.mix, state.cameras, placements]);
 
   // Клавиши как в монтажке: пробел, стрелки (Shift — по секунде), Home/End.
@@ -526,13 +575,16 @@ export function App() {
             )}
             {state.syncMenuOpen && <SyncMenu />}
           </div>
-          <button
-            className={`btn ${exportOk ? 'primary' : 'locked'}`}
-            onClick={() => (exportOk ? dispatch({ type: 'export-open', open: true }) : dispatch({ type: 'toast', text: exportTitle }))}
-            title={exportTitle}
-          >
-            {exportOk ? <IconExport /> : <IconLock />} Экспорт
-          </button>
+          <span className="export-wrap">
+            <button
+              className={`btn ${exportOk ? 'primary' : 'locked'}`}
+              onClick={() => (exportOk ? dispatch({ type: 'export-open', open: true }) : dispatch({ type: 'toast', text: exportTitle }))}
+              title={exportTitle}
+            >
+              {exportOk ? <IconExport /> : <IconLock />} Экспорт
+            </button>
+            {state.exportHint && exportOk && <ExportHint />}
+          </span>
         </header>
 
         {state.tab === 'sync' && <SyncWorkspace />}
@@ -541,6 +593,13 @@ export function App() {
         <footer className="statusbar">
           <LogoMark className="statusbar-logo" />
           <span className="statusbar-name">TimesynCam {__APP_VERSION__}</span>
+          {/* Долгая работа в фоне видна с любой вкладки и при закрытом окне экспорта. */}
+          {(state.exportRun || state.reportRun) && (
+            <span className="statusbar-run" role="status">
+              <IconSync className="icon spin" />
+              {state.exportRun ?? `Собираю расширенный отчёт: ${state.reportRun!.done} из ${state.reportRun!.total}`}
+            </span>
+          )}
         </footer>
         {state.exportOpen && <ExportDialog />}
         {state.qrScreenOpen && <QrScreen />}
@@ -553,6 +612,29 @@ export function App() {
         </div>
       </div>
     </AppContext.Provider>
+  );
+}
+
+// Синхронизация закончилась — подсказка под кнопкой «Экспорт»: дальше результат сохраняют для монтажки.
+// Уходит сама через 20 секунд, по крестику или когда открыли экспорт.
+function ExportHint() {
+  const { dispatch } = useApp();
+  useEffect(() => {
+    const t = setTimeout(() => dispatch({ type: 'export-hint', show: false }), 20000);
+    return () => clearTimeout(t);
+  }, [dispatch]);
+  return (
+    <div className="export-hint" role="status">
+      <span className="export-hint-icon"><IconExport /></span>
+      <div className="export-hint-text">
+        <b>Синхронизация готова</b>
+        <span>Проверьте стыковку и сохраните таймлинию для монтажки.</span>
+        <div className="control-hint-actions">
+          <button className="btn small primary" onClick={() => dispatch({ type: 'export-open', open: true })}>Экспорт</button>
+        </div>
+      </div>
+      <button className="btn small ghost control-hint-close" aria-label="Закрыть подсказку" onClick={() => dispatch({ type: 'export-hint', show: false })}><IconX /></button>
+    </div>
   );
 }
 

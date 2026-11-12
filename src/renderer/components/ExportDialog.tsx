@@ -118,10 +118,17 @@ export function ExportDialog() {
       setBusy(false);
       return;
     }
-    setProgress('Выравниваю звук…');
-    const off = api.onDriftProgress(({ done, total }) => setProgress(`Выравниваю звук: запись ${Math.min(total, Math.floor(done) + 1)} из ${total}, ${Math.round((done / total) * 100)}%`));
-    const done = await api.renderDrift(path, jobs).finally(off);
-    setProgress(null);
+    // Ход — и в окне, и в строке состояния: окно экспорта могут закрыть, а выравнивание идёт дальше.
+    const show = (text: string | null) => {
+      setProgress(text);
+      dispatch({ type: 'export-run', text });
+    };
+    show('Выравниваю звук…');
+    const off = api.onDriftProgress(({ done, total }) => show(`Выравниваю звук: запись ${Math.min(total, Math.floor(done) + 1)} из ${total}, ${Math.round((done / total) * 100)}%`));
+    const done = await api.renderDrift(path, jobs).finally(() => {
+      off();
+      show(null);
+    });
     const mod = withDriftCopies(state.cameras, sync, jobs, done ?? []);
     const saved = await api.writeExport(path, build(mod.cameras, mod.sync));
     setBusy(false);
@@ -240,7 +247,7 @@ export function ExportDialog() {
         </div>
         <div className="dialog-actions">
           <button className="btn" onClick={() => dispatch({ type: 'export-open', open: false })}>Отмена</button>
-          <button className="btn primary" disabled={busy} onClick={save}>{busy ? progress ?? 'Сохраняю…' : format === 'fcpxml' ? 'Сохранить FCPXML' : 'Сохранить XML'}</button>
+          <button className="btn primary" disabled={busy || !!state.exportRun} onClick={save}>{busy ? progress ?? 'Сохраняю…' : format === 'fcpxml' ? 'Сохранить FCPXML' : 'Сохранить XML'}</button>
         </div>
       </div>
     </div>

@@ -4,7 +4,6 @@ import { useApp } from '../App.tsx';
 import { api } from '../api.ts';
 import { buildReport } from '../report.ts';
 import { IconAlert, IconError, IconInfo } from '../icons.tsx';
-import { useState } from 'react';
 
 export function ErrorsPage() {
   const { state, dispatch, issues, synced, placements, fps } = useApp();
@@ -50,8 +49,11 @@ export function ErrorsPage() {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
   };
   // Расширенный отчёт: один архив со всем, что нужно разобрать съёмку, — звук без видео, сведения, решения.
-  const [collecting, setCollecting] = useState<{ done: number; total: number } | null>(null);
+  // Ход сбора — в общем состоянии: ушли на другую вкладку и вернулись — индикатор на месте.
+  const collecting = state.reportRun;
+  const setCollecting = (run: { done: number; total: number } | null) => dispatch({ type: 'report-run', run });
   const saveReport = async () => {
+    if (state.reportRun) return;
     const clips = state.cameras.flatMap((c) => c.clips.map((k) => ({ camera: c.name, path: k.path, audioChannels: k.audioChannels })));
     setCollecting({ done: 0, total: clips.length + 1 });
     const off = api.onReportProgress((p) => setCollecting(p));

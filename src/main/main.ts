@@ -4,7 +4,7 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
-import { AUDIO_EXT, scanPaths, VIDEO_EXT } from './scan.ts';
+import { AUDIO_EXT, collectPaths, scanPaths, VIDEO_EXT } from './scan.ts';
 import { grabFrame, toolPath, toolsAvailable } from './ffmpeg.ts';
 import { audioPreview, audioWaveform, clearAudioCaches } from './audio.ts';
 import type { AudioJob, AudioSyncResult } from '../core/audioSync.ts';
@@ -13,6 +13,15 @@ import { scanQr } from './qr.ts';
 import { extendedReport } from './materials.ts';
 import type { MaterialClip } from './materials.ts';
 import { checkForUpdate } from './update.ts';
+
+// Ход фоновой работы — в окно, только пока оно живо: окно могли закрыть посреди экспорта или отчёта, а поток ещё
+// присылает ход — отправка в закрытое окно роняла главный процесс («Object has been destroyed»).
+function notify(sender: Electron.WebContents, channel: string, data: unknown): void {
+  if (!sender.isDestroyed()) sender.send(channel, data);
+}
+
+// Что сейчас делается в фоне — чтобы не закрыть программу посреди работы случайно.
+const running = { scans: 0, report: false, drift: false };
 
 // Встроенный плеер получает доступ только к файлам, которые программа сама нашла при сканировании.
 const allowedMedia = new Set<string>();
@@ -71,6 +80,8 @@ function createWindow(): void {
     minWidth: 1140,
     minHeight: 700,
     backgroundColor: '#17181b',
+    // Меню окна на Windows не нужно: со скрытым меню отпущенный Alt его показывает — а Alt + колесо на таймлинии
+    // масштабирует, как в DaVinci. На Mac меню своё, в верхней строке экрана.
     autoHideMenuBar: true,
     title: 'TimesynCam',
     icon: join(__dirname, '../icon.png'),
@@ -84,7 +95,32 @@ function createWindow(): void {
     },
   });
 
+  if (process.platform !== 'darwin') win.removeMenu();
+
   const devUrl = process.env.SYNC_DEV_URL;
+  // Закрытие посреди экспорта, отчёта, чтения клипов или сверки по звуку — сначала спросить: работа прервётся,
+  // а незаконченный архив или копии звука останутся неполными.
+  win.on('close', (e) => {
+    const what = [
+      running.drift && 'выравнивание звука для экспорта',
+      running.report && 'расширенный отчёт',
+      syncJob && 'сверка по звуку',
+      running.scans > 0 && 'чтение клипов',
+    ].filter(Boolean) as string[];
+    if (!what.length || process.env.SYNC_SHOT) return;
+    const r = dialog.showMessageBoxSync(win!, {
+      type: 'warning',
+      buttons: ['Не закрывать', 'Прервать и закрыть'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'TimesynCam',
+      message: 'Программа ещё работает',
+      detail: `Сейчас идёт: ${what.join(', ')}. Если закрыть программу, работа прервётся и её придётся начать заново.`,
+    });
+    if (r === 0) e.preventDefault();
+    else void driftWorker?.terminate();
+  });
+
   if (devUrl) void win.loadURL(devUrl);
   else void win.loadFile(join(__dirname, '../renderer/index.html'));
 
@@ -190,7 +226,10 @@ ipcMain.handle('dialog:pick-files', async () => {
 });
 
 ipcMain.handle('scan:paths', async (event, scanId: string, paths: string[]) => {
-  const result = await scanPaths(paths, (done, total) => event.sender.send('scan:progress', { scanId, done, total }));
+  running.scans += 1;
+  const result = await scanPaths(paths, (done, total) => notify(event.sender, 'scan:progress', { scanId, done, total })).finally(() => {
+    running.scans -= 1;
+  });
   for (const c of result.clips) {
     allowedMedia.add(c.path);
     if (c.proxyPath) allowedMedia.add(c.proxyPath);
@@ -238,7 +277,7 @@ ipcMain.handle('sync:audio', (event, job: AudioJob) => {
   for (const cam of job.cameras) for (const c of cam.clips) if (!allowedMedia.has(c.path)) return null;
   if (syncJob) return null;
   return new Promise<AudioSyncResult | null>((resolve, reject) => {
-    syncJob = { resolve, reject, progress: (done, total) => event.sender.send('sync:progress', { done, total }) };
+    syncJob = { resolve, reject, progress: (done, total) => notify(event.sender, 'sync:progress', { done, total }) };
     workerFor().postMessage(job);
   });
 });
@@ -291,7 +330,12 @@ ipcMain.handle('report:extended', async (event, defaultName: string, clips: Mate
     if (r.canceled || !r.filePath) return null;
     out = r.filePath;
   }
-  await extendedReport(out, app.getVersion(), clips, report, (done, total) => event.sender.send('report:progress', { done, total }));
+  running.report = true;
+  try {
+    await extendedReport(out, app.getVersion(), clips, report, (done, total) => notify(event.sender, 'report:progress', { done, total }));
+  } finally {
+    running.report = false;
+  }
   return out;
 });
 
@@ -334,9 +378,11 @@ ipcMain.handle('drift:render', (event, target: string, jobs: DriftJob[]) => {
   const outDir = join(dirname(target), `${basename(target).replace(/\.[^.]+$/, '')} — выровненный звук`);
   const path = join(__dirname, 'driftWorker.cjs').replace(`app.asar${sep}`, `app.asar.unpacked${sep}`);
   const w = new Worker(path, { workerData: { tools: { ffmpeg: toolPath('ffmpeg'), ffprobe: toolPath('ffprobe') } } });
+  running.drift = true;
+  driftWorker = w;
   return new Promise<DriftRendered[] | null>((resolve) => {
     w.on('message', (m: { type: 'progress'; done: number; total: number } | { type: 'done'; results: DriftRendered[] } | { type: 'error'; message: string }) => {
-      if (m.type === 'progress') event.sender.send('drift:progress', { done: m.done, total: m.total });
+      if (m.type === 'progress') notify(event.sender, 'drift:progress', { done: m.done, total: m.total });
       else {
         resolve(m.type === 'done' ? m.results : null);
         void w.terminate();
@@ -345,7 +391,29 @@ ipcMain.handle('drift:render', (event, target: string, jobs: DriftJob[]) => {
     w.on('error', () => resolve(null));
     w.on('exit', () => resolve(null));
     w.postMessage({ outDir, jobs: safe });
+  }).finally(() => {
+    running.drift = false;
+    if (driftWorker === w) driftWorker = null;
   });
+});
+let driftWorker: Worker | null = null;
+
+// Папка съёмки, перетащенная целиком: каждая папка с видео или звуком — своя дорожка, как их разложил оператор
+// («кам 1», «кам 2», «звук», «звук/подкаст»). Служебные папки карт (PRIVATE/M4ROOT/CLIP, DCIM/100MSDCF…) — часть
+// своей карты: дорожкой становится папка выше. Прокси достаются своим клипам и дорожек не дают.
+const SERVICE_DIR = /^(clip|clips|dcim|private|m4root|avchd|bdmv|stream|xdroot|sub|thmbnl|general|contents|video|audio|\d{3}[a-z_]{1,8})$/i;
+ipcMain.handle('scan:track-folders', async (_e, paths: string[]) => {
+  const { media } = await collectPaths(paths);
+  const roots = paths.map((p) => p.replace(/[\\/]+$/, ''));
+  const trackOf = (file: string): string => {
+    let dir = dirname(file);
+    while (SERVICE_DIR.test(basename(dir)) && !roots.includes(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    return dir;
+  };
+  // Дорожке — только файлы её папки (с прокси): вложенная папка со своими файлами — уже другая дорожка.
+  const groups = new Map<string, string[]>();
+  for (const m of media) groups.set(trackOf(m.path), [...(groups.get(trackOf(m.path)) ?? []), m.path, ...(m.proxyPath ? [m.proxyPath] : [])]);
+  return [...groups].sort((a, b) => a[0].localeCompare(b[0], 'ru', { numeric: true })).map(([folder, files]) => ({ folder, files }));
 });
 
 ipcMain.handle('shell:reveal', (_e, path: string) => shell.showItemInFolder(path));

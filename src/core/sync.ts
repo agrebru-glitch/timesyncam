@@ -167,13 +167,27 @@ function stretchedCopy(copy: ClipMeta, orig: ClipMeta): boolean {
 }
 
 // Дорожки одного дубля многоканального рекордера: Zoom пишет ZOOM0001_Tr1.WAV, _Tr2, _TrLR, _TrMic, Tascam —
-// …S12.wav, …S34.wav, у других — _1/_2, _L/_R. Одно время начала, одна длина и одно имя до номера дорожки —
-// это одна запись в нескольких файлах, а не наложение: каждая встаёт на свою дорожку, без ошибки.
-const TRACK_TAIL = /([_-](tr[\p{L}\p{N}]*|lr|ms|mic|[lr]|ch?\d{1,2}|\d{1,2})|s\d{2})$/iu;
+// …S12.wav, …S34.wav, у других (Zoom F, Sound Devices) — …S3.wav, …S4.wav, _1/_2, _L/_R. Одно время начала, одна
+// длина и одно имя до номера дорожки — это одна запись в нескольких файлах, а не наложение: каждая встаёт на свою
+// дорожку, без ошибки.
+const TRACK_TAIL = /([_-](tr[\p{L}\p{N}]*|lr|ms|mic|[lr]|ch?\d{1,2}|\d{1,2})|s\d{1,2})$/iu;
+// Номер дорожки рекордера в имени файла: «Tr2», «S4», «TrLR», «2» — для подписи строки канала; null — не дорожка.
+export function trackTail(name: string): string | null {
+  const m = TRACK_TAIL.exec(name.replace(/\.[^.]+$/, ''));
+  return m ? m[0].replace(/^[_-]/, '') : null;
+}
+
 export function isTrackTwin(a: ClipMeta, b: ClipMeta): boolean {
   if (a.hasVideo || b.hasVideo || !a.audioChannels || !b.audioChannels || a.id === b.id) return false;
   if (Math.abs(a.durationSec - b.durationSec) > 0.05) return false;
-  const sameStart = a.tc && b.tc ? Math.abs(wrapSigned(a.tc.seconds - b.tc.seconds)) < 0.01 : !!a.clock && !!b.clock && Math.abs(a.clock.epochSec - b.clock.epochSec) <= 1;
+  // Без тайм-кода и без своего времени в файле время берётся из даты файла — а она у дорожек одного дубля расходится
+  // на секунды и минуты (порядок записи и копирования). Тогда одна запись — по длине до сэмпла (2 мс) и имени.
+  const fileDated = a.clock?.source === 'file' && b.clock?.source === 'file';
+  const sameStart = a.tc && b.tc
+    ? Math.abs(wrapSigned(a.tc.seconds - b.tc.seconds)) < 0.01
+    : fileDated
+      ? Math.abs(a.durationSec - b.durationSec) <= 0.002
+      : !!a.clock && !!b.clock && Math.abs(a.clock.epochSec - b.clock.epochSec) <= 1;
   if (!sameStart) return false;
   const stem = (n: string) => n.replace(/\.[^.]+$/, '');
   const ta = TRACK_TAIL.exec(stem(a.name));
@@ -349,7 +363,7 @@ function syncCamera(
         severity: 'warning',
         cameraId: cam.id,
         title: `«${cam.name}»: тайм-код шёл только во время записи (Rec Run)`,
-        details: 'Паузы между клипами взяты по часам камеры, точность около секунды. Чтобы было точно до кадра, ставьте TC Run → Free Run.',
+        details: 'Паузы между клипами взяты по часам камеры, точность около секунды. Чтобы было точно до кадра, поставьте в меню камеры Time Code Run → Free Run.',
         actions: [{ kind: 'open-faq', anchor: 'tc-run' }],
       }));
     } else if (tooScattered && source === 'clock') {
@@ -461,6 +475,12 @@ function syncCamera(
     const lastRecordedClip = last?.clip ?? null;
     // Другая дорожка того же дубля рекордера — не наложение.
     const twin = !guest && !!lastRecordedClip && isTrackTwin(lastRecordedClip, r.clip);
+    // Дорожки дубля со временем из даты файла: даты расходятся на секунды и минуты, а записаны каналы одновременно —
+    // встают вместе с первой дорожкой дубля.
+    if (twin && r.clip.clock?.source === 'file' && lastRecordedClip.clock?.source === 'file') {
+      const first = placements.find((p) => p.clipId === lastRecordedClip.id);
+      if (first) start = first.start;
+    }
     const realOverlap = guest || twin ? 0 : lastRecordedEnd - start;
     const drifting = !!r.heard && realOverlap <= DRIFT_OVERLAP;
     if (realOverlap > 0.02 && !drifting) {
@@ -499,7 +519,7 @@ function syncCamera(
       severity: 'warning',
       cameraId: cam.id,
       title: `«${cam.name}»: время ${pluralRu(fileTimed, 'клипа', 'клипов', 'клипов')} взято из даты файла`,
-      details: 'Камера не записала время съёмки внутрь файла. Дата файла верна, только если карту копировали целиком, без пересохранения.',
+      details: 'Камера не записала в файл время съёмки. Дата файла верна, только если карту копировали целиком, без пересохранения.',
       actions: [],
     }));
   }

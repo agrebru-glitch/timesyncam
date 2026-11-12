@@ -78,7 +78,7 @@ function AudioTile({ cam, index, hit, next }: { cam: Camera; index: number; hit:
           <span>
             {!synced
               ? next ? 'Между записями' : 'Записи рекордера закончились'
-              : next && state.playhead !== null ? `Не писал в этот момент. Следующая запись через ${formatDurationHuman(next.start - state.playhead)}` : 'Не писал в этот момент'}
+              : next && state.playhead !== null ? `Рекордер сейчас не писал. Следующая запись через ${formatDurationHuman(next.start - state.playhead)}` : 'Рекордер сейчас не писал'}
           </span>
         )}
         {hit && !wave && <span>Строю волну…</span>}

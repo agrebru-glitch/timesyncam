@@ -837,7 +837,7 @@ export async function refineByAudio(cameras: Camera[], coarse: SyncResult, audio
         severity: 'info',
         cameraId: camId,
         title: `«${nameOf(camId)}» не с чем сверить по звуку`,
-        details: 'Рядом по времени клипы этой камеры не идут одновременно с другими камерами, а поиск по всей записи совпадения не нашёл. Камера осталась по тайм-коду и часам.',
+        details: 'Рядом по времени другие камеры не писали, а поиск по всей записи совпадения не нашёл. Камера осталась по тайм-коду и часам.',
         actions: [],
       }));
       markUntrusted(camId, [], false);
@@ -1146,7 +1146,7 @@ export function combine(camId: string, anchors: AudioAnchor[], source: TimeSourc
       severity: 'info',
       cameraId: camId,
       title: `«{cam}»: ${ignored} из ${ok.length} точек сверки по звуку отброшены`,
-      details: 'Они противоречили соседним точкам — скорее всего, звук в этих местах был похож на другой фрагмент.',
+      details: 'Они противоречили соседним точкам: скорее всего, звук здесь похож на другое место записи.',
       actions: [],
     });
   }
